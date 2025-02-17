@@ -6,3 +6,7 @@
 
 # virtual environment
 news-env/
+
+# data
+backend/data/
+backend/tests/data/
