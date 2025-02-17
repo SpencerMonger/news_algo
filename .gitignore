@@ -1,0 +1,8 @@
+# env
+.news-env
+
+# csv
+*.csv
+
+# virtual environment
+news-env/
