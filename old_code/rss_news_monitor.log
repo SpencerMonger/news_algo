@@ -1,0 +1,57 @@
+2025-02-26 13:49:56,667 - INFO - Starting RSS News Monitor
+2025-02-26 13:49:56,667 - INFO - Created news log file: C:\Users\spenc\Downloads\Dev Files\News_Algo\logs\ticker_news_alerts.csv
+2025-02-26 13:49:56,676 - INFO - Found tickers in column 'Ticker', loaded 767 tickers
+2025-02-26 13:49:56,676 - INFO - Checking RSS feeds for news about 767 tickers
+2025-02-26 13:49:57,302 - WARNING - No entries found in feed: https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeGFpfWw==
+2025-02-26 13:49:58,566 - INFO - Found news for SNCR: Synchronoss Technologies annonce la date de la conf�rence t�l�phonique qui fera le point sur ses r�sultats du quatri�me trimestre et son exercice 2024
+2025-02-26 13:49:58,582 - INFO - Found news for SNCR: Synchronoss Technologies k�ndigt Telefonkonferenz f�r das vierte Quartal und das gesamte Gesch�ftsjahr 2024 an
+2025-02-26 13:49:58,638 - INFO - Found news for SNCR: Synchronoss Technologies Mengumumkan Tanggal Panggilan Konferensi Laporan Pendapatan Kuartal Keempat dan Tahun Penuh 2024
+2025-02-26 13:49:58,685 - INFO - Found news for SNCR: Synchronoss Technologies Mengumumkan Tarikh Panggilan bagi Pendapatan Suku Keempat dan Tahun Penuh 2024
+2025-02-26 13:49:58,701 - INFO - Found news for SNCR: Synchronoss Technologies Anuncia a Data da Chamada de Resultados do Quarto Trimestre e do Ano de 2024
+2025-02-26 13:49:58,730 - INFO - Found news for SNCR: Synchronoss Technologies anuncia la fecha de la llamada de los resultados del cuarto trimestre y del a�o completo 2024
+2025-02-26 13:50:00,790 - INFO - Found news for NEUE: NeueHealth to Host Fourth Quarter 2024 Earnings Conference Call on March 20, 2025
+2025-02-26 13:50:01,037 - INFO - Found news for ELA: K-2 Early Literacy Improvements Offer Hope, but Persistent Challenges Remain
+2025-02-26 13:50:01,725 - INFO - Found 12 ticker news items in GlobeNewswire feed
+2025-02-26 13:50:04,147 - INFO - Found 1 ticker news items in PRNewswire feed
+2025-02-26 13:50:06,202 - INFO - Found news for SLND: Southland Schedules Fourth Quarter &amp; Full Year 2024 Conference Call
+2025-02-26 13:50:07,228 - INFO - Found news for GROV: Grove to Report Fourth Quarter and Full Year 2024 Financial Results on March 11, 2025
+2025-02-26 13:50:10,123 - INFO - Found 3 ticker news items in BusinessWire feed
+2025-02-26 13:50:10,124 - ERROR - Error logging news items: 'charmap' codec can't encode characters in position 64-65: character maps to <undefined>
+2025-02-26 13:50:10,124 - INFO - Found and logged 16 ticker news items
+2025-02-26 13:50:10,124 - INFO - Waiting 60 seconds before next check
+2025-02-26 13:51:10,128 - INFO - Checking RSS feeds for news about 767 tickers
+2025-02-26 13:51:10,347 - WARNING - No entries found in feed: https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeGFpfWw==
+2025-02-26 13:51:11,372 - INFO - No new ticker news found in this check
+2025-02-26 13:51:11,372 - INFO - Waiting 60 seconds before next check
+2025-02-26 13:51:13,117 - INFO - RSS News Monitor stopped by user
+2025-02-26 13:53:09,767 - INFO - Starting RSS News Monitor
+2025-02-26 13:53:09,770 - INFO - Found tickers in column 'Ticker', loaded 767 tickers
+2025-02-26 13:53:09,771 - INFO - Checking RSS feeds for news about 767 tickers
+2025-02-26 13:53:10,018 - WARNING - No entries found in feed: https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeGFpfWw==
+2025-02-26 13:53:11,772 - INFO - Found news for SNCR: Synchronoss Technologies 公布 2024 年第四季度及全年财报电话会议日期
+2025-02-26 13:53:11,790 - INFO - Found news for SNCR: Synchronoss Technologies 宣佈 2024 年第四季度及全年盈利電話會議日期
+2025-02-26 13:53:11,842 - INFO - Found news for SNCR: Synchronoss Technologies annonce la date de la conférence téléphonique qui fera le point sur ses rés...
+2025-02-26 13:53:11,908 - INFO - Found news for SNCR: Synchronoss Technologies kündigt Telefonkonferenz für das vierte Quartal und das gesamte Geschäftsja...
+2025-02-26 13:53:11,926 - INFO - Found news for SNCR: Synchronoss Technologies מכריזה על תאריך שיחת ועידה לגבי התוצאות הכספיות לרבעון הרביעי ולשנת 2024 כו...
+2025-02-26 13:53:11,942 - INFO - Found news for SNCR: Synchronoss Technologies Mengumumkan Tanggal Panggilan Konferensi Laporan Pendapatan Kuartal Keempat...
+2025-02-26 13:53:11,958 - INFO - Found news for SNCR: シンクロノス・テクノロジーズ (Synchronoss Technologies)、2024年第4四半期および通期決算発表のカンファレンスコール日程を発表
+2025-02-26 13:53:11,972 - INFO - Found news for SNCR: Synchronoss Technologies, 4분기 및 2024년 전체 실적 발표일 공개
+2025-02-26 13:53:11,988 - INFO - Found news for SNCR: Synchronoss Technologies Mengumumkan Tarikh Panggilan bagi Pendapatan Suku Keempat dan Tahun Penuh 2...
+2025-02-26 13:53:12,018 - INFO - Found news for SNCR: Synchronoss Technologies Anuncia a Data da Chamada de Resultados do Quarto Trimestre e do Ano de 202...
+2025-02-26 13:53:12,035 - INFO - Found news for SNCR: Synchronoss Technologies anuncia la fecha de la llamada de los resultados del cuarto trimestre y del...
+2025-02-26 13:53:12,053 - INFO - Found news for SNCR: Synchronoss Technologies ประกาศกำหนดการประชุมเกี่ยวกับผลประกอบการไตรมาสที่สี่และทั้งปี 2024
+2025-02-26 13:53:13,175 - INFO - Found news for NEUE: NeueHealth to Host Fourth Quarter 2024 Earnings Conference Call on March 20, 2025
+2025-02-26 13:53:13,888 - INFO - Found 12 ticker news items in GlobeNewswire feed
+2025-02-26 13:53:14,132 - INFO - Found news for ELA: K-2 Early Literacy Improvements Offer Hope, but Persistent Challenges Remain
+2025-02-26 13:53:16,703 - INFO - Found 1 ticker news items in PRNewswire feed
+2025-02-26 13:53:18,847 - INFO - Found news for SLND: Southland Schedules Fourth Quarter &amp; Full Year 2024 Conference Call
+2025-02-26 13:53:19,849 - INFO - Found news for GROV: Grove to Report Fourth Quarter and Full Year 2024 Financial Results on March 11, 2025
+2025-02-26 13:53:22,877 - INFO - Found 3 ticker news items in BusinessWire feed
+2025-02-26 13:53:22,878 - INFO - Logged 16 news items to C:\Users\spenc\Downloads\Dev Files\News_Algo\logs\ticker_news_alerts.csv
+2025-02-26 13:53:22,878 - INFO - Found and logged 16 ticker news items
+2025-02-26 13:53:22,878 - INFO - Waiting 60 seconds before next check
+2025-02-26 13:54:22,881 - INFO - Checking RSS feeds for news about 767 tickers
+2025-02-26 13:54:23,121 - WARNING - No entries found in feed: https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeGFpfWw==
+2025-02-26 13:54:30,524 - INFO - No new ticker news found in this check
+2025-02-26 13:54:30,524 - INFO - Waiting 60 seconds before next check
+2025-02-26 13:54:33,951 - INFO - RSS News Monitor stopped by user

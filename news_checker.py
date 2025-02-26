@@ -26,29 +26,37 @@ API_KEY = os.getenv('POLYGON_API_KEY')
 
 async def get_recent_news(symbol):
     """
-    Get news for a specific symbol from the last 35 seconds
+    Get news for a specific symbol from the last 60 seconds
     """
     try:
-        # Calculate timestamp for 35 seconds ago (increased from 25 to 35)
-        est = pytz.timezone('US/Eastern')
-        now = datetime.now(est)
-        thirty_five_seconds_ago = now - timedelta(seconds=35)
+        # Ensure we're using Eastern Time (ET) for all time calculations
+        et = pytz.timezone('US/Eastern')
+        # Get current time in ET
+        now = datetime.now(et)
+        
+        # Calculate timestamp for 60 seconds ago
+        sixty_seconds_ago = now - timedelta(seconds=60)
         
         # Store query timestamp for verification
         query_timestamp = now
         
-        # Format timestamp for API
-        published_after = thirty_five_seconds_ago.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Format timestamp for API - IMPORTANT: Polygon API expects UTC time
+        # Convert ET time to UTC for the API request
+        sixty_seconds_ago_utc = sixty_seconds_ago.astimezone(pytz.UTC)
+        published_after = sixty_seconds_ago_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         
-        logger.debug(f"Checking for news after {published_after} for {symbol}")
+        logger.info(f"Checking for news after {published_after} (UTC) / {sixty_seconds_ago.strftime('%Y-%m-%dT%H:%M:%S')} (ET) for {symbol}")
         
         # Construct URL for news endpoint
         url = f"http://3.128.134.41/v2/reference/news"
         
+        # Use a longer timeframe for the API request to ensure we don't miss anything
+        # We'll filter more precisely in our code
+        five_minutes_ago_utc = (now - timedelta(minutes=5)).astimezone(pytz.UTC)
         params = {
             'ticker': symbol,
-            'published_utc.gte': published_after,
-            'limit': 10,
+            'published_utc.gte': five_minutes_ago_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            'limit': 20,  # Increased limit to catch more potential articles
             'order': 'desc',
             'sort': 'published_utc',
             'apiKey': API_KEY
@@ -60,32 +68,40 @@ async def get_recent_news(symbol):
                     data = await response.json()
                     
                     if data.get('results') and len(data['results']) > 0:
-                        # Double-check that articles are actually within the last 35 seconds
+                        # Log all articles received for debugging
+                        logger.info(f"Received {len(data['results'])} articles for {symbol}")
+                        for idx, article in enumerate(data['results']):
+                            logger.info(f"Article {idx+1} for {symbol}: {article['title']} (published: {article['published_utc']})")
+                        
+                        # Double-check that articles are actually within the last 60 seconds
                         recent_articles = []
                         
                         for article in data['results']:
                             try:
-                                # Parse the published_utc timestamp
-                                published_time = datetime.fromisoformat(article['published_utc'].replace('Z', '+00:00'))
+                                # Parse the published_utc timestamp (which is in UTC)
+                                published_time_utc = datetime.fromisoformat(article['published_utc'].replace('Z', '+00:00'))
                                 
-                                # Convert to EST for consistent comparison
-                                published_time_est = published_time.astimezone(est)
+                                # Convert to ET for consistent comparison
+                                published_time_et = published_time_utc.astimezone(et)
                                 
                                 # Calculate time difference in seconds
-                                time_diff = (query_timestamp - published_time_est).total_seconds()
+                                time_diff = (query_timestamp - published_time_et).total_seconds()
                                 
-                                # Only include if published within the last 35 seconds
-                                if time_diff <= 35 and time_diff >= 0:
+                                # Log all articles with their time differences for debugging
+                                logger.info(f"Article for {symbol} published {time_diff:.1f} seconds ago: {article['title']}")
+                                
+                                # Only include if published within the last 60 seconds
+                                if time_diff <= 60 and time_diff >= 0:
                                     recent_articles.append(article)
-                                    logger.info(f"Article for {symbol} published {time_diff:.1f} seconds ago: {article['title']}")
+                                    logger.info(f"MATCH: Article for {symbol} published {time_diff:.1f} seconds ago: {article['title']}")
                                 else:
-                                    logger.debug(f"Skipping article for {symbol} published {time_diff:.1f} seconds ago")
+                                    logger.info(f"SKIPPING: Article for {symbol} published {time_diff:.1f} seconds ago: {article['title']}")
                             except (ValueError, KeyError) as e:
                                 logger.warning(f"Error parsing article timestamp for {symbol}: {e}")
                         
                         # Only return if we have recent articles
                         if recent_articles:
-                            logger.info(f"Found {len(recent_articles)} recent news articles for {symbol} within the last 35 seconds")
+                            logger.info(f"Found {len(recent_articles)} recent news articles for {symbol} within the last 60 seconds")
                             # Create a new data structure with only the recent articles
                             filtered_data = data.copy()
                             filtered_data['results'] = recent_articles
@@ -95,7 +111,7 @@ async def get_recent_news(symbol):
                                 'query_timestamp': query_timestamp.isoformat()
                             }
                         else:
-                            logger.debug(f"No articles within the last 35 seconds for {symbol}")
+                            logger.info(f"No articles within the last 60 seconds for {symbol}")
                             return None
                     else:
                         logger.debug(f"No recent news for {symbol}")
@@ -236,9 +252,15 @@ async def main():
     """
     logger.info("Starting news checker test")
     
-    # Test a single ticker
-    test_symbol = os.getenv('SYMBOL', 'AMD')
+    # Test a specific ticker that should have news (MULN)
+    test_symbol = os.getenv('SYMBOL', 'MULN')
     logger.info(f"Checking for recent news for {test_symbol}...")
+    
+    # Print current time in both UTC and ET for reference
+    utc_now = datetime.now(pytz.UTC)
+    et_now = datetime.now(pytz.timezone('US/Eastern'))
+    logger.info(f"Current time - UTC: {utc_now.strftime('%Y-%m-%d %H:%M:%S')}, ET: {et_now.strftime('%Y-%m-%d %H:%M:%S')}")
+    
     news = await get_recent_news(test_symbol)
     
     if news:
@@ -249,16 +271,16 @@ async def main():
         
         # Calculate and display time difference for verification
         try:
-            est = pytz.timezone('US/Eastern')
+            et = pytz.timezone('US/Eastern')
             published_time = datetime.fromisoformat(news['news_data']['results'][0]['published_utc'].replace('Z', '+00:00'))
-            published_time_est = published_time.astimezone(est)
+            published_time_et = published_time.astimezone(et)
             query_time = datetime.fromisoformat(news['query_timestamp'])
-            time_diff_seconds = (query_time - published_time_est).total_seconds()
+            time_diff_seconds = (query_time - published_time_et).total_seconds()
             logger.info(f"Time difference: {time_diff_seconds:.1f} seconds")
         except Exception as e:
             logger.error(f"Error calculating time difference: {e}")
     else:
-        logger.info(f"No recent news found for {test_symbol} in the last 35 seconds")
+        logger.info(f"No recent news found for {test_symbol} in the last 60 seconds")
         
         # Get some older news to verify API is working
         logger.info(f"Checking for any recent news for {test_symbol} (last 24 hours)...")
@@ -269,7 +291,7 @@ async def main():
             
             params = {
                 'ticker': test_symbol,
-                'limit': 1,
+                'limit': 5,  # Increased to show more articles
                 'order': 'desc',
                 'sort': 'published_utc',
                 'apiKey': API_KEY
@@ -281,26 +303,28 @@ async def main():
                         data = await response.json()
                         
                         if data.get('results') and len(data['results']) > 0:
-                            article = data['results'][0]
-                            logger.info(f"Most recent article for {test_symbol}: {article['title']}")
-                            logger.info(f"Published at: {article['published_utc']}")
+                            logger.info(f"Found {len(data['results'])} articles for {test_symbol} in the last 24 hours:")
                             
-                            # Calculate how long ago it was published
-                            try:
-                                est = pytz.timezone('US/Eastern')
-                                now = datetime.now(est)
-                                published_time = datetime.fromisoformat(article['published_utc'].replace('Z', '+00:00'))
-                                published_time_est = published_time.astimezone(est)
-                                time_diff_seconds = (now - published_time_est).total_seconds()
+                            for idx, article in enumerate(data['results']):
+                                logger.info(f"Article {idx+1}: {article['title']}")
+                                logger.info(f"Published at: {article['published_utc']}")
                                 
-                                if time_diff_seconds < 60:
-                                    logger.info(f"Published {time_diff_seconds:.1f} seconds ago")
-                                elif time_diff_seconds < 3600:
-                                    logger.info(f"Published {time_diff_seconds/60:.1f} minutes ago")
-                                else:
-                                    logger.info(f"Published {time_diff_seconds/3600:.1f} hours ago")
-                            except Exception as e:
-                                logger.error(f"Error calculating time difference: {e}")
+                                # Calculate how long ago it was published
+                                try:
+                                    et = pytz.timezone('US/Eastern')
+                                    now = datetime.now(et)
+                                    published_time = datetime.fromisoformat(article['published_utc'].replace('Z', '+00:00'))
+                                    published_time_et = published_time.astimezone(et)
+                                    time_diff_seconds = (now - published_time_et).total_seconds()
+                                    
+                                    if time_diff_seconds < 60:
+                                        logger.info(f"Published {time_diff_seconds:.1f} seconds ago")
+                                    elif time_diff_seconds < 3600:
+                                        logger.info(f"Published {time_diff_seconds/60:.1f} minutes ago")
+                                    else:
+                                        logger.info(f"Published {time_diff_seconds/3600:.1f} hours ago")
+                                except Exception as e:
+                                    logger.error(f"Error calculating time difference: {e}")
                         else:
                             logger.info(f"No news articles found for {test_symbol} in the last 24 hours")
                     else:
