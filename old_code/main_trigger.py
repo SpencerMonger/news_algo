@@ -95,64 +95,30 @@ class NewsMonitor:
                 'Upgrade-Insecure-Requests': '1',
             }
             
-            # Get our stock list
-            stocks_df = self.screener.get_stock_list()
-            if stocks_df is None:
-                return None
-                
-            # Get comma-separated list of tickers
-            tickers = ','.join(stocks_df['Ticker'].tolist())
+            URL = "https://elite.finviz.com/news_export.ashx?v=111&f=geo_usa,sh_float_u20&ft=4&auth=e1fdfc26-3d70-4153-9f54-9f44f5ddd633"
             
-            # Construct URL with screener filters
-            url = (
-                "https://elite.finviz.com/news_export.ashx?"
-                "f=geo_usa,sh_float_u20&"  # Use screener filters directly
-                "v=1&"                      # News view
-                "auth=e1fdfc26-3d70-4153-9f54-9f44f5ddd633"
-            )
+            response = requests.get(URL, headers=headers)
             
-            # Use existing URL but add headers
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
+            # Read CSV without category filter
+            news_df = pd.read_csv(pd.io.common.StringIO(response.content.decode('utf-8')))
             
-            # Add error handling for CSV parsing
-            try:
-                news_df = pd.read_csv(
-                    pd.io.common.StringIO(response.content.decode('utf-8')),
-                    sep=',',
-                    on_bad_lines='skip'
-                )
-                print("\nDEBUG INFO:")
-                print("Available columns:", news_df.columns.tolist())  # Debug column names
-                print("\nFirst 5 rows of data:")
-                print(news_df.head())  # Show first 5 rows
-                print("\nData types of columns:")
-                print(news_df.dtypes)
-                
-                # Rename columns if needed (Finviz might use different names)
-                column_mapping = {
-                    'Symbol': 'Ticker',  # Common alternative name
-                    'No.': 'Ticker'      # Another possibility
-                }
-                news_df = news_df.rename(columns=column_mapping)
-                
-                # Update cache
-                self._cached_news = news_df
-                self._last_news_update = datetime.now()
-                
-                return news_df
-                
-            except Exception as e:
-                print(f"\nError details:")
-                print(f"Error type: {type(e).__name__}")
-                print(f"Error message: {str(e)}")
-                if news_df is not None:
-                    print("\nDataFrame info:")
-                    print(news_df.info())
-                return None
+            print("\nDEBUG INFO:")
+            print("All available columns:", news_df.columns.tolist())
+            print("\nUnique categories:", news_df['Category'].unique())
+            print(f"\nFound {len(news_df)} total news items")
+            print("\nFirst 5 news items:")
+            print(news_df.head())
+            
+            # Update cache
+            self._cached_news = news_df
+            self._last_news_update = datetime.now()
+            
+            return news_df
             
         except Exception as e:
-            print(f"Error fetching news data: {str(e)}")
+            print(f"Error processing data: {str(e)}")
+            print("Raw response content:")
+            print(response.content[:500])
             return None
             
     def _is_cache_valid(self) -> bool:

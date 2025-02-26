@@ -17,14 +17,14 @@ URL = "https://elite.finviz.com/news_export.ashx?v=111&f=geo_usa,sh_float_u20&ft
 response = requests.get(URL, headers=headers)
 
 try:
-    # Read CSV and filter for 'stock' category
+    # Read CSV and filter for 'market' category
     df = pd.read_csv(pd.io.common.StringIO(response.content.decode('utf-8')))
-    stock_news_df = df[df['Category'] == 'stock']
+    stock_news_df = df[df['Category'] == 'market']
     
     print("\nDEBUG INFO:")
     print("All available columns:", df.columns.tolist())
     print("\nUnique categories:", df['Category'].unique())
-    print(f"\nFound {len(stock_news_df)} stock-related news items out of {len(df)} total")
+    print(f"\nFound {len(stock_news_df)} market-related news items out of {len(df)} total")
     print("\nFirst 5 stock news items:")
     print(stock_news_df.head())
     
