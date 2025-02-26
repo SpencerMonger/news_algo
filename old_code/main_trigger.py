@@ -95,6 +95,7 @@ class NewsMonitor:
                 'Upgrade-Insecure-Requests': '1',
             }
             
+            # Modified URL to include category=1 for Stock News
             URL = "https://elite.finviz.com/news_export.ashx?v=111&f=geo_usa,sh_float_u20&ft=4&auth=e1fdfc26-3d70-4153-9f54-9f44f5ddd633"
             
             response = requests.get(URL, headers=headers)
@@ -108,6 +109,52 @@ class NewsMonitor:
             print(f"\nFound {len(news_df)} total news items")
             print("\nFirst 5 news items:")
             print(news_df.head())
+            
+            # Instead of filtering for 'Stock News', we'll look for stock tickers in the titles
+            # This is more reliable since the API doesn't seem to have a 'Stock News' category
+            
+            # Extract potential stock tickers from titles (words in all caps, 1-5 letters)
+            def extract_tickers(title):
+                import re
+                # Find all uppercase words 1-5 letters long that could be tickers
+                potential_tickers = re.findall(r'\b[A-Z]{1,5}\b', title)
+                return potential_tickers
+            
+            # Add potential tickers column
+            news_df['potential_tickers'] = news_df['Title'].apply(extract_tickers)
+            
+            # Filter to only include news with potential stock tickers
+            news_with_tickers = news_df[news_df['potential_tickers'].apply(len) > 0]
+            print(f"\nAfter filtering for news with potential tickers: {len(news_with_tickers)} news items")
+            
+            # Get our screener tickers
+            screener_tickers = self.screener.get_tickers()
+            
+            # Filter to only include news with tickers from our screener
+            if screener_tickers:
+                def has_screener_ticker(ticker_list):
+                    return any(ticker in screener_tickers for ticker in ticker_list)
+                
+                news_with_screener_tickers = news_with_tickers[news_with_tickers['potential_tickers'].apply(has_screener_ticker)]
+                print(f"\nAfter filtering for news with screener tickers: {len(news_with_screener_tickers)} news items")
+                
+                # Use this filtered dataframe
+                news_df = news_with_screener_tickers
+            else:
+                # If no screener tickers available, use all news with potential tickers
+                news_df = news_with_tickers
+            
+            # Add ticker column for easier processing
+            def get_first_matching_ticker(ticker_list):
+                if not screener_tickers:
+                    return ticker_list[0] if ticker_list else None
+                
+                for ticker in ticker_list:
+                    if ticker in screener_tickers:
+                        return ticker
+                return ticker_list[0] if ticker_list else None
+            
+            news_df['Ticker'] = news_df['potential_tickers'].apply(get_first_matching_ticker)
             
             # Update cache
             self._cached_news = news_df
