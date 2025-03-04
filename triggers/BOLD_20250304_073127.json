@@ -1,0 +1,20 @@
+{
+  "symbol": "BOLD",
+  "timestamp": "2025-03-04T07:31:27.726887",
+  "news": {
+    "title": "Wang & Lee pays Crypto Dividends to Destroy Dishonest Naked Short Sellers and Protect Shareholders",
+    "published_utc": "Tue, 04 Mar 2025 14:30 GMT",
+    "article_url": "https://www.globenewswire.com/news-release/2025/03/04/3036652/0/en/Wang-Lee-pays-Crypto-Dividends-to-Destroy-Dishonest-Naked-Short-Sellers-and-Protect-Shareholders.html",
+    "news_detected_time": "2025-03-04 07:31:25"
+  },
+  "price_data": {
+    "latest_price": 1.79,
+    "latest_trade_time": 1741098601821485182,
+    "bar_high": 1.74,
+    "bar_low": 1.74,
+    "bar_open": 1.74,
+    "bar_close": 1.74,
+    "bar_volume": 411,
+    "price_match_time": "2025-03-04T07:31:27.726887"
+  }
+}

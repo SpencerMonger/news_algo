@@ -1,0 +1,20 @@
+{
+  "symbol": "BOLD",
+  "timestamp": "2025-03-04T08:20:16.004955",
+  "news": {
+    "title": "G-SHOCK Honors the DW6900's 30th Anniversary with a Bold New Collection",
+    "published_utc": "Tue, 4 Mar 2025 15:19:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/g-shock-honors-the-dw6900s-30th-anniversary-with-a-bold-new-collection-302391730.html",
+    "news_detected_time": "2025-03-04 08:20:15"
+  },
+  "price_data": {
+    "latest_price": 1.75,
+    "latest_trade_time": 1741101506020913964,
+    "bar_high": 1.74,
+    "bar_low": 1.74,
+    "bar_open": 1.74,
+    "bar_close": 1.74,
+    "bar_volume": 259,
+    "price_match_time": "2025-03-04T08:20:16.004955"
+  }
+}

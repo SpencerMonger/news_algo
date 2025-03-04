@@ -1,0 +1,20 @@
+{
+  "symbol": "GNPX",
+  "timestamp": "2025-03-04T06:15:43.600485",
+  "news": {
+    "title": "Genprex to Participate at BIO Europe Spring 2025",
+    "published_utc": "Tue, 4 Mar 2025 13:15:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/genprex-to-participate-at-bio-europe-spring-2025-302391082.html",
+    "news_detected_time": "2025-03-04 06:15:43"
+  },
+  "price_data": {
+    "latest_price": 0.35,
+    "latest_trade_time": 1741094102519146125,
+    "bar_high": 0.3492,
+    "bar_low": 0.3492,
+    "bar_open": 0.3492,
+    "bar_close": 0.3492,
+    "bar_volume": 498,
+    "price_match_time": "2025-03-04T06:15:43.600485"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "symbol": "RILY",
+  "timestamp": "2025-02-27T05:01:35.694137",
+  "news": {
+    "title": "B. Riley Financial Announces $160 Million Debt Financing Provided by Oaktree",
+    "published_utc": "Thu, 27 Feb 2025 12:00:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/b-riley-financial-announces-160-million-debt-financing-provided-by-oaktree-302387268.html"
+  },
+  "price_data": {
+    "latest_price": 6.39,
+    "latest_trade_time": 1740657694130119872,
+    "bar_high": 6.04,
+    "bar_low": 5.76,
+    "bar_open": 5.76,
+    "bar_close": 6.04,
+    "bar_volume": 8444
+  }
+}

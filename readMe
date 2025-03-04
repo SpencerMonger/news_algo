@@ -16,3 +16,9 @@ stocks_df = screener.get_stock_list(force_refresh=False)
 
 ENV
 .\news-env\Scripts\Activate
+
+
+
+Webscraping tool:
+
+https://github.com/unclecode/crawl4ai

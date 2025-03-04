@@ -1,0 +1,20 @@
+{
+  "symbol": "GROW",
+  "timestamp": "2025-03-04T07:07:13.923378",
+  "news": {
+    "title": "Sustainable Sicilian Boxed Wine Brand, Alileo, is Now a Certified B Corporation\u2122",
+    "published_utc": "Tue, 4 Mar 2025 14:06:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/sustainable-sicilian-boxed-wine-brand-alileo-is-now-a-certified-b-corporation-302387567.html",
+    "news_detected_time": "2025-03-04 07:07:12"
+  },
+  "price_data": {
+    "latest_price": 2.46,
+    "latest_trade_time": 1741097156059779607,
+    "bar_high": 2.4327,
+    "bar_low": 2.37,
+    "bar_open": 2.42,
+    "bar_close": 2.38,
+    "bar_volume": 67819,
+    "price_match_time": "2025-03-04T07:07:13.923378"
+  }
+}

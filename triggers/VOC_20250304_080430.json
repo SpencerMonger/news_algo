@@ -1,0 +1,20 @@
+{
+  "symbol": "VOC",
+  "timestamp": "2025-03-04T08:04:30.031812",
+  "news": {
+    "title": "Cetera Welcomes Highly Regarded Advisor to Cetera Wealth Partners",
+    "published_utc": "Tue, 4 Mar 2025 15:03:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/cetera-welcomes-highly-regarded-advisor-to-cetera-wealth-partners-302390783.html",
+    "news_detected_time": "2025-03-04 08:04:29"
+  },
+  "price_data": {
+    "latest_price": 2.93,
+    "latest_trade_time": 1741100663668175616,
+    "bar_high": 2.9299,
+    "bar_low": 2.9299,
+    "bar_open": 2.9299,
+    "bar_close": 2.9299,
+    "bar_volume": 275,
+    "price_match_time": "2025-03-04T08:04:30.031812"
+  }
+}
