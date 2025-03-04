@@ -1,0 +1,20 @@
+{
+  "symbol": "GAME",
+  "timestamp": "2025-03-04T08:01:21.653146",
+  "news": {
+    "title": "EverBank Announces Sweepstakes to Send Two Lucky Football Fans to the 2025 Draft in Green Bay",
+    "published_utc": "Tue, 4 Mar 2025 15:00:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/everbank-announces-sweepstakes-to-send-two-lucky-football-fans-to-the-2025-draft-in-green-bay-302391257.html",
+    "news_detected_time": "2025-03-04 08:01:20"
+  },
+  "price_data": {
+    "latest_price": 0.8105,
+    "latest_trade_time": 1741100429189903403,
+    "bar_high": 0.81,
+    "bar_low": 0.81,
+    "bar_open": 0.81,
+    "bar_close": 0.81,
+    "bar_volume": 347,
+    "price_match_time": "2025-03-04T08:01:21.653146"
+  }
+}

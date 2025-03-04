@@ -1,0 +1,18 @@
+{
+  "symbol": "IHD",
+  "timestamp": "2025-02-28T07:42:10.913365",
+  "news": {
+    "title": "X-Bow Opens New Office in Indian Head, MD to Support National Defense Priorities",
+    "published_utc": "Fri, 28 Feb 2025 14:41:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/x-bow-opens-new-office-in-indian-head-md-to-support-national-defense-priorities-302388664.html"
+  },
+  "price_data": {
+    "latest_price": 5.38,
+    "latest_trade_time": 1740753706136011776,
+    "bar_high": 5.3765,
+    "bar_low": 5.345,
+    "bar_open": 5.3765,
+    "bar_close": 5.345,
+    "bar_volume": 800
+  }
+}

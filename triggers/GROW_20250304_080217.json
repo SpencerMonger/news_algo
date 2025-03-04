@@ -1,0 +1,20 @@
+{
+  "symbol": "GROW",
+  "timestamp": "2025-03-04T08:02:17.901616",
+  "news": {
+    "title": "Digital Denture Market is expected to generate a revenue of USD 2.82 Billion by 2032, Globally, at 8.8% CAGR: Verified Market Research\u00ae",
+    "published_utc": "Tue, 4 Mar 2025 15:01:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/digital-denture-market-is-expected-to-generate-a-revenue-of-usd-2-82-billion-by-2032--globally-at-8-8-cagr-verified-market-research-302391441.html",
+    "news_detected_time": "2025-03-04 08:02:15"
+  },
+  "price_data": {
+    "latest_price": 2.3899,
+    "latest_trade_time": 1741100524892871949,
+    "bar_high": 2.3888,
+    "bar_low": 2.3888,
+    "bar_open": 2.3888,
+    "bar_close": 2.3888,
+    "bar_volume": 202,
+    "price_match_time": "2025-03-04T08:02:17.901616"
+  }
+}

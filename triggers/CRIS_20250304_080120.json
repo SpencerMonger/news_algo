@@ -1,0 +1,20 @@
+{
+  "symbol": "CRIS",
+  "timestamp": "2025-03-04T08:01:20.843627",
+  "news": {
+    "title": "MV Transportation's Chief Information Officer, Cris Kibbee, Wins 2025 Dallas CIO ORBIE Award",
+    "published_utc": "Tue, 4 Mar 2025 15:00:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/mv-transportations-chief-information-officer-cris-kibbee-wins-2025-dallas-cio-orbie-award-302391428.html",
+    "news_detected_time": "2025-03-04 08:01:00"
+  },
+  "price_data": {
+    "latest_price": 2.91,
+    "latest_trade_time": 1741100459765777777,
+    "bar_high": 2.87,
+    "bar_low": 2.87,
+    "bar_open": 2.87,
+    "bar_close": 2.87,
+    "bar_volume": 828,
+    "price_match_time": "2025-03-04T08:01:20.843627"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "symbol": "GROW",
+  "timestamp": "2025-03-04T08:02:15.693043",
+  "news": {
+    "title": "Cloud ERP Market worth $172.74 billion by 2029- Exclusive Report by MarketsandMarkets\u2122",
+    "published_utc": "Tue, 4 Mar 2025 15:01:00 +0000",
+    "article_url": "https://www.prnewswire.com/news-releases/cloud-erp-market-worth-172-74-billion-by-2029--exclusive-report-by-marketsandmarkets-302391044.html",
+    "news_detected_time": "2025-03-04 08:02:13"
+  },
+  "price_data": {
+    "latest_price": 2.3899,
+    "latest_trade_time": 1741100524892871949,
+    "bar_high": 2.3888,
+    "bar_low": 2.3888,
+    "bar_open": 2.3888,
+    "bar_close": 2.3888,
+    "bar_volume": 202,
+    "price_match_time": "2025-03-04T08:02:15.693043"
+  }
+}
