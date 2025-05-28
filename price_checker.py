@@ -1,38 +1,42 @@
+#!/usr/bin/env python3
+"""
+Continuous Price Monitor
+Monitors breaking news tickers and tracks price changes in real-time
+"""
+
 import logging
 import aiohttp
 import os
 import asyncio
-import json
-import pandas as pd
+import time
 from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
-import urllib.parse
-import time
 from typing import List, Dict, Any, Optional
-from clickhouse_setup import ClickHouseManager
+from clickhouse_setup import setup_clickhouse_database
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class PolygonPriceChecker:
-    def __init__(self, clickhouse_manager: ClickHouseManager):
-        self.ch_manager = clickhouse_manager
-        self.polygon_api_key = os.getenv('POLYGON_API_KEY', '')
+class ContinuousPriceMonitor:
+    def __init__(self):
+        self.ch_manager = None
         self.session = None
+        self.polygon_api_key = os.getenv('POLYGON_API_KEY', '')
+        self.monitored_tickers = set()
         
         if not self.polygon_api_key:
             logger.error("POLYGON_API_KEY environment variable not set")
             raise ValueError("Polygon API key is required")
         
-        # Use PROXY_URL if available, otherwise use official Polygon API
+        # Use PROXY_URL if available
         proxy_url = os.getenv('PROXY_URL', '').strip()
         if proxy_url:
             self.base_url = proxy_url.rstrip('/')
@@ -41,323 +45,316 @@ class PolygonPriceChecker:
             self.base_url = "https://api.polygon.io"
             logger.info("Using official Polygon API")
         
+        # Stats
+        self.stats = {
+            'tickers_monitored': 0,
+            'price_checks': 0,
+            'alerts_triggered': 0,
+            'start_time': time.time()
+        }
+
     async def initialize(self):
-        """Initialize the price checker"""
+        """Initialize the monitor"""
+        self.ch_manager = setup_clickhouse_database()
         timeout = aiohttp.ClientTimeout(total=30)
         self.session = aiohttp.ClientSession(timeout=timeout)
-        logger.info("Polygon price checker initialized")
+        logger.info("Continuous price monitor initialized")
 
-    async def get_previous_day_data(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Get previous day's daily bar data for baseline comparison"""
+    async def scan_for_new_tickers(self):
+        """Scan breaking_news for new tickers to monitor"""
         try:
-            # Get yesterday's date for the daily bar
-            today = datetime.now(pytz.UTC)
-            yesterday = today - timedelta(days=1)
-            
-            # Format date for Polygon API
-            yesterday_date = yesterday.strftime('%Y-%m-%d')
-            
-            url = f"{self.base_url}/v2/aggs/ticker/{ticker}/range/1/day/{yesterday_date}/{yesterday_date}"
-            params = {
-                'apikey': self.polygon_api_key,
-                'adjusted': 'true'
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if data.get('resultsCount', 0) > 0 and 'results' in data:
-                        result = data['results'][0]
-                        parsed_data = {
-                            'previous_close': result.get('c', 0.0),
-                            'previous_high': result.get('h', 0.0),
-                            'previous_low': result.get('l', 0.0),
-                            'previous_open': result.get('o', 0.0),
-                            'previous_volume': result.get('v', 0),
-                            'previous_date': yesterday_date,
-                            'timestamp': datetime.fromtimestamp(result.get('t', 0) / 1000, tz=pytz.UTC)
-                        }
-                        logger.info(f"Previous day data for {ticker}: Close=${parsed_data['previous_close']}, Volume={parsed_data['previous_volume']:,}")
-                        return parsed_data
-                    else:
-                        logger.warning(f"No previous day data available for {ticker}")
-                        return None
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Failed to get previous day data for {ticker}: HTTP {response.status} - {error_text}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Error getting previous day data for {ticker}: {e}")
-            return None
-
-    async def get_current_price(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Get current/latest price for ticker"""
-        try:
-            # Use the last trade endpoint for most recent price
-            url = f"{self.base_url}/v2/last/trade/{ticker}"
-            params = {
-                'apikey': self.polygon_api_key
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if 'results' in data and data['results']:
-                        result = data['results']
-                        parsed_data = {
-                            'price': result.get('p', 0.0),
-                            'timestamp': datetime.fromtimestamp(result.get('t', 0) / 1000000000, tz=pytz.UTC),  # nanoseconds to seconds
-                            'size': result.get('s', 0)
-                        }
-                        return parsed_data
-                    else:
-                        logger.warning(f"No current price data available for {ticker}")
-                        return None
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Failed to get current price for {ticker}: HTTP {response.status} - {error_text}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Error getting current price for {ticker}: {e}")
-            return None
-
-    async def get_current_day_volume(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Get current day's volume data for volume spike detection"""
-        try:
-            # Get today's date for the daily bar (partial day)
-            today = datetime.now(pytz.UTC)
-            today_date = today.strftime('%Y-%m-%d')
-            
-            url = f"{self.base_url}/v2/aggs/ticker/{ticker}/range/1/day/{today_date}/{today_date}"
-            params = {
-                'apikey': self.polygon_api_key,
-                'adjusted': 'true'
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if data.get('resultsCount', 0) > 0 and 'results' in data:
-                        result = data['results'][0]
-                        parsed_data = {
-                            'current_volume': result.get('v', 0),
-                            'current_high': result.get('h', 0.0),
-                            'current_low': result.get('l', 0.0),
-                            'current_open': result.get('o', 0.0),
-                            'date': today_date,
-                            'timestamp': datetime.fromtimestamp(result.get('t', 0) / 1000, tz=pytz.UTC)
-                        }
-                        return parsed_data
-                    else:
-                        logger.warning(f"No current day volume data available for {ticker}")
-                        return None
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Failed to get current day volume for {ticker}: HTTP {response.status}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Error getting current day volume for {ticker}: {e}")
-            return None
-
-    async def check_price_move(self, ticker: str, news_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Check if current price is above previous day's close with volume spike"""
-        start_time = time.time()
-        
-        try:
-            # Get current price, previous day data, and current day volume concurrently
-            current_price_task = self.get_current_price(ticker)
-            previous_day_task = self.get_previous_day_data(ticker)
-            current_volume_task = self.get_current_day_volume(ticker)
-            
-            current_price_data, previous_day_data, current_volume_data = await asyncio.gather(
-                current_price_task, previous_day_task, current_volume_task, return_exceptions=True
-            )
-            
-            # Check for errors
-            if isinstance(current_price_data, Exception):
-                logger.error(f"Error getting current price for {ticker}: {current_price_data}")
-                return None
-            if isinstance(previous_day_data, Exception):
-                logger.error(f"Error getting previous day data for {ticker}: {previous_day_data}")
-                return None
-            if isinstance(current_volume_data, Exception):
-                logger.debug(f"Could not get current volume for {ticker}: {current_volume_data}")
-                current_volume_data = None
-                
-            if not current_price_data or not previous_day_data:
-                return None
-            
-            current_price = current_price_data['price']
-            previous_close = previous_day_data['previous_close']
-            previous_volume = previous_day_data['previous_volume']
-            
-            # Calculate price change percentage
-            price_change_pct = ((current_price - previous_close) / previous_close) * 100
-            
-            # Check volume spike if we have current volume data
-            volume_spike_detected = False
-            volume_change_pct = 0.0
-            current_volume = 0
-            
-            if current_volume_data:
-                current_volume = current_volume_data['current_volume']
-                if previous_volume > 0:
-                    volume_change_pct = ((current_volume - previous_volume) / previous_volume) * 100
-                    # Require at least 50% volume increase for spike detection
-                    volume_spike_detected = volume_change_pct >= 50.0
-            
-            # Check if current price is above previous day's close by meaningful amount
-            min_price_increase_pct = 2.0  # Require at least 2% price increase
-            
-            # Trigger if we have both price move AND volume spike (or if volume data unavailable)
-            price_trigger = price_change_pct >= min_price_increase_pct
-            volume_trigger = volume_spike_detected or current_volume_data is None  # Allow if no volume data
-            
-            if price_trigger and volume_trigger:
-                # Calculate timing metrics
-                price_check_latency_ms = int((time.time() - start_time) * 1000)
-                news_to_price_check_delay = datetime.now(pytz.UTC) - news_data['detected_at']
-                news_to_price_check_delay_ms = int(news_to_price_check_delay.total_seconds() * 1000)
-                
-                move_data = {
-                    'timestamp': datetime.now(),
-                    'ticker': ticker,
-                    'news_headline': news_data['headline'],
-                    'news_published_utc': news_data['published_utc'],
-                    'news_article_url': news_data['article_url'],
-                    'current_price': current_price,
-                    'current_price_timestamp': current_price_data['timestamp'],
-                    'previous_close': previous_day_data['previous_close'],
-                    'previous_high': previous_day_data['previous_high'],
-                    'previous_low': previous_day_data['previous_low'],
-                    'previous_open': previous_day_data['previous_open'],
-                    'previous_volume': previous_day_data['previous_volume'],
-                    'current_volume': current_volume,
-                    'previous_date': previous_day_data['previous_date'],
-                    'price_change_percentage': price_change_pct,
-                    'volume_change_percentage': volume_change_pct,
-                    'volume_spike_detected': 1 if volume_spike_detected else 0,
-                    'price_above_previous_close': 1,
-                    'price_check_latency_ms': price_check_latency_ms,
-                    'news_to_price_check_delay_ms': news_to_price_check_delay_ms
-                }
-                
-                volume_info = f", Vol: {current_volume:,} vs {previous_volume:,} ({volume_change_pct:+.1f}%)" if current_volume_data else ", Vol: N/A"
-                logger.info(f"PRICE MOVE DETECTED: {ticker} - Current: ${current_price:.4f} vs Previous Close: ${previous_close:.4f} (+{price_change_pct:.2f}%){volume_info}")
-                return move_data
-            else:
-                reason = []
-                if not price_trigger:
-                    reason.append(f"price {price_change_pct:+.2f}% < {min_price_increase_pct}%")
-                if not volume_trigger and current_volume_data:
-                    reason.append(f"volume {volume_change_pct:+.1f}% < 50%")
-                
-                logger.debug(f"No trigger for {ticker}: {', '.join(reason)}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error checking price move for {ticker}: {e}")
-            return None
-
-    async def get_recent_news_tickers(self, minutes_back: int = 5) -> List[Dict[str, Any]]:
-        """Get unique tickers from recent breaking news"""
-        try:
-            query = f"""
+            # Get tickers from recent news (last 2 hours)
+            query = """
             SELECT DISTINCT 
                 ticker,
-                headline,
-                published_utc,
-                article_url,
-                detected_at
+                argMax(headline, timestamp) as latest_headline,
+                argMax(article_url, timestamp) as latest_url
             FROM News.breaking_news 
-            WHERE detected_at >= now() - INTERVAL {minutes_back} MINUTE
-            ORDER BY detected_at DESC
+            WHERE timestamp >= now() - INTERVAL 2 HOUR
+            AND ticker != ''
+            GROUP BY ticker
             """
             
             result = self.ch_manager.client.query(query)
             
-            news_items = []
+            new_tickers = 0
             for row in result.result_rows:
-                news_items.append({
-                    'ticker': row[0],
-                    'headline': row[1],
-                    'published_utc': row[2],
-                    'article_url': row[3],
-                    'detected_at': row[4]
-                })
-            
-            logger.info(f"Found {len(news_items)} recent news items for price checking")
-            return news_items
-            
-        except Exception as e:
-            logger.error(f"Error getting recent news tickers: {e}")
-            return []
-
-    async def process_recent_news(self, minutes_back: int = 5) -> int:
-        """Process recent news items and check for price moves"""
-        try:
-            # Get recent news tickers
-            news_items = await self.get_recent_news_tickers(minutes_back)
-            
-            if not news_items:
-                return 0
-            
-            # Check price moves for each ticker
-            price_moves = []
-            for news_item in news_items:
-                move_data = await self.check_price_move(news_item['ticker'], news_item)
-                if move_data:
-                    price_moves.append(move_data)
+                ticker, headline, url = row
+                
+                if ticker not in self.monitored_tickers:
+                    # Add to monitored_tickers table
+                    values = [(ticker, headline, url)]
                     
-                # Small delay to avoid hitting rate limits
-                await asyncio.sleep(0.1)
+                    self.ch_manager.client.insert(
+                        'News.monitored_tickers',
+                        values,
+                        column_names=['ticker', 'news_headline', 'news_url']
+                    )
+                    
+                    self.monitored_tickers.add(ticker)
+                    new_tickers += 1
+                    logger.info(f"Added {ticker} to monitoring list")
             
-            # Insert price moves into database
-            if price_moves:
-                inserted_count = self.ch_manager.insert_price_moves(price_moves)
-                logger.info(f"Inserted {inserted_count} price moves into database")
-                return inserted_count
-            else:
-                logger.info("No price moves detected for recent news")
-                return 0
+            if new_tickers > 0:
+                self.stats['tickers_monitored'] = len(self.monitored_tickers)
+                logger.info(f"Added {new_tickers} new tickers. Total monitoring: {len(self.monitored_tickers)}")
                 
         except Exception as e:
-            logger.error(f"Error processing recent news: {e}")
-            return 0
+            logger.error(f"Error scanning for new tickers: {e}")
+
+    async def get_current_price(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Get current price for ticker"""
+        try:
+            # Use the real-time quote endpoint instead of last trade
+            url = f"{self.base_url}/v2/last/nbbo/{ticker}"
+            params = {'apikey': self.polygon_api_key}
+            
+            # Add timeout to prevent hanging (using wait_for for compatibility)
+            try:
+                async with self.session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        if 'results' in data and data['results']:
+                            result = data['results']
+                            # Use bid/ask midpoint for current price
+                            bid = result.get('P', 0.0)  # bid price
+                            ask = result.get('p', 0.0)  # ask price
+                            
+                            if bid > 0 and ask > 0:
+                                current_price = (bid + ask) / 2
+                                return {
+                                    'price': current_price,
+                                    'bid': bid,
+                                    'ask': ask,
+                                    'timestamp': datetime.now(pytz.UTC)
+                                }
+                    else:
+                        logger.debug(f"API returned status {response.status} for {ticker}")
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout getting price for {ticker}")
+                    
+        except Exception as e:
+            logger.debug(f"Error getting price for {ticker}: {e}")
+        
+        return None
+
+    async def track_prices(self):
+        """Get current prices for all monitored tickers and store them"""
+        if not self.monitored_tickers:
+            return
+        
+        price_data = []
+        successful_prices = 0
+        
+        for ticker in self.monitored_tickers:
+            price_info = await self.get_current_price(ticker)
+            
+            if price_info:
+                price_data.append((
+                    datetime.now(),
+                    ticker,
+                    price_info['price'],
+                    0,  # Set volume to 0 since we're using quotes not trades
+                    'polygon'
+                ))
+                successful_prices += 1
+                
+            await asyncio.sleep(0.1)  # Rate limiting
+        
+        # Batch insert price data
+        if price_data:
+            self.ch_manager.client.insert(
+                'News.price_tracking',
+                price_data,
+                column_names=['timestamp', 'ticker', 'price', 'volume', 'source']
+            )
+            
+            self.stats['price_checks'] += len(price_data)
+            logger.info(f"Tracked {successful_prices}/{len(self.monitored_tickers)} ticker prices")
+        else:
+            logger.warning("No price data retrieved for any tickers")
+
+    async def check_price_alerts(self):
+        """Check for 2%+ price increases over last 5 minutes"""
+        try:
+            # Query for price changes over 5 minutes
+            query = """
+            SELECT 
+                ticker,
+                current_price,
+                price_5min_ago,
+                ((current_price - price_5min_ago) / price_5min_ago) * 100 as change_pct
+            FROM (
+                SELECT 
+                    ticker,
+                    argMax(price, timestamp) as current_price,
+                    argMax(price, timestamp) FILTER (WHERE timestamp <= now() - INTERVAL 5 MINUTE) as price_5min_ago
+                FROM News.price_tracking 
+                WHERE timestamp >= now() - INTERVAL 6 MINUTE
+                AND ticker IN (SELECT ticker FROM News.monitored_tickers WHERE active = 1)
+                GROUP BY ticker
+                HAVING price_5min_ago > 0
+            )
+            WHERE change_pct >= 2.0
+            ORDER BY change_pct DESC
+            """
+            
+            result = self.ch_manager.client.query(query)
+            
+            if result.result_rows:
+                # Prepare batch insert for news_alert table
+                alert_data = []
+                
+                for row in result.result_rows:
+                    ticker, current_price, price_5min_ago, change_pct = row
+                    
+                    logger.info(f"🚨 PRICE ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from 5min ago)")
+                    
+                    # Add to alert data for batch insert
+                    alert_data.append((ticker, datetime.now(), 1))
+                    
+                    # Log to price_move table
+                    await self.log_price_alert(ticker, current_price, price_5min_ago, change_pct)
+                    
+                    self.stats['alerts_triggered'] += 1
+                
+                # Batch insert all alerts
+                if alert_data:
+                    self.ch_manager.client.insert(
+                        'News.news_alert',
+                        alert_data,
+                        column_names=['ticker', 'timestamp', 'alert']
+                    )
+                    logger.info(f"Inserted {len(alert_data)} alerts into news_alert table")
+                
+        except Exception as e:
+            logger.error(f"Error checking price alerts: {e}")
+
+    async def log_price_alert(self, ticker: str, current_price: float, prev_price: float, change_pct: float):
+        """Log price alert to database"""
+        try:
+            # Get latest news for this ticker
+            news_query = """
+            SELECT headline, article_url, published_utc
+            FROM News.breaking_news 
+            WHERE ticker = %s
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """
+            
+            news_result = self.ch_manager.client.query(news_query, parameters=[ticker])
+            
+            if news_result.result_rows:
+                headline, url, published_utc = news_result.result_rows[0]
+            else:
+                headline, url, published_utc = "No recent news", "", datetime.now()
+            
+            # Insert price move
+            values = [(
+                ticker,
+                headline,
+                published_utc,
+                url,
+                current_price,
+                prev_price,
+                change_pct
+            )]
+            
+            self.ch_manager.client.insert(
+                'News.price_move',
+                values,
+                column_names=['ticker', 'headline', 'published_utc', 'article_url', 'latest_price', 'previous_close', 'price_change_percentage']
+            )
+            
+        except Exception as e:
+            logger.error(f"Error logging price alert: {e}")
+
+    async def load_existing_monitored_tickers(self):
+        """Load existing monitored tickers from database"""
+        try:
+            logger.debug("Querying monitored_tickers table...")
+            query = "SELECT ticker FROM News.monitored_tickers WHERE active = 1"
+            result = self.ch_manager.client.query(query)
+            
+            logger.debug(f"Query returned {len(result.result_rows)} rows")
+            for row in result.result_rows:
+                self.monitored_tickers.add(row[0])
+            
+            logger.info(f"Loaded {len(self.monitored_tickers)} existing monitored tickers")
+            logger.debug("Finished loading monitored tickers")
+            
+        except Exception as e:
+            logger.error(f"Error loading monitored tickers: {e}")
+            raise  # Re-raise to see if this is causing the hang
+
+    async def report_stats(self):
+        """Report monitoring statistics"""
+        runtime = time.time() - self.stats['start_time']
+        
+        logger.info(f"📊 MONITOR STATS:")
+        logger.info(f"   Runtime: {runtime/60:.1f} minutes")
+        logger.info(f"   Tickers Monitored: {self.stats['tickers_monitored']}")
+        logger.info(f"   Price Checks: {self.stats['price_checks']}")
+        logger.info(f"   Alerts Triggered: {self.stats['alerts_triggered']}")
+
+    async def monitoring_loop(self):
+        """Main monitoring loop"""
+        logger.info("Starting continuous price monitoring...")
+        
+        # Load existing monitored tickers
+        await self.load_existing_monitored_tickers()
+        
+        cycle = 0
+        
+        while True:
+            try:
+                cycle += 1
+                
+                # Check for new tickers every 10 seconds (every 2 cycles)
+                if cycle % 2 == 0:
+                    await self.scan_for_new_tickers()
+                    logger.info(f"Cycle {cycle}: Scanned for new tickers, monitoring {len(self.monitored_tickers)} total")
+                
+                # Track prices every 5 seconds
+                await self.track_prices()
+                await self.check_price_alerts()
+                
+                # Report stats every 2 minutes (24 cycles)
+                if cycle % 24 == 0:
+                    await self.report_stats()
+                
+                await asyncio.sleep(5)
+                
+            except Exception as e:
+                logger.error(f"Error in monitoring loop: {e}")
+                await asyncio.sleep(5)
 
     async def cleanup(self):
         """Clean up resources"""
         if self.session:
             await self.session.close()
-            logger.info("Price checker session closed")
+        if self.ch_manager:
+            self.ch_manager.close()
+        logger.info("Price monitor cleanup completed")
+
+    async def start(self):
+        """Start the monitor"""
+        try:
+            await self.initialize()
+            await self.monitoring_loop()
+        except KeyboardInterrupt:
+            logger.info("Price monitor stopped by user")
+        finally:
+            await self.cleanup()
 
 async def main():
-    """Test the price checker"""
-    # Setup ClickHouse
-    from clickhouse_setup import setup_clickhouse_database
-    ch_manager = setup_clickhouse_database()
+    """Main function"""
+    logger.info("🚀 Starting Continuous Price Monitor")
+    logger.info("Monitoring breaking news tickers for 2%+ price increases")
     
-    # Create and test price checker
-    price_checker = PolygonPriceChecker(ch_manager)
-    
-    try:
-        await price_checker.initialize()
-        
-        # Test processing recent news
-        result = await price_checker.process_recent_news(minutes_back=60)  # Test with 1 hour back
-        logger.info(f"Processed {result} price moves")
-        
-    except KeyboardInterrupt:
-        logger.info("Price checker stopped by user")
-    finally:
-        await price_checker.cleanup()
-        ch_manager.close()
+    monitor = ContinuousPriceMonitor()
+    await monitor.start()
 
 if __name__ == "__main__":
     asyncio.run(main())
