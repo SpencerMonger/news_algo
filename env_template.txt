@@ -1,0 +1,21 @@
+# ClickHouse Database Configuration
+CLICKHOUSE_HOST=10.0.0.56
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_USER=default
+CLICKHOUSE_PASSWORD=
+
+# Finviz Elite Credentials
+FINVIZ_EMAIL=your_email@example.com
+FINVIZ_PASSWORD=your_password
+
+# Polygon API (if still needed for price checking)
+POLYGON_API_KEY=your_polygon_api_key_here
+PROXY_URL=
+
+# Monitoring Configuration
+CHECK_INTERVAL=1
+MAX_AGE_SECONDS=90
+BATCH_SIZE=50
+
+# Logging Level
+LOG_LEVEL=INFO 
