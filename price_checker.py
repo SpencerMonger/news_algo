@@ -56,9 +56,89 @@ class ContinuousPriceMonitor:
     async def initialize(self):
         """Initialize the monitor"""
         self.ch_manager = setup_clickhouse_database()
+        
+        # Drop and recreate monitoring tables for fresh start
+        await self.reset_monitoring_tables()
+        
         timeout = aiohttp.ClientTimeout(total=30)
         self.session = aiohttp.ClientSession(timeout=timeout)
         logger.info("Continuous price monitor initialized")
+
+    async def reset_monitoring_tables(self):
+        """Drop and recreate monitoring tables for a fresh start"""
+        try:
+            logger.info("Resetting monitoring tables...")
+            
+            # Drop the monitoring tables
+            tables_to_drop = ['monitored_tickers', 'price_tracking', 'news_alert']
+            
+            for table in tables_to_drop:
+                try:
+                    self.ch_manager.client.command(f"DROP TABLE IF EXISTS News.{table}")
+                    logger.info(f"Dropped table: {table}")
+                except Exception as e:
+                    logger.warning(f"Error dropping table {table}: {e}")
+            
+            # Recreate the tables
+            await self.recreate_monitoring_tables()
+            
+        except Exception as e:
+            logger.error(f"Error resetting monitoring tables: {e}")
+            raise
+
+    async def recreate_monitoring_tables(self):
+        """Recreate the monitoring tables"""
+        try:
+            # Recreate monitored_tickers table
+            monitored_tickers_sql = """
+            CREATE TABLE IF NOT EXISTS News.monitored_tickers (
+                ticker String,
+                first_seen DateTime DEFAULT now(),
+                news_headline String,
+                news_url String,
+                active UInt8 DEFAULT 1,
+                last_updated DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(last_updated)
+            ORDER BY ticker
+            """
+            self.ch_manager.client.command(monitored_tickers_sql)
+            logger.info("Recreated monitored_tickers table")
+
+            # Recreate price_tracking table
+            price_tracking_sql = """
+            CREATE TABLE IF NOT EXISTS News.price_tracking (
+                timestamp DateTime DEFAULT now(),
+                ticker String,
+                price Float64,
+                volume UInt64,
+                source String DEFAULT 'polygon'
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 7 DAY
+            """
+            self.ch_manager.client.command(price_tracking_sql)
+            logger.info("Recreated price_tracking table")
+
+            # Recreate news_alert table
+            news_alert_sql = """
+            CREATE TABLE IF NOT EXISTS News.news_alert (
+                ticker String,
+                timestamp DateTime DEFAULT now(),
+                alert UInt8 DEFAULT 1
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 30 DAY
+            """
+            self.ch_manager.client.command(news_alert_sql)
+            logger.info("Recreated news_alert table")
+            
+            logger.info("All monitoring tables reset successfully")
+            
+        except Exception as e:
+            logger.error(f"Error recreating monitoring tables: {e}")
+            raise
 
     async def scan_for_new_tickers(self):
         """Scan breaking_news for new tickers to monitor"""
@@ -250,21 +330,24 @@ class ContinuousPriceMonitor:
             else:
                 headline, url, published_utc = "No recent news", "", datetime.now()
             
-            # Insert price move
+            # Insert price move - using correct column names for the price_move table
             values = [(
-                ticker,
-                headline,
-                published_utc,
-                url,
-                current_price,
-                prev_price,
-                change_pct
+                datetime.now(),  # timestamp
+                ticker,          # ticker
+                headline,        # headline
+                published_utc,   # published_utc
+                url,             # article_url
+                current_price,   # latest_price
+                prev_price,      # previous_close
+                change_pct,      # price_change_percentage
+                0,               # volume_change_percentage
+                datetime.now()   # detected_at
             )]
             
             self.ch_manager.client.insert(
                 'News.price_move',
                 values,
-                column_names=['ticker', 'headline', 'published_utc', 'article_url', 'latest_price', 'previous_close', 'price_change_percentage']
+                column_names=['timestamp', 'ticker', 'headline', 'published_utc', 'article_url', 'latest_price', 'previous_close', 'price_change_percentage', 'volume_change_percentage', 'detected_at']
             )
             
         except Exception as e:

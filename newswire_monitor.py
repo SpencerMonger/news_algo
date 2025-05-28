@@ -71,6 +71,9 @@ class NewswireMonitor:
         # Setup ClickHouse connection
         self.clickhouse_manager = setup_clickhouse_database()
         
+        # Drop and recreate breaking_news table for fresh start
+        await self.reset_breaking_news_table()
+        
         # Initialize HTTP session with optimized settings
         timeout = aiohttp.ClientTimeout(total=10)
         connector = aiohttp.TCPConnector(
@@ -92,6 +95,45 @@ class NewswireMonitor:
         self.compile_ticker_patterns()
         
         logger.info(f"Initialized NewswireMonitor with {len(self.ticker_list)} tickers")
+
+    async def reset_breaking_news_table(self):
+        """Drop and recreate breaking_news table for a fresh start"""
+        try:
+            logger.info("Resetting breaking_news table...")
+            
+            # Drop the breaking_news table
+            self.clickhouse_manager.client.command("DROP TABLE IF EXISTS News.breaking_news")
+            logger.info("Dropped breaking_news table")
+            
+            # Recreate the breaking_news table with the same structure
+            breaking_news_sql = """
+            CREATE TABLE IF NOT EXISTS News.breaking_news (
+                timestamp DateTime DEFAULT now(),
+                source String,
+                ticker String,
+                headline String,
+                published_utc DateTime,
+                article_url String,
+                summary String,
+                full_content String,
+                detected_at DateTime DEFAULT now(),
+                processing_latency_ms UInt32,
+                market_relevant UInt8 DEFAULT 1,
+                source_check_time DateTime,
+                content_hash String,
+                news_type String DEFAULT 'other',
+                urgency_score UInt8 DEFAULT 5
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 30 DAY
+            """
+            self.clickhouse_manager.client.command(breaking_news_sql)
+            logger.info("Recreated breaking_news table")
+            
+        except Exception as e:
+            logger.error(f"Error resetting breaking_news table: {e}")
+            raise
 
     async def load_tickers(self):
         """Load ticker list from ClickHouse database"""
