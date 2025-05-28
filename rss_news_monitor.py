@@ -85,45 +85,32 @@ def ensure_directory_exists(directory_path):
         logger.info(f"Created directory: {directory_path}")
 
 def load_tickers():
-    """
-    Load ticker symbols from CSV file
-    """
+    """Load tickers from CSV file"""
     try:
-        ensure_directory_exists(DATA_DIR)
+        # Use os.path.join for proper path handling across operating systems
+        csv_path = os.path.join('data_files', 'FV_master_u50float_u10price.csv')
+        logger.info(f"Loading tickers from {csv_path}")
         
-        if not os.path.exists(TICKERS_FILE):
-            logger.error(f"Tickers file not found: {TICKERS_FILE}")
-            # Create a sample tickers file for testing
-            sample_tickers = pd.DataFrame({
-                'Symbol': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'AMD']
-            })
-            sample_tickers.to_csv(TICKERS_FILE, index=False)
-            logger.info(f"Created sample tickers file: {TICKERS_FILE}")
+        # Verify file exists before trying to read it
+        if not os.path.exists(csv_path):
+            logger.error(f"File not found: {csv_path}")
+            logger.error(f"Current working directory: {os.getcwd()}")
+            raise FileNotFoundError(f"Could not find {csv_path}")
         
-        # Read the tickers file
-        tickers_df = pd.read_csv(TICKERS_FILE)
+        # Read the CSV file
+        df = pd.read_csv(csv_path)
         
-        # Extract the ticker symbols column
-        if 'Symbol' in tickers_df.columns:
-            ticker_list = tickers_df['Symbol'].tolist()
-        else:
-            # Try to find a column that might contain ticker symbols
-            for col in tickers_df.columns:
-                if any(re.match(r'^[A-Z]{1,5}$', str(val)) for val in tickers_df[col].dropna()):
-                    ticker_list = tickers_df[col].dropna().tolist()
-                    break
-            else:
-                logger.error(f"Could not find ticker symbols column in {TICKERS_FILE}")
-                ticker_list = []
+        # Get tickers from the 'Ticker' column
+        tickers = df['Ticker'].tolist()
         
-        # Convert to uppercase and remove any non-string values
-        ticker_list = [str(ticker).upper() for ticker in ticker_list if isinstance(ticker, (str, int, float))]
+        # Clean the tickers (remove any whitespace, convert to uppercase)
+        tickers = [str(ticker).strip().upper() for ticker in tickers if pd.notna(ticker)]
         
-        logger.info(f"Loaded {len(ticker_list)} tickers from {TICKERS_FILE}")
-        return ticker_list
-    
+        logger.info(f"Loaded {len(tickers)} tickers. Sample: {tickers[:5]}")
+        return tickers
     except Exception as e:
-        logger.error(f"Error loading tickers: {e}")
+        logger.error(f"Error loading tickers from CSV: {e}")
+        logger.error(f"Current working directory: {os.getcwd()}")
         return []
 
 def initialize_news_log():
@@ -149,32 +136,29 @@ def initialize_news_log():
         logger.error(f"Error initializing news log: {e}")
 
 def extract_tickers_from_text(text, ticker_list):
-    """
-    Extract ticker symbols from text
-    """
-    if not text or not isinstance(text, str):
+    """Extract tickers from text"""
+    if not text or not ticker_list:
         return []
     
-    # Convert text to uppercase for case-insensitive matching
-    text_upper = text.upper()
+    # Add more detailed logging
+    logger.debug(f"Searching text: {text[:200]}...")
+    logger.debug(f"Number of tickers to check: {len(ticker_list)}")
     
-    # Find all standalone ticker mentions (surrounded by non-alphanumeric characters)
-    found_tickers = []
+    matched_tickers = []
+    text = text.upper()  # Convert text to uppercase for case-insensitive matching
     
     for ticker in ticker_list:
-        # Skip invalid tickers
-        if not ticker or not isinstance(ticker, str):
-            continue
-            
-        ticker = ticker.strip().upper()
-        
-        # Look for the ticker as a standalone word or with $ prefix
-        pattern = r'(?:^|\W)[$]?(' + re.escape(ticker) + r')(?:$|\W)'
-        
-        if re.search(pattern, text_upper):
-            found_tickers.append(ticker)
+        ticker = str(ticker).strip().upper()
+        # Look for exact matches with word boundaries
+        pattern = r'\b' + re.escape(ticker) + r'\b'
+        if re.search(pattern, text):
+            matched_tickers.append(ticker)
+            logger.debug(f"Found match for ticker: {ticker}")
     
-    return found_tickers
+    if matched_tickers:
+        logger.info(f"Found matching tickers: {matched_tickers}")
+    
+    return matched_tickers
 
 def get_article_content(url):
     """
@@ -212,31 +196,20 @@ def is_recent_article(published_time: str, max_age_seconds: int = MAX_AGE_SECOND
         return False
     
     try:
-        # Try to parse the date using dateutil parser which handles most formats
-        dt = date_parser.parse(published_time)
-        
-        # If the datetime has no timezone info, assume UTC
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        
-        # Convert to UTC for comparison
-        now_utc = datetime.now(timezone.utc)
-        
-        # Calculate the age of the article in seconds
-        age_seconds = (now_utc - dt).total_seconds()
-        
-        # Check if the article is recent enough
-        is_recent = age_seconds <= max_age_seconds
-        
-        if is_recent:
-            logger.info(f"Article is recent: {published_time} (Age: {age_seconds:.1f} seconds)")
+        # Convert string to datetime if it's not already
+        if isinstance(published_time, str):
+            published_dt = pd.to_datetime(published_time)
         else:
-            logger.debug(f"Article is too old: {published_time} (Age: {age_seconds:.1f} seconds)")
-        
-        return is_recent
-    
+            published_dt = published_time  # Already a datetime object
+            
+        current_time = datetime.now(pytz.UTC)
+        if not published_dt.tzinfo:
+            published_dt = pytz.UTC.localize(published_dt)
+            
+        age = (current_time - published_dt).total_seconds()
+        return age <= max_age_seconds
     except Exception as e:
-        logger.warning(f"Error checking if article is recent: {e}, Date: {published_time}")
+        logger.error(f"Error checking article age: {e}")
         return False
 
 def parse_feed(feed_url, ticker_list, source_name, processed_urls):
@@ -333,79 +306,32 @@ def parse_feed(feed_url, ticker_list, source_name, processed_urls):
         return []
 
 def log_all_articles(articles):
-    """
-    Log all articles to CSV file, regardless of ticker matches
-    """
-    try:
-        with open(ALL_NEWS_LOG_FILE, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            for article in articles:
-                try:
-                    writer.writerow([
-                        article['Timestamp'],
-                        article['Source'],
-                        article['Headline'],
-                        article['Published'],
-                        article['URL'],
-                        article['Summary'],
-                        article['Matched_Tickers']
-                    ])
-                except Exception as e:
-                    # If there's an encoding error, try to write with ASCII encoding
-                    logger.warning(f"Error writing article to CSV, trying ASCII fallback: {e}")
-                    writer.writerow([
-                        article['Timestamp'],
-                        article['Source'],
-                        str(article['Headline']).encode('ascii', 'replace').decode('ascii'),
-                        article['Published'],
-                        article['URL'],
-                        str(article['Summary']).encode('ascii', 'replace').decode('ascii'),
-                        article['Matched_Tickers']
-                    ])
+    """Log all articles to CSV regardless of ticker matches"""
+    if not articles:
+        logger.info("No articles to log to all_news_articles.csv")
+        return
         
-        logger.info(f"Logged {len(articles)} articles to {ALL_NEWS_LOG_FILE}")
-    
+    try:
+        df = pd.DataFrame(articles)
+        df.to_csv('all_news_articles.csv', mode='a', header=not os.path.exists('all_news_articles.csv'), index=False)
+        logger.info(f"Successfully logged {len(articles)} articles to all_news_articles.csv")
     except Exception as e:
-        logger.error(f"Error logging all articles: {e}")
+        logger.error(f"Error logging to all_news_articles.csv: {e}")
 
 def log_ticker_news(news_items):
-    """
-    Log ticker news to CSV file
-    """
+    """Log ticker-specific news to CSV"""
     if not news_items:
         return
+        
+    # Add logging to debug
+    logger.info(f"Attempting to log {len(news_items)} ticker-related articles to ticker_news_alert.csv")
     
     try:
-        with open(NEWS_LOG_FILE, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            for item in news_items:
-                try:
-                    writer.writerow([
-                        item['Timestamp'],
-                        item['Source'],
-                        item['Ticker'],
-                        item['Headline'],
-                        item['Published'],
-                        item['URL'],
-                        item['Summary']
-                    ])
-                except Exception as e:
-                    # If there's an encoding error, try to write with ASCII encoding
-                    logger.warning(f"Error writing news item to CSV, trying ASCII fallback: {e}")
-                    writer.writerow([
-                        item['Timestamp'],
-                        item['Source'],
-                        item['Ticker'],
-                        str(item['Headline']).encode('ascii', 'replace').decode('ascii'),
-                        item['Published'],
-                        item['URL'],
-                        str(item['Summary']).encode('ascii', 'replace').decode('ascii')
-                    ])
-        
-        logger.info(f"Logged {len(news_items)} news items to {NEWS_LOG_FILE}")
-    
+        df = pd.DataFrame(news_items)
+        df.to_csv('ticker_news_alert.csv', mode='a', header=not os.path.exists('ticker_news_alert.csv'), index=False)
+        logger.info(f"Successfully logged {len(news_items)} articles to ticker_news_alert.csv")
     except Exception as e:
-        logger.error(f"Error logging ticker news: {e}")
+        logger.error(f"Error logging to ticker_news_alert.csv: {e}")
 
 async def create_news_data_for_price_checker(news_item):
     """
@@ -510,50 +436,53 @@ def check_all_feeds(ticker_list, processed_urls):
     return all_news
 
 async def scrape_globenewswire(session: aiohttp.ClientSession, ticker_list: List[str]) -> List[Dict[str, Any]]:
-    """
-    Scrape GlobeNewswire for recent news articles
-    """
-    news_items = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-
     try:
-        for ticker in ticker_list:
-            url = SCRAPING_URLS["GlobeNewswire"].format(ticker=ticker)
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
+        url = "https://www.globenewswire.com/RssFeed/country/United%20States/feedTitle/GlobeNewswire%20-%20News%20from%20United%20States"
+        async with session.get(url) as response:
+            if response.status != 200:
+                logger.error(f"Error fetching GlobeNewswire feed: Status {response.status}")
+                return []
+            
+            feed_content = await response.text()
+            feed = feedparser.parse(feed_content)
+            
+            logger.info(f"Found {len(feed.entries)} entries in GlobeNewswire feed")
+            
+            articles = []
+            for entry in feed.entries:
+                try:
+                    title = entry.get('title', '')
+                    description = entry.get('description', '')
                     
-                    # Find all news articles
-                    articles = soup.find_all('div', class_='news-item')
+                    # Search for tickers in both title and description
+                    text_to_search = f"{title} {description}"
+                    matched_tickers = extract_tickers_from_text(text_to_search, ticker_list)
                     
-                    for article in articles:
-                        try:
-                            title = article.find('a', class_='news-item__headline').text.strip()
-                            link = article.find('a', class_='news-item__headline')['href']
-                            published = article.find('time')['datetime']
-                            
-                            # Check if article is recent enough
-                            if is_recent_article(published):
-                                news_items.append({
-                                    'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                    'Source': 'GlobeNewswire',
-                                    'Ticker': ticker,
-                                    'Headline': title,
-                                    'Published': published,
-                                    'URL': f"https://www.globenewswire.com{link}",
-                                    'Summary': ''
-                                })
-                        except Exception as e:
-                            logger.warning(f"Error processing GlobeNewswire article: {e}")
-                            continue
-                            
+                    if matched_tickers:
+                        article = {
+                            'title': title,
+                            'link': entry.get('link', ''),
+                            'published_utc': entry.get('published', ''),
+                            'source': 'GlobeNewswire',
+                            'tickers': matched_tickers
+                        }
+                        articles.append(article)
+                        logger.info(f"Found article matching tickers {matched_tickers}: {title}")
+                
+                except Exception as e:
+                    logger.warning(f"Error processing entry in GlobeNewswire feed: {e}")
+                    continue
+            
+            if not articles:
+                logger.info("No matching news found in GlobeNewswire feed")
+            else:
+                logger.info(f"Found {len(articles)} matching articles in GlobeNewswire feed")
+            
+            return articles
+            
     except Exception as e:
         logger.error(f"Error scraping GlobeNewswire: {e}")
-    
-    return news_items
+        return []
 
 async def scrape_businesswire(session: aiohttp.ClientSession, ticker_list: List[str]) -> List[Dict[str, Any]]:
     """

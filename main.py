@@ -11,7 +11,7 @@ import pandas as pd
 import concurrent.futures
 
 # Import functions from our modules
-from price_checker import check_price_on_news, get_latest_trade, get_five_minute_bar
+from price_checker import PriceChecker
 from rss_news_monitor import (
     load_tickers, 
     ensure_directory_exists, 
@@ -68,18 +68,19 @@ def create_price_match_log_if_not_exists():
                 'price_match_time',
                 'article_url', 
                 'latest_price',
-                'bar_high',
-                'bar_low',
-                'bar_open',
-                'bar_close',
-                'bar_volume'
+                'previous_close',
+                'previous_high',
+                'previous_low',
+                'previous_open',
+                'previous_volume',
+                'price_change_percentage'
             ]
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             logger.info(f"Created price match log file: {PRICE_MATCH_LOG_FILE}")
 
-def log_price_match(news_data, trade_data, bar_data, news_detected_time):
-    """Log price match data to CSV file"""
+def log_price_match_enhanced(news_data, price_move_data, news_detected_time):
+    """Log enhanced price match data to CSV file"""
     try:
         # Ensure the directory and file exist
         create_price_match_log_if_not_exists()
@@ -87,7 +88,7 @@ def log_price_match(news_data, trade_data, bar_data, news_detected_time):
         # Get the article data
         article = news_data['news_data']['results'][0]
         
-        # Prepare row data
+        # Prepare row data with new fields
         row = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'symbol': news_data['symbol'],
@@ -96,12 +97,13 @@ def log_price_match(news_data, trade_data, bar_data, news_detected_time):
             'news_detected_time': news_detected_time,
             'price_match_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'article_url': article.get('article_url', 'N/A'),
-            'latest_price': trade_data['p'],
-            'bar_high': bar_data['h'],
-            'bar_low': bar_data['l'],
-            'bar_open': bar_data['o'],
-            'bar_close': bar_data['c'],
-            'bar_volume': bar_data['v']
+            'latest_price': price_move_data['current_price'],
+            'previous_close': price_move_data['previous_close'],
+            'previous_high': price_move_data['previous_high'],
+            'previous_low': price_move_data['previous_low'],
+            'previous_open': price_move_data['previous_open'],
+            'previous_volume': price_move_data['previous_volume'],
+            'price_change_percentage': price_move_data['price_change_percentage']
         }
         
         # Append to CSV
@@ -118,7 +120,7 @@ def log_price_match(news_data, trade_data, bar_data, news_detected_time):
 
 async def enhanced_price_checker(news_data, news_detected_time):
     """
-    Enhanced version of price checker that logs matches with all timestamps
+    Enhanced version of price checker that uses previous day's close as baseline
     
     Args:
         news_data: News data object
@@ -128,26 +130,27 @@ async def enhanced_price_checker(news_data, news_detected_time):
         symbol = news_data['symbol']
         logger.info(f"Checking price for {symbol} after news detection")
         
-        # Get latest trade
-        trade_data = await get_latest_trade(symbol)
-        if not trade_data:
-            logger.warning(f"Could not get latest trade for {symbol}, aborting price check")
-            return
+        # Create price checker instance
+        price_checker = PriceChecker()
         
-        # Get 5-minute bar
-        bar_data = await get_five_minute_bar(symbol)
-        if not bar_data:
-            logger.warning(f"Could not get 5-minute bar for {symbol}, aborting price check")
-            return
+        # Format news data for price checker
+        formatted_news_data = {
+            'headline': news_data['news_data']['results'][0]['title'],
+            'published_utc': news_data['news_data']['results'][0]['published_utc'],
+            'article_url': news_data['news_data']['results'][0]['article_url'],
+            'detected_at': datetime.now(pytz.UTC)
+        }
         
-        # Check if latest price is greater than bar high
-        if trade_data['p'] > bar_data['h']:
-            logger.info(f"ALERT: {symbol} price ${trade_data['p']} exceeds 5-min bar high ${bar_data['h']}")
+        # Check for price move using previous day's close
+        price_move_data = await price_checker.check_price_move(symbol, formatted_news_data)
+        
+        if price_move_data:
+            logger.info(f"ALERT: {symbol} price move detected!")
             
-            # Log the price match with all timestamps
-            log_price_match(news_data, trade_data, bar_data, news_detected_time)
+            # Log the price match with all data
+            log_price_match_enhanced(news_data, price_move_data, news_detected_time)
             
-            # Create a trigger (from original price_checker)
+            # Create a trigger file
             trigger_data = {
                 "symbol": symbol,
                 "timestamp": datetime.now().isoformat(),
@@ -157,16 +160,7 @@ async def enhanced_price_checker(news_data, news_detected_time):
                     "article_url": news_data['news_data']['results'][0]['article_url'],
                     "news_detected_time": news_detected_time
                 },
-                "price_data": {
-                    "latest_price": trade_data['p'],
-                    "latest_trade_time": trade_data['t'],
-                    "bar_high": bar_data['h'],
-                    "bar_low": bar_data['l'],
-                    "bar_open": bar_data['o'],
-                    "bar_close": bar_data['c'],
-                    "bar_volume": bar_data['v'],
-                    "price_match_time": datetime.now().isoformat()
-                }
+                "price_data": price_move_data
             }
             
             # Save trigger to file
@@ -179,9 +173,11 @@ async def enhanced_price_checker(news_data, news_detected_time):
                 logger.info(f"Trigger saved to {filename}")
             except Exception as e:
                 logger.error(f"Error saving trigger: {e}")
-            
         else:
-            logger.info(f"No trigger for {symbol}: Latest price ${trade_data['p']} <= Bar high ${bar_data['h']}")
+            logger.info(f"No significant price move detected for {symbol}")
+            
+        # Close the price checker session
+        await price_checker.close()
             
     except Exception as e:
         logger.error(f"Error in enhanced price checker: {e}")

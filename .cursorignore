@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Large data directories
+data_files/
+price_matches/
+triggers/
+
+# Log files
+*.log
+
+# Virtual environments
+venv/
+env/
+
+# Large model files or datasets
+*.csv
+*.json
+*.pkl
+
+# IDE specific
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db 
