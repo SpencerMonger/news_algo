@@ -407,6 +407,125 @@ class ClickHouseManager:
             logger.error(f"Error inserting price moves: {e}")
             raise
 
+    def create_tables(self):
+        """Create all required tables"""
+        try:
+            # Create database
+            self.client.command("CREATE DATABASE IF NOT EXISTS News")
+            logger.info("News database created/verified")
+            
+            # Breaking news table
+            breaking_news_sql = """
+            CREATE TABLE IF NOT EXISTS News.breaking_news (
+                timestamp DateTime DEFAULT now(),
+                source String,
+                ticker String,
+                headline String,
+                published_utc DateTime,
+                article_url String,
+                summary String,
+                full_content String,
+                detected_at DateTime DEFAULT now(),
+                processing_latency_ms UInt32,
+                market_relevant UInt8 DEFAULT 1,
+                source_check_time DateTime,
+                content_hash String,
+                news_type String DEFAULT 'other',
+                urgency_score UInt8 DEFAULT 5
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 30 DAY
+            """
+            self.client.command(breaking_news_sql)
+            logger.info("breaking_news table created/verified")
+
+            # Float list table
+            float_list_sql = """
+            CREATE TABLE IF NOT EXISTS News.float_list (
+                ticker String,
+                float_value Float64,
+                market_cap Float64,
+                price Float64,
+                volume Int64,
+                last_updated DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(last_updated)
+            ORDER BY ticker
+            """
+            self.client.command(float_list_sql)
+            logger.info("float_list table created/verified")
+
+            # Price move table  
+            price_move_sql = """
+            CREATE TABLE IF NOT EXISTS News.price_move (
+                timestamp DateTime DEFAULT now(),
+                ticker String,
+                headline String,
+                published_utc DateTime,
+                article_url String,
+                latest_price Float64,
+                previous_close Float64,
+                price_change_percentage Float64,
+                volume_change_percentage Int32,
+                detected_at DateTime DEFAULT now()
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 90 DAY
+            """
+            self.client.command(price_move_sql)
+            logger.info("price_move table created/verified")
+
+            # Monitored tickers table
+            monitored_tickers_sql = """
+            CREATE TABLE IF NOT EXISTS News.monitored_tickers (
+                ticker String,
+                first_seen DateTime DEFAULT now(),
+                news_headline String,
+                news_url String,
+                active UInt8 DEFAULT 1,
+                last_updated DateTime DEFAULT now()
+            ) ENGINE = ReplacingMergeTree(last_updated)
+            ORDER BY ticker
+            """
+            self.client.command(monitored_tickers_sql)
+            logger.info("monitored_tickers table created/verified")
+
+            # Price tracking table
+            price_tracking_sql = """
+            CREATE TABLE IF NOT EXISTS News.price_tracking (
+                timestamp DateTime DEFAULT now(),
+                ticker String,
+                price Float64,
+                volume UInt64,
+                source String DEFAULT 'polygon'
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 7 DAY
+            """
+            self.client.command(price_tracking_sql)
+            logger.info("price_tracking table created/verified")
+
+            # News alert table
+            news_alert_sql = """
+            CREATE TABLE IF NOT EXISTS News.news_alert (
+                ticker String,
+                timestamp DateTime DEFAULT now(),
+                alert UInt8 DEFAULT 1
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 30 DAY
+            """
+            self.client.command(news_alert_sql)
+            logger.info("news_alert table created/verified")
+
+            return True
+        except Exception as e:
+            logger.error(f"Error creating tables: {e}")
+            return False
+
 def setup_clickhouse_database():
     """Initialize ClickHouse database and tables"""
     ch_manager = ClickHouseManager()
@@ -422,6 +541,7 @@ def setup_clickhouse_database():
         ch_manager.create_breaking_news_table()
         ch_manager.create_float_list_table()
         ch_manager.create_price_move_table()
+        ch_manager.create_tables()
         
         logger.info("ClickHouse setup completed successfully")
         return ch_manager
