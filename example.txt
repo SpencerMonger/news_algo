@@ -1,0 +1,6 @@
+10:00 AM - Price: $101.00 
+10:01 AM - Price: $100.95
+10:02 AM - Price: $100.90  
+10:03 AM - Price: $101.00
+10:04 AM - Price: $100.95 ← This could be the reference
+10:05 AM - Price: $106.50 ← This would be "current_price"
