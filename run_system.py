@@ -3,7 +3,7 @@ import logging
 import sys
 import argparse
 from finviz_scraper import FinvizScraper
-from newswire_monitor import NewswireMonitor
+from web_scraper import Crawl4AIScraper
 from price_checker import ContinuousPriceMonitor
 from clickhouse_setup import setup_clickhouse_database
 
@@ -17,8 +17,8 @@ async def run_news_monitor():
     """Run the news monitoring system"""
     try:
         logger.info("Starting news monitoring...")
-        monitor = NewswireMonitor()
-        await monitor.start_monitoring()
+        monitor = Crawl4AIScraper()
+        await monitor.start_scraping()
     except Exception as e:
         logger.error(f"News monitor error: {e}")
         raise

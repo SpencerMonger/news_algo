@@ -256,27 +256,27 @@ class ContinuousPriceMonitor:
             logger.warning("No price data retrieved for any tickers")
 
     async def check_price_alerts(self):
-        """Check for 2%+ price increases over last 5 minutes"""
+        """Check for 5%+ price increases from the lowest price in last 5 minutes"""
         try:
-            # Query for price changes over 5 minutes
+            # Query for price changes from lowest price in last 5 minutes
             query = """
             SELECT 
                 ticker,
                 current_price,
-                price_5min_ago,
-                ((current_price - price_5min_ago) / price_5min_ago) * 100 as change_pct
+                min_price_5min,
+                ((current_price - min_price_5min) / min_price_5min) * 100 as change_pct
             FROM (
                 SELECT 
                     ticker,
                     argMax(price, timestamp) as current_price,
-                    argMax(price, timestamp) FILTER (WHERE timestamp <= now() - INTERVAL 5 MINUTE) as price_5min_ago
+                    min(price) as min_price_5min
                 FROM News.price_tracking 
-                WHERE timestamp >= now() - INTERVAL 6 MINUTE
+                WHERE timestamp >= now() - INTERVAL 5 MINUTE
                 AND ticker IN (SELECT ticker FROM News.monitored_tickers WHERE active = 1)
                 GROUP BY ticker
-                HAVING price_5min_ago > 0
+                HAVING min_price_5min > 0
             )
-            WHERE change_pct >= 2.0
+            WHERE change_pct >= 5.0
             ORDER BY change_pct DESC
             """
             
@@ -287,7 +287,7 @@ class ContinuousPriceMonitor:
                 alert_data = []
                 
                 for row in result.result_rows:
-                    ticker, current_price, price_5min_ago, change_pct = row
+                    ticker, current_price, min_price_5min, change_pct = row
                     
                     logger.info(f"🚨 PRICE ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from 5min ago)")
                     
@@ -295,7 +295,7 @@ class ContinuousPriceMonitor:
                     alert_data.append((ticker, datetime.now(), 1))
                     
                     # Log to price_move table
-                    await self.log_price_alert(ticker, current_price, price_5min_ago, change_pct)
+                    await self.log_price_alert(ticker, current_price, min_price_5min, change_pct)
                     
                     self.stats['alerts_triggered'] += 1
                 
