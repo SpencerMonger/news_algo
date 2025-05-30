@@ -1,8 +1,8 @@
-numpy==1.24.3
-pandas==2.0.3
-aiohttp==3.8.5
-pytz==2023.3
-python-dotenv==1.0.0
+numpy>=1.26.0
+pandas>=2.0.3
+aiohttp>=3.8.5
+pytz>=2023.3
+python-dotenv>=1.0.0
 # asyncio is part of the Python standard library, no need to install it separately
 # Only pandas is needed for the news sources script
 # Web requests and data processing
@@ -14,3 +14,8 @@ clickhouse-connect>=0.7.0
 lxml>=4.9.3
 # Brotli compression support for web scraping
 brotli>=1.0.9
+# Data visualization and analysis packages
+matplotlib>=3.7.0
+seaborn>=0.12.0
+# Advanced web scraping framework for reliable content extraction
+crawl4ai>=0.6.0

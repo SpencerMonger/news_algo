@@ -57,7 +57,7 @@ class ClickHouseManager:
             source String,
             ticker String,
             headline String,
-            published_utc DateTime64(3),
+            published_utc String,
             article_url String,
             summary String,
             full_content String,
@@ -70,7 +70,7 @@ class ClickHouseManager:
             content_hash String,
             
             -- Classification fields
-            news_type Enum8('earnings' = 1, 'clinical_trial' = 2, 'merger' = 3, 'fda_approval' = 4, 'partnership' = 5, 'other' = 6) DEFAULT 'other',
+            news_type String DEFAULT 'other',
             urgency_score UInt8 DEFAULT 0,
             
             INDEX idx_ticker (ticker) TYPE bloom_filter GRANULARITY 1,
@@ -78,9 +78,9 @@ class ClickHouseManager:
             INDEX idx_source (source) TYPE set(100) GRANULARITY 1,
             INDEX idx_content_hash (content_hash) TYPE bloom_filter GRANULARITY 1
         ) 
-        ENGINE = MergeTree()
+        ENGINE = ReplacingMergeTree()
         PARTITION BY toYYYYMM(timestamp)
-        ORDER BY (timestamp, ticker)
+        ORDER BY (article_url)
         SETTINGS index_granularity = 8192
         """
         
@@ -105,7 +105,7 @@ class ClickHouseManager:
                     article.get('source', ''),
                     article.get('ticker', ''),
                     article.get('headline', ''),
-                    article.get('published_utc', datetime.now()),
+                    article.get('published_utc', 'NO_TIME'),
                     article.get('article_url', ''),
                     article.get('summary', ''),
                     article.get('full_content', ''),
@@ -133,6 +133,10 @@ class ClickHouseManager:
             )
             
             logger.info(f"Inserted {len(articles)} articles into ClickHouse")
+            
+            # Force merge for immediate deduplication
+            self.force_merge_breaking_news()
+            
             return len(articles)
             
         except Exception as e:
@@ -301,6 +305,15 @@ class ClickHouseManager:
             self.client.close()
             logger.info("ClickHouse connection closed")
 
+    def drop_breaking_news_table(self):
+        """Drop the breaking_news table to refresh schema"""
+        try:
+            self.client.command("DROP TABLE IF EXISTS News.breaking_news")
+            logger.info("Dropped breaking_news table for schema refresh")
+        except Exception as e:
+            logger.error(f"Error dropping breaking_news table: {e}")
+            raise
+
     def drop_float_list_table(self):
         """Drop the float_list table to refresh ticker data"""
         try:
@@ -414,31 +427,8 @@ class ClickHouseManager:
             self.client.command("CREATE DATABASE IF NOT EXISTS News")
             logger.info("News database created/verified")
             
-            # Breaking news table
-            breaking_news_sql = """
-            CREATE TABLE IF NOT EXISTS News.breaking_news (
-                timestamp DateTime DEFAULT now(),
-                source String,
-                ticker String,
-                headline String,
-                published_utc DateTime,
-                article_url String,
-                summary String,
-                full_content String,
-                detected_at DateTime DEFAULT now(),
-                processing_latency_ms UInt32,
-                market_relevant UInt8 DEFAULT 1,
-                source_check_time DateTime,
-                content_hash String,
-                news_type String DEFAULT 'other',
-                urgency_score UInt8 DEFAULT 5
-            ) ENGINE = MergeTree()
-            ORDER BY (ticker, timestamp)
-            PARTITION BY toYYYYMM(timestamp)
-            TTL timestamp + INTERVAL 30 DAY
-            """
-            self.client.command(breaking_news_sql)
-            logger.info("breaking_news table created/verified")
+            # NOTE: breaking_news table is created separately via create_breaking_news_table()
+            # Removed duplicate definition to avoid schema conflicts
 
             # Float list table
             float_list_sql = """
@@ -526,6 +516,30 @@ class ClickHouseManager:
             logger.error(f"Error creating tables: {e}")
             return False
 
+    def force_merge_breaking_news(self):
+        """Force merge to deduplicate immediately"""
+        try:
+            self.client.command("OPTIMIZE TABLE News.breaking_news FINAL")
+            logger.info("Forced merge/optimization of breaking_news table")
+        except Exception as e:
+            logger.error(f"Error forcing merge: {e}")
+    
+    def check_table_structure(self):
+        """Check the current table structure"""
+        try:
+            query = "DESCRIBE TABLE News.breaking_news"
+            result = self.client.query(query)
+            logger.info("Current breaking_news table structure:")
+            for row in result.result_rows:
+                logger.info(f"  {row}")
+            
+            # Also check the engine
+            query = "SHOW CREATE TABLE News.breaking_news"
+            result = self.client.query(query)
+            logger.info(f"Table creation SQL: {result.result_rows[0][0] if result.result_rows else 'No result'}")
+        except Exception as e:
+            logger.error(f"Error checking table structure: {e}")
+
 def setup_clickhouse_database():
     """Initialize ClickHouse database and tables"""
     ch_manager = ClickHouseManager()
@@ -537,8 +551,17 @@ def setup_clickhouse_database():
         # Create database
         ch_manager.create_database()
         
-        # Create tables
+        # Drop and recreate breaking_news table with new schema for proper deduplication
+        ch_manager.drop_breaking_news_table()
         ch_manager.create_breaking_news_table()
+        
+        # Check table structure to verify schema
+        ch_manager.check_table_structure()
+        
+        # Force immediate merge for deduplication
+        ch_manager.force_merge_breaking_news()
+        
+        # Create other tables
         ch_manager.create_float_list_table()
         ch_manager.create_price_move_table()
         ch_manager.create_tables()
@@ -559,7 +582,7 @@ if __name__ == "__main__":
         'source': 'Test',
         'ticker': 'TEST',
         'headline': 'Test Article',
-        'published_utc': datetime.now(),
+        'published_utc': '11:26 ET',
         'article_url': 'https://test.com',
         'summary': 'Test summary',
         'full_content': 'Test content',
