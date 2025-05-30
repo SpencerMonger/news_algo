@@ -54,16 +54,16 @@ class NewswireMonitor:
         self.sources = [
             NewsSource("GlobeNewswire", 
                       "https://www.globenewswire.com/RssFeed/orgclass/1/feedTitle/GlobeNewswire%20-%20News%20Releases", 
-                      1.0, 1),
+                      0.5, 1),
             NewsSource("BusinessWire", 
                       "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA==", 
-                      1.0, 1),
+                      0.5, 1),
             NewsSource("PRNewswire", 
                       "https://www.prnewswire.com/rss/news-releases-list.rss", 
-                      2.0, 2),
+                      1.0, 2),
             NewsSource("MarketWatch_Bulletins", 
                       "https://feeds.content.dowjones.io/public/rss/mw_bulletins", 
-                      1.0, 1)
+                      0.5, 1)
         ]
 
     async def initialize(self):
@@ -284,92 +284,118 @@ class NewswireMonitor:
         return datetime.now()
 
     async def fetch_and_parse_feed(self, source: NewsSource) -> List[Dict[str, Any]]:
-        """Fetch and parse RSS feed with error handling"""
+        """Fetch and parse RSS feed with error handling and retry logic"""
         articles = []
+        max_retries = 2
+        retry_count = 0
         
-        try:
-            start_time = time.time()
-            
-            async with self.session.get(source.rss_url) as response:
-                if response.status != 200:
-                    logger.warning(f"HTTP {response.status} for {source.name}")
+        while retry_count <= max_retries:
+            try:
+                start_time = time.time()
+                
+                # Adjust timeout based on source reliability
+                timeout_seconds = 15 if source.name == "GlobeNewswire" else 10
+                
+                async with self.session.get(source.rss_url, 
+                                          timeout=aiohttp.ClientTimeout(total=timeout_seconds)) as response:
+                    response_time = time.time() - start_time
+                    
+                    if response.status != 200:
+                        logger.warning(f"HTTP {response.status} for {source.name}")
+                        if retry_count < max_retries:
+                            retry_count += 1
+                            await asyncio.sleep(2)  # Wait before retry
+                            continue
+                        return articles
+                    
+                    feed_content = await response.text()
+                    
+                # Parse feed
+                feed = feedparser.parse(feed_content)
+                
+                if not feed.entries:
+                    logger.debug(f"No entries in {source.name} feed")
                     return articles
-                
-                feed_content = await response.text()
-                
-            # Parse feed
-            feed = feedparser.parse(feed_content)
-            
-            if not feed.entries:
-                logger.debug(f"No entries in {source.name} feed")
-                return articles
-                
-            processing_start = time.time()
-            
-            for entry in feed.entries:
-                try:
-                    title = entry.get('title', '')
-                    link = entry.get('link', '')
-                    summary = entry.get('summary', '')
-                    published = entry.get('published', '')
                     
-                    # Skip if not recent
-                    if not self.is_recent_article(published, max_age_seconds=1800):
-                        continue
+                processing_start = time.time()
+                
+                for entry in feed.entries:
+                    try:
+                        title = entry.get('title', '')
+                        link = entry.get('link', '')
+                        summary = entry.get('summary', '')
+                        published = entry.get('published', '')
                         
-                    # Generate hash for duplicate detection
-                    content_hash = self.generate_content_hash(title, link)
-                    
-                    if content_hash in self.duplicate_hashes:
-                        self.stats['duplicates_filtered'] += 1
-                        continue
-                    
-                    # Extract tickers from title and summary
-                    text_to_search = f"{title} {summary}"
-                    found_tickers = self.extract_tickers_from_text(text_to_search)
-                    
-                    if found_tickers:
-                        # Calculate processing latency
-                        latency_ms = int((time.time() - processing_start) * 1000)
-                        
-                        for ticker in found_tickers:
-                            article = {
-                                'timestamp': datetime.now(),
-                                'source': source.name,
-                                'ticker': ticker,
-                                'headline': title,
-                                'published_utc': self.parse_datetime(published),
-                                'article_url': link,
-                                'summary': summary,
-                                'full_content': '',  # Can be enhanced later with full text extraction
-                                'detected_at': datetime.now(),
-                                'processing_latency_ms': latency_ms,
-                                'market_relevant': 1,  # Assume relevant if ticker found
-                                'source_check_time': datetime.fromtimestamp(start_time),
-                                'content_hash': content_hash,
-                                'news_type': self.classify_news_type(title, summary),
-                                'urgency_score': self.calculate_urgency_score(title, summary)
-                            }
-                            articles.append(article)
+                        # Skip if not recent
+                        if not self.is_recent_article(published, max_age_seconds=1800):
+                            continue
                             
-                        # Add to processed set
-                        self.duplicate_hashes.add(content_hash)
+                        # Generate hash for duplicate detection
+                        content_hash = self.generate_content_hash(title, link)
                         
-                        logger.info(f"Found news for {found_tickers} from {source.name}: {title[:50]}...")
-                
-                except Exception as e:
-                    logger.warning(f"Error processing entry from {source.name}: {e}")
-                    continue
+                        if content_hash in self.duplicate_hashes:
+                            self.stats['duplicates_filtered'] += 1
+                            continue
+                        
+                        # Extract tickers from title and summary
+                        text_to_search = f"{title} {summary}"
+                        found_tickers = self.extract_tickers_from_text(text_to_search)
+                        
+                        if found_tickers:
+                            # Calculate processing latency
+                            latency_ms = int((time.time() - processing_start) * 1000)
+                            
+                            for ticker in found_tickers:
+                                article = {
+                                    'timestamp': datetime.now(),
+                                    'source': source.name,
+                                    'ticker': ticker,
+                                    'headline': title,
+                                    'published_utc': self.parse_datetime(published),
+                                    'article_url': link,
+                                    'summary': summary,
+                                    'full_content': '',  # Can be enhanced later with full text extraction
+                                    'detected_at': datetime.now(),
+                                    'processing_latency_ms': latency_ms,
+                                    'market_relevant': 1,  # Assume relevant if ticker found
+                                    'source_check_time': datetime.fromtimestamp(start_time),
+                                    'content_hash': content_hash,
+                                    'news_type': self.classify_news_type(title, summary),
+                                    'urgency_score': self.calculate_urgency_score(title, summary)
+                                }
+                                articles.append(article)
+                                
+                            # Add to processed set
+                            self.duplicate_hashes.add(content_hash)
+                            
+                            # Enhanced logging with timing details
+                            detection_delay = (datetime.now() - self.parse_datetime(published).replace(tzinfo=None)).total_seconds() if self.parse_datetime(published) else 0
+                            logger.info(f"📰 Found news for {found_tickers} from {source.name}: {title[:50]}... "
+                                      f"(Published: {published}, Detection delay: {detection_delay:.1f}s)")
                     
-            self.stats['articles_processed'] += len(articles)
-            
-        except asyncio.TimeoutError:
-            logger.warning(f"Timeout fetching {source.name}")
-            self.stats['errors'] += 1
-        except Exception as e:
-            logger.error(f"Error fetching {source.name}: {e}")
-            self.stats['errors'] += 1
-            
+                    except Exception as e:
+                        logger.warning(f"Error processing entry from {source.name}: {e}")
+                        continue
+                        
+                self.stats['articles_processed'] += len(articles)
+                return articles  # Success, exit retry loop
+                
+            except asyncio.TimeoutError:
+                retry_count += 1
+                logger.warning(f"Timeout fetching {source.name} (attempt {retry_count}/{max_retries + 1})")
+                if retry_count <= max_retries:
+                    await asyncio.sleep(3)  # Wait before retry
+                else:
+                    self.stats['errors'] += 1
+                    
+            except Exception as e:
+                retry_count += 1
+                logger.error(f"Error fetching {source.name} (attempt {retry_count}/{max_retries + 1}): {e}")
+                if retry_count <= max_retries:
+                    await asyncio.sleep(3)  # Wait before retry
+                else:
+                    self.stats['errors'] += 1
+                    
         return articles
 
     def classify_news_type(self, title: str, summary: str) -> str:
@@ -441,7 +467,7 @@ class NewswireMonitor:
         """Periodically flush buffer to ClickHouse"""
         while True:
             try:
-                await asyncio.sleep(5)  # Flush every 5 seconds
+                await asyncio.sleep(2)  # Flush every 2 seconds for faster detection
                 await self.flush_buffer_to_clickhouse()
                 
                 # Cleanup processed hashes to prevent memory growth
