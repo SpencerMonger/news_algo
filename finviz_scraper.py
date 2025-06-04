@@ -219,6 +219,10 @@ class FinvizScraper:
                             if not ticker_text or len(ticker_text) > 10:  # Skip invalid tickers
                                 continue
                             
+                            # Apply 4-letter restriction - only store tickers with exactly 4 letters
+                            if len(ticker_text) != 4:
+                                continue
+                            
                             ticker_data = {
                                 'ticker': ticker_text,
                                 'company_name': cells[col_map.get('company', 2)].get_text().strip() if col_map.get('company', 2) < len(cells) else '',
