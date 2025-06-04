@@ -127,16 +127,16 @@ class Crawl4AIScraper:
         pass  # No pre-compilation needed for simple matching
 
     def extract_tickers_from_text(self, text: str) -> List[str]:
-        """Simple ticker extraction - look for exact ticker as whole word in ALL CAPS ONLY"""
+        """Extract tickers from text using exchange pattern like ':TICKER' (e.g., 'Nasdaq: LYRA')"""
         if not text:
             return []
             
         found_tickers = []
         
         for ticker in self.ticker_list:
-            # Use word boundaries to match whole words only - NO re.IGNORECASE so only ALL CAPS matches
-            pattern = rf'\b{re.escape(ticker)}\b'
-            if re.search(pattern, text):  # Removed re.IGNORECASE - only ALL CAPS will match
+            # Look for pattern like ":TICKER" where ticker appears after colon and space
+            pattern = rf':\s*{re.escape(ticker)}\b'
+            if re.search(pattern, text):
                 found_tickers.append(ticker)
         
         return found_tickers
