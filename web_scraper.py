@@ -59,8 +59,8 @@ class Crawl4AIScraper:
         # SIMPLE: All three major newswire feeds
         self.sources = {
             'GlobeNewswire': "https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1",
-            'BusinessWire': "https://www.businesswire.com/newsroom",
-            'PRNewswire': "https://www.prnewswire.com/news-releases/news-releases-list/"
+            'BusinessWire': "https://www.businesswire.com/newsroom?language=en",
+            'PRNewswire': "https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50"
         }
 
     async def initialize(self):
@@ -127,17 +127,40 @@ class Crawl4AIScraper:
         pass  # No pre-compilation needed for simple matching
 
     def extract_tickers_from_text(self, text: str) -> List[str]:
-        """Extract tickers from text using exchange pattern like ':TICKER' (e.g., 'Nasdaq: LYRA')"""
+        """Extract tickers from text using multiple patterns including quoted formats"""
         if not text:
             return []
             
         found_tickers = []
         
         for ticker in self.ticker_list:
-            # Look for pattern like ":TICKER" where ticker appears after colon and space
-            pattern = rf':\s*{re.escape(ticker)}\b'
-            if re.search(pattern, text):
-                found_tickers.append(ticker)
+            ticker_escaped = re.escape(ticker)
+            
+            # Only match tickers in proper financial contexts - NO broad word matching
+            patterns = [
+                # Exchange patterns: ":TICKER" (e.g., "Nasdaq: STSS", "NYSE: AAPL")
+                rf':\s*{ticker_escaped}\b',
+                
+                # Quoted pattern: "TICKER" (e.g., "STSS" and "STSSW")
+                rf'"{ticker_escaped}"',
+                
+                # Parenthetical with exchange: (Exchange: TICKER) (e.g., "(NYSE: AAPL)")
+                rf'\([^)]*:\s*{ticker_escaped}\)',
+                
+                # Exchange with quotes: ": "TICKER"" (e.g., ': "STSS"')
+                rf':\s*"{ticker_escaped}"',
+                
+                # Parenthetical ticker only: (TICKER) - but only if 3+ chars to avoid common words
+                rf'\({ticker_escaped}\)' if len(ticker) >= 3 else None
+            ]
+            
+            # Remove None patterns and check each remaining pattern
+            valid_patterns = [p for p in patterns if p is not None]
+            for pattern in valid_patterns:
+                if re.search(pattern, text, re.IGNORECASE):
+                    found_tickers.append(ticker)
+                    logger.debug(f"Found ticker {ticker} using pattern: {pattern}")
+                    break  # Found with one pattern, no need to check others for this ticker
         
         return found_tickers
 
@@ -244,8 +267,8 @@ class Crawl4AIScraper:
                         if found_tickers:
                             logger.info(f"✅ TICKER MATCH: {found_tickers} in {source_name} title: {title}")
                             
-                            # Get timestamp from individual article
-                            time_text = await self.get_article_timestamp(url)
+                            # Extract timestamp from the listing page instead of individual article
+                            time_text = self.extract_timestamp_from_listing(link, source_name)
                             
                             # Generate content hash for deduplication
                             content_hash = self.generate_content_hash(title, url)
@@ -288,82 +311,6 @@ class Crawl4AIScraper:
         
         return all_articles
 
-    async def get_article_timestamp(self, url: str) -> str:
-        """Get timestamp from individual article page - enhanced to find more timestamp formats"""
-        try:
-            result: CrawlResult = await self.crawler.arun(
-                url=url,
-                timeout=10
-            )
-            
-            if result.success and result.html:
-                soup = BeautifulSoup(result.html, 'html.parser')
-                
-                # Comprehensive list of selectors for different news sites
-                time_selectors = [
-                    ".timestamp", ".date", "time", ".published", ".publish-date",
-                    ".article-date", ".news-date", ".release-date", ".story-date",
-                    ".byline-timestamp", ".article-timestamp", ".publish-time",
-                    "[datetime]", "[data-timestamp]", ".dateline", ".publication-date",
-                    ".meta-date", ".entry-date", ".post-date", ".created-date",
-                    ".article-meta time", ".byline time", ".header-date",
-                    ".news-meta .date", ".article-info .date", ".story-meta .date"
-                ]
-                
-                # Try each selector
-                for selector in time_selectors:
-                    time_elem = soup.select_one(selector)
-                    if time_elem:
-                        # Try getting datetime attribute first
-                        datetime_attr = time_elem.get('datetime') or time_elem.get('data-timestamp')
-                        if datetime_attr:
-                            logger.debug(f"Found datetime attribute: {datetime_attr}")
-                            return datetime_attr
-                        
-                        # Get text content
-                        time_text = time_elem.get_text(strip=True)
-                        if time_text and len(time_text) > 3:  # Minimum reasonable timestamp length
-                            logger.debug(f"Found timestamp text: {time_text}")
-                            return time_text
-                
-                # Fallback: search for common date/time patterns in page text
-                page_text = soup.get_text()
-                
-                # Look for patterns like "Jan 15, 2024 10:30 AM EST" or "2024-01-15 10:30:00"
-                date_patterns = [
-                    r'\b[A-Za-z]{3}\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*[AP]M\s*[A-Z]{2,3}\b',  # Jan 15, 2024 10:30 AM EST
-                    r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b',  # 2024-01-15 10:30:00
-                    r'\b\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*[AP]M\b',  # 1/15/2024 10:30 AM
-                    r'\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\b',  # January 15, 2024
-                    r'\b\d{1,2}:\d{2}\s*[AP]M\s*[A-Z]{2,3}\b',  # 10:30 AM EST
-                    r'\b\d{1,2}:\d{2}\s*ET\b'  # 10:30 ET
-                ]
-                
-                for pattern in date_patterns:
-                    match = re.search(pattern, page_text)
-                    if match:
-                        found_date = match.group()
-                        logger.debug(f"Found date pattern: {found_date}")
-                        return found_date
-                
-                # Last resort: look for any time-like text in meta tags
-                meta_tags = soup.find_all('meta')
-                for meta in meta_tags:
-                    name = meta.get('name', '').lower()
-                    property_attr = meta.get('property', '').lower()
-                    content = meta.get('content', '')
-                    
-                    if any(keyword in name or keyword in property_attr for keyword in 
-                           ['date', 'time', 'published', 'created', 'modified']):
-                        if content and len(content) > 5:
-                            logger.debug(f"Found meta date: {content}")
-                            return content
-                
-        except Exception as e:
-            logger.debug(f"Could not get timestamp from {url}: {e}")
-        
-        return "NO_TIME"
-
     async def flush_buffer_to_clickhouse(self):
         """Flush article buffer to ClickHouse"""
         if not self.batch_queue:
@@ -399,7 +346,7 @@ class Crawl4AIScraper:
                 logger.info(f"🔄 All newswires scan completed: {len(articles)} articles in {total_time:.2f}s")
                 
                 # Wait before next cycle
-                await asyncio.sleep(30)  # Check every 30 seconds
+                await asyncio.sleep(10)  # Check every 10 seconds
                 
             except Exception as e:
                 logger.error(f"Error in newswire monitoring: {e}")
@@ -507,6 +454,67 @@ class Crawl4AIScraper:
         except Exception as e:
             logger.warning(f"Could not fetch RSS for comparison: {e}")
             return []
+
+    def extract_timestamp_from_listing(self, link, source_name):
+        """Extract timestamp directly from listing page elements - much faster than individual requests"""
+        try:
+            # Find timestamp in the same container as the link
+            container = link.parent
+            if container:
+                # Try multiple approaches to find timestamp in nearby elements
+                
+                # Look for time in text content around the link
+                container_text = container.get_text()
+                
+                # Common timestamp patterns on news listing pages
+                time_patterns = [
+                    r'\b\d{1,2}:\d{2}\s*ET\b',                    # "09:30 ET"
+                    r'\b\d{1,2}:\d{2}\s*EST\b',                  # "09:30 EST"
+                    r'\b\d{1,2}:\d{2}\s*[AP]M\s*ET\b',          # "09:30 AM ET"
+                    r'\b\d{1,2}:\d{2}\s*[AP]M\s*EST\b',         # "09:30 AM EST"
+                    r'\b[A-Za-z]{3}\s+\d{1,2},\s+\d{4}\b',      # "Jan 15, 2024"
+                    r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\b'      # "2024-01-15 10:30"
+                ]
+                
+                for pattern in time_patterns:
+                    match = re.search(pattern, container_text)
+                    if match:
+                        found_time = match.group().strip()
+                        logger.debug(f"Found timestamp in listing: {found_time}")
+                        return found_time
+                
+                # If no patterns match, look for specific timestamp elements
+                for time_elem in container.find_all(['time', 'span', 'div']):
+                    # Check for datetime attributes
+                    datetime_attr = time_elem.get('datetime')
+                    if datetime_attr:
+                        return datetime_attr
+                    
+                    # Check for timestamp-like classes
+                    elem_class = time_elem.get('class', [])
+                    if any(cls for cls in elem_class if 'time' in cls.lower() or 'date' in cls.lower()):
+                        time_text = time_elem.get_text(strip=True)
+                        if time_text and len(time_text) > 3:
+                            return time_text
+                
+                # Fallback: look for time pattern in broader parent container
+                broader_container = container.parent
+                if broader_container:
+                    broader_text = broader_container.get_text()
+                    for pattern in time_patterns:
+                        match = re.search(pattern, broader_text)
+                        if match:
+                            found_time = match.group().strip()
+                            logger.debug(f"Found timestamp in broader container: {found_time}")
+                            return found_time
+            
+        except Exception as e:
+            logger.debug(f"Error extracting timestamp from listing for {source_name}: {e}")
+        
+        # Return current time as fallback - still better than failing completely
+        current_time = datetime.now().strftime("%H:%M ET")
+        logger.debug(f"Using current time as fallback: {current_time}")
+        return current_time
 
 async def main():
     """Main function to run the Crawl4AI web scraper"""
