@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import logging.handlers
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import clickhouse_connect
@@ -9,9 +10,75 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Create logs directory structure
+os.makedirs('logs', exist_ok=True)
+os.makedirs('logs/articles', exist_ok=True)
+
+# Configure enhanced logging system
+def setup_logging():
+    """Setup comprehensive logging with file handlers"""
+    # Main logger
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    
+    # Clear any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    
+    # Daily rotating file handler for general logs
+    from logging.handlers import TimedRotatingFileHandler
+    general_file_handler = TimedRotatingFileHandler(
+        'logs/clickhouse_operations.log',
+        when='midnight',
+        interval=1,
+        backupCount=30,
+        encoding='utf-8'
+    )
+    general_file_handler.setLevel(logging.INFO)
+    general_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    general_file_handler.setFormatter(general_formatter)
+    
+    # Dedicated article tracking file handler
+    article_file_handler = TimedRotatingFileHandler(
+        'logs/articles/article_tracking.log',
+        when='midnight',
+        interval=1,
+        backupCount=30,
+        encoding='utf-8'
+    )
+    article_file_handler.setLevel(logging.INFO)
+    article_formatter = logging.Formatter('%(asctime)s - ARTICLE - %(message)s')
+    article_file_handler.setFormatter(article_formatter)
+    
+    # Add handlers to logger
+    logger.addHandler(console_handler)
+    logger.addHandler(general_file_handler)
+    logger.addHandler(article_file_handler)
+    
+    return logger
+
+# Initialize enhanced logging
+logger = setup_logging()
+
+# Create a separate logger for article events
+article_logger = logging.getLogger('article_events')
+article_logger.setLevel(logging.INFO)
+article_file_handler = logging.handlers.TimedRotatingFileHandler(
+    'logs/articles/article_events.log',
+    when='midnight',
+    interval=1,
+    backupCount=30,
+    encoding='utf-8'
+)
+article_formatter = logging.Formatter('%(asctime)s - %(message)s')
+article_file_handler.setFormatter(article_formatter)
+article_logger.addHandler(article_file_handler)
 
 class ClickHouseManager:
     def __init__(self):
@@ -78,15 +145,15 @@ class ClickHouseManager:
             INDEX idx_source (source) TYPE set(100) GRANULARITY 1,
             INDEX idx_content_hash (content_hash) TYPE bloom_filter GRANULARITY 1
         ) 
-        ENGINE = ReplacingMergeTree()
+        ENGINE = ReplacingMergeTree(detected_at)
         PARTITION BY toYYYYMM(timestamp)
-        ORDER BY (article_url)
+        ORDER BY (content_hash, article_url)
         SETTINGS index_granularity = 8192
         """
         
         try:
             self.client.command(create_table_sql)
-            logger.info("breaking_news table created/verified")
+            logger.info("breaking_news table created/verified with timestamp preservation")
         except Exception as e:
             logger.error(f"Error creating table: {e}")
             raise
@@ -97,11 +164,59 @@ class ClickHouseManager:
             return 0
             
         try:
+            logger.info(f"Processing batch of {len(articles)} articles for insertion")
+            article_logger.info(f"BATCH_START: Processing {len(articles)} articles")
+            
             # Prepare data for insertion
             data_rows = []
-            for article in articles:
+            for i, article in enumerate(articles, 1):
+                ticker = article.get('ticker', 'UNKNOWN')
+                headline = article.get('headline', '')[:100]  # Truncate for logging
+                source = article.get('source', '')
+                content_hash = article.get('content_hash', '')
+                
+                # Check if this is a duplicate by content hash
+                is_duplicate = False
+                if content_hash:
+                    try:
+                        duplicate_check = self.client.query(
+                            f"SELECT COUNT(*) FROM News.breaking_news WHERE content_hash = '{content_hash}'"
+                        )
+                        is_duplicate = duplicate_check.result_rows[0][0] > 0 if duplicate_check.result_rows else False
+                    except:
+                        is_duplicate = False
+                
+                if is_duplicate:
+                    article_logger.warning(f"DUPLICATE_DETECTED: {ticker} | {content_hash} | Skipping to preserve original timestamp")
+                    logger.info(f"Skipping duplicate article for {ticker}")
+                    continue  # Skip duplicate articles entirely
+                
+                # Debug timestamp issue for NEW articles only
+                if 'timestamp' not in article:
+                    timestamp_val = datetime.now()
+                    logger.warning(f"Missing timestamp for ticker {ticker}, using current time: {timestamp_val}")
+                    article_logger.warning(f"MISSING_TIMESTAMP: {ticker} | {headline}")
+                else:
+                    timestamp_val = article.get('timestamp')
+                    logger.info(f"Using existing timestamp for ticker {ticker}: {timestamp_val}")
+                
+                # Log detailed article information
+                article_logger.info(f"ARTICLE_{i:02d}: {ticker} | {timestamp_val} | {source} | {headline}")
+                
+                # Check for potential duplicates by content hash
+                if content_hash:
+                    article_logger.info(f"CONTENT_HASH: {ticker} | {content_hash}")
+                
+                # Log potential timing issues
+                current_time = datetime.now()
+                if isinstance(timestamp_val, datetime):
+                    time_diff = (current_time - timestamp_val).total_seconds()
+                    if abs(time_diff) > 60:  # More than 1 minute difference
+                        article_logger.warning(f"TIME_DIFF: {ticker} | Article timestamp: {timestamp_val} | Current: {current_time} | Diff: {time_diff:.1f}s")
+                        article_logger.warning(f"POTENTIAL_DUPLICATE: {ticker} | This may be a duplicate article with updated timestamp")
+                
                 data_rows.append([
-                    article.get('timestamp', datetime.now()),
+                    timestamp_val,
                     article.get('source', ''),
                     article.get('ticker', ''),
                     article.get('headline', ''),
@@ -118,6 +233,11 @@ class ClickHouseManager:
                     article.get('urgency_score', 0)
                 ])
             
+            # Skip if no new articles to insert
+            if not data_rows:
+                article_logger.info("No new articles to insert (all were duplicates)")
+                return 0
+            
             # Column names for insertion
             columns = [
                 'timestamp', 'source', 'ticker', 'headline', 'published_utc',
@@ -126,21 +246,33 @@ class ClickHouseManager:
                 'content_hash', 'news_type', 'urgency_score'
             ]
             
+            # Log insertion attempt
+            insertion_time = datetime.now()
+            article_logger.info(f"DB_INSERT_START: {insertion_time} | {len(articles)} articles")
+            
             result = self.client.insert(
                 'News.breaking_news',
                 data_rows,
                 column_names=columns
             )
             
-            logger.info(f"Inserted {len(articles)} articles into ClickHouse")
+            completion_time = datetime.now()
+            insert_duration = (completion_time - insertion_time).total_seconds()
+            
+            logger.info(f"Inserted {len(articles)} articles into ClickHouse in {insert_duration:.2f}s")
+            article_logger.info(f"DB_INSERT_COMPLETE: {completion_time} | {len(articles)} articles | Duration: {insert_duration:.2f}s")
             
             # Force merge for immediate deduplication
             self.force_merge_breaking_news()
             
+            article_logger.info(f"BATCH_COMPLETE: Successfully processed {len(articles)} articles")
+            
             return len(articles)
             
         except Exception as e:
+            error_time = datetime.now()
             logger.error(f"Error inserting articles: {e}")
+            article_logger.error(f"DB_INSERT_ERROR: {error_time} | {e}")
             raise
 
     def get_recent_articles(self, ticker: str = None, hours: int = 24) -> List[Dict]:
