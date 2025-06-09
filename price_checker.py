@@ -434,7 +434,7 @@ class ContinuousPriceMonitor:
 async def main():
     """Main function"""
     logger.info("🚀 Starting Continuous Price Monitor")
-    logger.info("Monitoring breaking news tickers for 2%+ price increases")
+    logger.info("Monitoring breaking news tickers for 5%+ price increases")
     
     monitor = ContinuousPriceMonitor()
     await monitor.start()
