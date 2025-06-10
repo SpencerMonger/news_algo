@@ -170,14 +170,43 @@ class Crawl4AIScraper:
         return hashlib.md5(content.encode()).hexdigest()
 
     def parse_relative_time(self, time_text: str) -> datetime:
-        """Extract timestamp directly from article - store exactly what's found"""
+        """Extract timestamp from article - now handles full datetime formats"""
         if not time_text:
             return datetime.now()
         
         time_text = time_text.strip()
         
         try:
-            # Look for time pattern like "11:26 ET" or "10:59 EST"
+            # Handle full datetime patterns like "June 09, 2025 12:58 ET"
+            full_datetime_patterns = [
+                # "June 09, 2025 12:58 ET" format
+                (r'([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*ET', '%B %d, %Y %H:%M'),
+                (r'([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*EST', '%B %d, %Y %H:%M'),
+                # "June 09, 2025 12:58 PM ET" format
+                (r'([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*([AP]M)\s*ET', '%B %d, %Y %I:%M %p'),
+                # ISO format
+                (r'(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):(\d{2})', '%Y-%m-%d %H:%M:%S'),
+                (r'(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2})', '%Y-%m-%d %H:%M'),
+            ]
+            
+            for pattern, format_str in full_datetime_patterns:
+                if re.search(pattern, time_text):
+                    try:
+                        # For the full month name patterns, we need to handle the parsing differently
+                        if 'A-Za-z' in pattern:
+                            # Clean up the text for parsing
+                            clean_text = re.sub(r'\s*ET$|\s*EST$', '', time_text)
+                            parsed_time = datetime.strptime(clean_text, format_str.replace(' ET', '').replace(' EST', ''))
+                        else:
+                            parsed_time = datetime.strptime(time_text, format_str)
+                        
+                        logger.info(f"🕐 PARSED FULL DATETIME: '{time_text}' -> {parsed_time}")
+                        return parsed_time
+                    except ValueError as e:
+                        logger.debug(f"Failed to parse with pattern {pattern}: {e}")
+                        continue
+            
+            # Fallback to time-only parsing (existing logic)
             time_match = re.search(r'(\d{1,2}):(\d{2})', time_text)
             if time_match:
                 hour = int(time_match.group(1))
@@ -193,7 +222,7 @@ class Crawl4AIScraper:
                     parsed_time = parsed_time - timedelta(days=1)
                     logger.info(f"🕐 FROM YESTERDAY: '{time_text}' -> {parsed_time} (diff: {(datetime.now() - parsed_time).total_seconds():.1f}s)")
                 else:
-                    logger.info(f"🕐 EXACT TIME: '{time_text}' -> {parsed_time} (diff: {time_diff:.1f}s)")
+                    logger.info(f"🕐 TIME ONLY: '{time_text}' -> {parsed_time} (diff: {time_diff:.1f}s)")
                 
                 return parsed_time
                 
@@ -269,6 +298,19 @@ class Crawl4AIScraper:
                             
                             # Extract timestamp from the listing page instead of individual article
                             time_text = self.extract_timestamp_from_listing(link, source_name)
+                            
+                            # Parse the full datetime
+                            parsed_timestamp = self.parse_relative_time(time_text)
+                            
+                            # SANITY CHECK: Only apply current day filter to GlobeNewswire (24HOURS can include yesterday)
+                            # Other sources (BusinessWire, PRNewswire) already filter to current day
+                            if source_name == 'GlobeNewswire':
+                                current_date = datetime.now().date()
+                                article_date = parsed_timestamp.date()
+                                
+                                if article_date != current_date:
+                                    logger.debug(f"⏰ SKIPPING old GlobeNewswire article from {article_date}: {title[:50]}...")
+                                    continue
                             
                             # Generate content hash for deduplication
                             content_hash = self.generate_content_hash(title, url)
@@ -466,14 +508,25 @@ class Crawl4AIScraper:
                 # Look for time in text content around the link
                 container_text = container.get_text()
                 
-                # Common timestamp patterns on news listing pages
+                # Enhanced timestamp patterns that capture full datetime
                 time_patterns = [
-                    r'\b\d{1,2}:\d{2}\s*ET\b',                    # "09:30 ET"
-                    r'\b\d{1,2}:\d{2}\s*EST\b',                  # "09:30 EST"
-                    r'\b\d{1,2}:\d{2}\s*[AP]M\s*ET\b',          # "09:30 AM ET"
-                    r'\b\d{1,2}:\d{2}\s*[AP]M\s*EST\b',         # "09:30 AM EST"
-                    r'\b[A-Za-z]{3}\s+\d{1,2},\s+\d{4}\b',      # "Jan 15, 2024"
-                    r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\b'      # "2024-01-15 10:30"
+                    # Full date patterns like "June 09, 2025 12:58 ET"
+                    r'\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*ET\b',     # "June 09, 2025 12:58 ET"
+                    r'\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*EST\b',    # "June 09, 2025 12:58 EST"
+                    r'\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*[AP]M\s*ET\b',  # "June 09, 2025 12:58 PM ET"
+                    
+                    # ISO-like patterns
+                    r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b',                     # "2024-01-15 10:30:00"
+                    r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\b',                           # "2024-01-15 10:30"
+                    
+                    # Shorter date patterns  
+                    r'\b[A-Za-z]{3}\s+\d{1,2},\s+\d{4}\b',                            # "Jan 15, 2024"
+                    
+                    # Time-only patterns (fallback)
+                    r'\b\d{1,2}:\d{2}\s*ET\b',                                        # "09:30 ET"
+                    r'\b\d{1,2}:\d{2}\s*EST\b',                                       # "09:30 EST"
+                    r'\b\d{1,2}:\d{2}\s*[AP]M\s*ET\b',                               # "09:30 AM ET"
+                    r'\b\d{1,2}:\d{2}\s*[AP]M\s*EST\b',                              # "09:30 AM EST"
                 ]
                 
                 for pattern in time_patterns:

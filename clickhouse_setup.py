@@ -634,7 +634,8 @@ class ClickHouseManager:
             CREATE TABLE IF NOT EXISTS News.news_alert (
                 ticker String,
                 timestamp DateTime DEFAULT now(),
-                alert UInt8 DEFAULT 1
+                alert UInt8 DEFAULT 1,
+                price Float64
             ) ENGINE = MergeTree()
             ORDER BY (ticker, timestamp)
             PARTITION BY toYYYYMM(timestamp)

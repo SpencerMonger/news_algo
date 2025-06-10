@@ -32,50 +32,53 @@ class NewsAlertTestGenerator:
     def get_random_tickers(self, count: int = 5) -> list:
         """Get random tickers from the float_list table"""
         try:
-            # Query random tickers from float_list
+            # Query random tickers with their prices from float_list
             query = f"""
-            SELECT ticker FROM News.float_list 
+            SELECT ticker, price FROM News.float_list 
             ORDER BY rand() 
             LIMIT {count}
             """
             result = self.ch_manager.client.query(query)
             
             if result.result_rows:
-                tickers = [row[0] for row in result.result_rows]
-                logger.info(f"📊 Retrieved {len(tickers)} random tickers: {tickers}")
-                return tickers
+                ticker_data = [(row[0], row[1]) for row in result.result_rows]  # (ticker, price) tuples
+                tickers = [data[0] for data in ticker_data]
+                logger.info(f"📊 Retrieved {len(tickers)} random tickers with prices: {ticker_data}")
+                return ticker_data
             else:
                 logger.warning("⚠️ No tickers found in float_list table, using fallback tickers")
-                # Fallback to common test tickers if float_list is empty
-                return ['AAPL', 'TSLA', 'MSFT', 'GOOGL', 'NVDA'][:count]
+                # Fallback to common test tickers with default prices if float_list is empty
+                fallback_data = [('AAPL', 150.0), ('TSLA', 200.0), ('MSFT', 300.0), ('GOOGL', 100.0), ('NVDA', 400.0)]
+                return fallback_data[:count]
                 
         except Exception as e:
             logger.error(f"❌ Error getting random tickers: {e}")
-            # Return fallback tickers
-            return ['TEST1', 'TEST2', 'TEST3', 'TEST4', 'TEST5'][:count]
+            # Return fallback tickers with default prices
+            fallback_data = [('TEST1', 5.0), ('TEST2', 10.0), ('TEST3', 15.0), ('TEST4', 20.0), ('TEST5', 25.0)]
+            return fallback_data[:count]
     
     def generate_test_alerts(self, num_alerts: int = 3):
         """Generate test entries in the news_alert table"""
         try:
-            # Get random tickers
-            random_tickers = self.get_random_tickers(num_alerts)
+            # Get random tickers with their actual prices
+            ticker_data = self.get_random_tickers(num_alerts)
             
             # Prepare alert data
             alert_data = []
-            for ticker in random_tickers:
+            for ticker, price in ticker_data:
                 # Generate slightly random timestamps (within last 5 minutes)
                 random_offset = random.randint(0, 300)  # 0-5 minutes ago
                 timestamp = datetime.now() - timedelta(seconds=random_offset)
                 
-                alert_data.append((ticker, timestamp, 1))
-                logger.info(f"🚨 Preparing test alert: {ticker} at {timestamp}")
+                alert_data.append((ticker, timestamp, 1, price))
+                logger.info(f"🚨 Preparing test alert: {ticker} at {timestamp} (price: ${price})")
             
             # Batch insert all alerts into news_alert table
             if alert_data:
                 self.ch_manager.client.insert(
                     'News.news_alert',
                     alert_data,
-                    column_names=['ticker', 'timestamp', 'alert']
+                    column_names=['ticker', 'timestamp', 'alert', 'price']
                 )
                 
                 logger.info(f"✅ Successfully inserted {len(alert_data)} test alerts into News.news_alert table")
@@ -94,7 +97,7 @@ class NewsAlertTestGenerator:
         """Show recent alerts from the news_alert table"""
         try:
             query = f"""
-            SELECT ticker, timestamp, alert 
+            SELECT ticker, timestamp, alert, price 
             FROM News.news_alert 
             ORDER BY timestamp DESC 
             LIMIT {limit}
@@ -103,8 +106,8 @@ class NewsAlertTestGenerator:
             
             if result.result_rows:
                 logger.info(f"📋 Recent alerts (last {len(result.result_rows)}):")
-                for i, (ticker, timestamp, alert) in enumerate(result.result_rows, 1):
-                    logger.info(f"   {i}. {ticker} - {timestamp} (alert={alert})")
+                for i, (ticker, timestamp, alert, price) in enumerate(result.result_rows, 1):
+                    logger.info(f"   {i}. {ticker} - {timestamp} (alert={alert}) (price=${price})")
             else:
                 logger.info("📋 No alerts found in news_alert table")
                 
