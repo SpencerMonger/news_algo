@@ -125,7 +125,8 @@ class ContinuousPriceMonitor:
             CREATE TABLE IF NOT EXISTS News.news_alert (
                 ticker String,
                 timestamp DateTime DEFAULT now(),
-                alert UInt8 DEFAULT 1
+                alert UInt8 DEFAULT 1,
+                price Float64
             ) ENGINE = MergeTree()
             ORDER BY (ticker, timestamp)
             PARTITION BY toYYYYMM(timestamp)
@@ -292,7 +293,7 @@ class ContinuousPriceMonitor:
                     logger.info(f"🚨 PRICE ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from 5min ago)")
                     
                     # Add to alert data for batch insert
-                    alert_data.append((ticker, datetime.now(), 1))
+                    alert_data.append((ticker, datetime.now(), 1, current_price))
                     
                     # Log to price_move table
                     await self.log_price_alert(ticker, current_price, min_price_5min, change_pct)
@@ -304,7 +305,7 @@ class ContinuousPriceMonitor:
                     self.ch_manager.client.insert(
                         'News.news_alert',
                         alert_data,
-                        column_names=['ticker', 'timestamp', 'alert']
+                        column_names=['ticker', 'timestamp', 'alert', 'price']
                     )
                     logger.info(f"Inserted {len(alert_data)} alerts into news_alert table")
                 
