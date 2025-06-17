@@ -277,7 +277,7 @@ class Crawl4AIScraper:
                                 url = "https://www.prnewswire.com" + url
                         
                         # Skip non-news URLs
-                        if not any(x in url for x in ['news-release', 'story', 'releases']):
+                        if not any(x in url for x in ['news-release', 'story', 'releases', 'news/home']):
                             continue
                         
                         # Get any available description/summary text
