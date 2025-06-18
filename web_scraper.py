@@ -243,126 +243,151 @@ class Crawl4AIScraper:
         return datetime.now()
 
     async def scrape_all_newswires(self) -> List[Dict[str, Any]]:
-        """Scrape all newswire sources and find EXACT ticker matches"""
+        """Scrape all newswire sources in parallel and find EXACT ticker matches"""
         all_articles = []
         
+        # Create scraping tasks for all sources in parallel
+        scraping_tasks = []
         for source_name, source_url in self.sources.items():
-            try:
-                logger.info(f"🔍 Scraping {source_name}...")
-                
-                result: CrawlResult = await self.crawler.arun(
-                    url=source_url,
-                    wait_for="css:.news-item, .search-result, .bw-release-story, .newsreleaseheadline",
-                    delay_before_return_html=2.0,
-                    timeout=30
-                )
-                
-                if not result.success or not result.html:
-                    logger.error(f"❌ Failed to scrape {source_name}: {result.error_message}")
+            task = self.scrape_single_source(source_name, source_url)
+            scraping_tasks.append(task)
+        
+        # Execute all scraping tasks in parallel
+        try:
+            results = await asyncio.gather(*scraping_tasks, return_exceptions=True)
+            
+            # Process results from all sources
+            for i, result in enumerate(results):
+                source_name = list(self.sources.keys())[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Error scraping {source_name}: {result}")
                     continue
-                
-                soup = BeautifulSoup(result.html, 'html.parser')
-                
-                # Find all article links and titles
-                article_links = soup.find_all('a', href=True)
-                
-                logger.info(f"📰 Found {len(article_links)} potential articles from {source_name}")
-                
-                for link in article_links:
-                    try:
-                        title = link.get_text(strip=True)
-                        url = link.get('href', '')
-                        
-                        if not title or not url or len(title) < 20:
-                            continue
-                        
-                        # Make URL absolute
-                        if url.startswith('/'):
-                            if source_name == 'GlobeNewswire':
-                                url = "https://www.globenewswire.com" + url
-                            elif source_name == 'BusinessWire':
-                                url = "https://www.businesswire.com" + url
-                            elif source_name == 'PRNewswire':
-                                url = "https://www.prnewswire.com" + url
-                            elif source_name == 'AccessNewswire':
-                                url = "https://www.accessnewswire.com" + url
-                        
-                        # Skip non-news URLs
-                        if not any(x in url for x in ['news-release', 'story', 'releases', 'news/home', 'newsroom', 'press-release']):
-                            continue
-                        
-                        # Get any available description/summary text
-                        description = ""
-                        parent = link.parent
-                        if parent:
-                            # Look for description in nearby elements
-                            desc_elem = parent.find('p') or parent.find('div', class_='summary') or parent.find('div', class_='description')
-                            if desc_elem:
-                                description = desc_elem.get_text(strip=True)
-                        
-                        # Search for tickers in title AND description (like RSS monitor)
-                        text_to_search = f"{title} {description}"
-                        found_tickers = self.extract_tickers_from_text(text_to_search)
-                        
-                        if found_tickers:
-                            logger.info(f"✅ TICKER MATCH: {found_tickers} in {source_name} title: {title}")
-                            
-                            # Extract timestamp from the listing page instead of individual article
-                            time_text = self.extract_timestamp_from_listing(link, source_name)
-                            
-                            # Parse the full datetime
-                            parsed_timestamp = self.parse_relative_time(time_text)
-                            
-                            # SANITY CHECK: Only apply current day filter to GlobeNewswire (24HOURS can include yesterday)
-                            # Other sources (BusinessWire, PRNewswire) already filter to current day
-                            if source_name == 'GlobeNewswire':
-                                current_date = datetime.now().date()
-                                article_date = parsed_timestamp.date()
-                                
-                                if article_date != current_date:
-                                    logger.debug(f"⏰ SKIPPING old GlobeNewswire article from {article_date}: {title[:50]}...")
-                                    continue
-                            
-                            # Generate content hash for deduplication
-                            content_hash = self.generate_content_hash(title, url)
-                            
-                            # Create an article for each ticker found
-                            for ticker in found_tickers:
-                                article = {
-                                    'timestamp': datetime.now(),
-                                    'source': f'{source_name}_24H',
-                                    'ticker': ticker,
-                                    'headline': title,
-                                    'published_utc': time_text,  # Store raw string as per schema
-                                    'article_url': url,
-                                    'summary': title,
-                                    'full_content': title,
-                                    'detected_at': datetime.now(),
-                                    'processing_latency_ms': 0,
-                                    'market_relevant': 1,
-                                    'source_check_time': datetime.now(),
-                                    'content_hash': content_hash,
-                                    'news_type': 'other',
-                                    'urgency_score': 5
-                                }
-                                
-                                # Add article directly to batch (let database handle duplicates)
-                                all_articles.append(article)
-                                logger.info(f"✅ NEW ARTICLE: {ticker} - {title[:50]}...")
-                        else:
-                            logger.debug(f"❌ No tickers found in: {title[:50]}...")
-                        
-                    except Exception as e:
-                        logger.debug(f"Error processing article: {e}")
-                        continue
-                
-                logger.info(f"🎯 Found {len([a for a in all_articles if a['source'].startswith(source_name)])} articles with exact ticker matches from {source_name}")
-                
-            except Exception as e:
-                logger.error(f"Error scraping {source_name}: {e}")
-                continue
+                elif result:
+                    all_articles.extend(result)
+                    logger.info(f"🎯 Found {len(result)} articles with exact ticker matches from {source_name}")
+        
+        except Exception as e:
+            logger.error(f"Error in parallel scraping: {e}")
         
         return all_articles
+
+    async def scrape_single_source(self, source_name: str, source_url: str) -> List[Dict[str, Any]]:
+        """Scrape a single newswire source"""
+        articles = []
+        
+        try:
+            logger.info(f"🔍 Scraping {source_name}...")
+            
+            result: CrawlResult = await self.crawler.arun(
+                url=source_url,
+                wait_for="css:.news-item, .search-result, .bw-release-story, .newsreleaseheadline",
+                delay_before_return_html=2.0,
+                timeout=30
+            )
+            
+            if not result.success or not result.html:
+                logger.error(f"❌ Failed to scrape {source_name}: {result.error_message}")
+                return articles
+            
+            soup = BeautifulSoup(result.html, 'html.parser')
+            
+            # Find all article links and titles
+            article_links = soup.find_all('a', href=True)
+            
+            logger.info(f"📰 Found {len(article_links)} potential articles from {source_name}")
+            
+            for link in article_links:
+                try:
+                    title = link.get_text(strip=True)
+                    url = link.get('href', '')
+                    
+                    if not title or not url or len(title) < 20:
+                        continue
+                    
+                    # Make URL absolute
+                    if url.startswith('/'):
+                        if source_name == 'GlobeNewswire':
+                            url = "https://www.globenewswire.com" + url
+                        elif source_name == 'BusinessWire':
+                            url = "https://www.businesswire.com" + url
+                        elif source_name == 'PRNewswire':
+                            url = "https://www.prnewswire.com" + url
+                        elif source_name == 'AccessNewswire':
+                            url = "https://www.accessnewswire.com" + url
+                    
+                    # Skip non-news URLs
+                    if not any(x in url for x in ['news-release', 'story', 'releases', 'news/home', 'newsroom', 'press-release']):
+                        continue
+                    
+                    # Get any available description/summary text
+                    description = ""
+                    parent = link.parent
+                    if parent:
+                        # Look for description in nearby elements
+                        desc_elem = parent.find('p') or parent.find('div', class_='summary') or parent.find('div', class_='description')
+                        if desc_elem:
+                            description = desc_elem.get_text(strip=True)
+                    
+                    # Search for tickers in title AND description (like RSS monitor)
+                    text_to_search = f"{title} {description}"
+                    found_tickers = self.extract_tickers_from_text(text_to_search)
+                    
+                    if found_tickers:
+                        logger.info(f"✅ TICKER MATCH: {found_tickers} in {source_name} title: {title}")
+                        
+                        # Extract timestamp from the listing page instead of individual article
+                        time_text = self.extract_timestamp_from_listing(link, source_name)
+                        
+                        # Parse the full datetime
+                        parsed_timestamp = self.parse_relative_time(time_text)
+                        
+                        # SANITY CHECK: Only apply current day filter to GlobeNewswire (24HOURS can include yesterday)
+                        # Other sources (BusinessWire, PRNewswire) already filter to current day
+                        if source_name == 'GlobeNewswire':
+                            current_date = datetime.now().date()
+                            article_date = parsed_timestamp.date()
+                            
+                            if article_date != current_date:
+                                logger.debug(f"⏰ SKIPPING old GlobeNewswire article from {article_date}: {title[:50]}...")
+                                continue
+                        
+                        # Generate content hash for deduplication
+                        content_hash = self.generate_content_hash(title, url)
+                        
+                        # Create an article for each ticker found
+                        for ticker in found_tickers:
+                            article = {
+                                'timestamp': datetime.now(),
+                                'source': f'{source_name}_24H',
+                                'ticker': ticker,
+                                'headline': title,
+                                'published_utc': time_text,  # Store raw string as per schema
+                                'article_url': url,
+                                'summary': title,
+                                'full_content': title,
+                                'detected_at': datetime.now(),
+                                'processing_latency_ms': 0,
+                                'market_relevant': 1,
+                                'source_check_time': datetime.now(),
+                                'content_hash': content_hash,
+                                'news_type': 'other',
+                                'urgency_score': 5
+                            }
+                            
+                            # Add article directly to batch (let database handle duplicates)
+                            articles.append(article)
+                            logger.info(f"✅ NEW ARTICLE: {ticker} - {title[:50]}...")
+                    else:
+                        logger.debug(f"❌ No tickers found in: {title[:50]}...")
+                    
+                except Exception as e:
+                    logger.debug(f"Error processing article: {e}")
+                    continue
+            
+        except Exception as e:
+            logger.error(f"Error scraping {source_name}: {e}")
+        
+        return articles
 
     async def flush_buffer_to_clickhouse(self):
         """Flush article buffer to ClickHouse"""
@@ -398,8 +423,17 @@ class Crawl4AIScraper:
                 total_time = time.time() - start_time
                 logger.info(f"🔄 All newswires scan completed: {len(articles)} articles in {total_time:.2f}s")
                 
-                # Wait before next cycle
-                await asyncio.sleep(10)  # Check every 10 seconds
+                # Adaptive polling: wait minimum 5 seconds, but ensure cycles don't overlap
+                min_wait = 5.0  # Reduced from 10s for faster monitoring after cold start
+                if total_time < min_wait:
+                    wait_time = min_wait - total_time
+                    logger.debug(f"⏱️ Cycle took {total_time:.2f}s, waiting additional {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Cycle took longer than minimum - add small buffer to prevent immediate restart
+                    buffer_time = 2.0
+                    logger.info(f"⚠️ Cycle took {total_time:.2f}s (longer than {min_wait}s minimum), adding {buffer_time}s buffer")
+                    await asyncio.sleep(buffer_time)
                 
             except Exception as e:
                 logger.error(f"Error in newswire monitoring: {e}")
@@ -608,104 +642,138 @@ class Crawl4AIScraper:
                 total_time = time.time() - start_time
                 logger.info(f"🔄 RSS feeds scan completed: {len(articles)} articles in {total_time:.2f}s")
                 
-                # Wait before next cycle - using 10 seconds for comparison testing
-                await asyncio.sleep(10)  # Same as web scraper for fair comparison
+                # Adaptive polling: wait minimum 5 seconds, but ensure cycles don't overlap
+                min_wait = 5.0  # Reduced from 10s for faster monitoring after cold start
+                if total_time < min_wait:
+                    wait_time = min_wait - total_time
+                    logger.debug(f"⏱️ Cycle took {total_time:.2f}s, waiting additional {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Cycle took longer than minimum - add small buffer to prevent immediate restart
+                    buffer_time = 2.0
+                    logger.info(f"⚠️ Cycle took {total_time:.2f}s (longer than {min_wait}s minimum), adding {buffer_time}s buffer")
+                    await asyncio.sleep(buffer_time)
                 
             except Exception as e:
                 logger.error(f"Error in RSS monitoring: {e}")
                 await asyncio.sleep(60)
 
     async def scrape_all_rss_feeds(self) -> List[Dict[str, Any]]:
-        """Scrape all RSS feeds using EXACT same ticker extraction logic"""
+        """Scrape all RSS feeds in parallel using EXACT same ticker extraction logic"""
         all_articles = []
         
+        # Create RSS scraping tasks for all sources in parallel
+        rss_tasks = []
         for source_name, rss_url in self.rss_feeds.items():
-            try:
-                logger.info(f"🔍 Scraping RSS {source_name}...")
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(rss_url, timeout=30) as response:
-                        if response.status != 200:
-                            logger.error(f"❌ Failed to fetch RSS {source_name}: HTTP {response.status}")
-                            continue
-                        
-                        rss_content = await response.text()
-                        feed = feedparser.parse(rss_content)
-                        
-                        if not feed.entries:
-                            logger.warning(f"❌ No entries in RSS feed for {source_name}")
-                            continue
-                        
-                        logger.info(f"📰 Found {len(feed.entries)} RSS entries from {source_name}")
-                        
-                        for entry in feed.entries:
-                            try:
-                                title = entry.get('title', '').strip()
-                                url = entry.get('link', '').strip()
-                                description = entry.get('description', '').strip()
-                                published = entry.get('published', '')
-                                
-                                if not title or not url or len(title) < 20:
-                                    continue
-                                
-                                # EXACT same ticker extraction logic as web scraper
-                                text_to_search = f"{title} {description}"
-                                found_tickers = self.extract_tickers_from_text(text_to_search)
-                                
-                                if found_tickers:
-                                    logger.info(f"✅ RSS TICKER MATCH: {found_tickers} in {source_name} title: {title}")
-                                    
-                                    # Parse timestamp using EXACT same logic as web scraper
-                                    parsed_timestamp = self.parse_relative_time(published)
-                                    
-                                    # EXACT same current day filtering logic as web scraper
-                                    if source_name == 'GlobeNewswire':
-                                        current_date = datetime.now().date()
-                                        article_date = parsed_timestamp.date()
-                                        
-                                        if article_date != current_date:
-                                            logger.debug(f"⏰ SKIPPING old RSS GlobeNewswire article from {article_date}: {title[:50]}...")
-                                            continue
-                                    
-                                    # EXACT same content hash generation as web scraper
-                                    content_hash = self.generate_content_hash(title, url)
-                                    
-                                    # Create article with EXACT same structure as web scraper
-                                    for ticker in found_tickers:
-                                        article = {
-                                            'timestamp': datetime.now(),
-                                            'source': f'{source_name}_RSS',  # Mark as RSS source
-                                            'ticker': ticker,
-                                            'headline': title,
-                                            'published_utc': published,  # Store raw RSS timestamp
-                                            'article_url': url,
-                                            'summary': description if description else title,
-                                            'full_content': f"{title} {description}",
-                                            'detected_at': datetime.now(),
-                                            'processing_latency_ms': 0,
-                                            'market_relevant': 1,
-                                            'source_check_time': datetime.now(),
-                                            'content_hash': content_hash,
-                                            'news_type': 'other',
-                                            'urgency_score': 5
-                                        }
-                                        
-                                        all_articles.append(article)
-                                        logger.info(f"✅ NEW RSS ARTICLE: {ticker} - {title[:50]}...")
-                                else:
-                                    logger.debug(f"❌ No tickers found in RSS: {title[:50]}...")
-                                    
-                            except Exception as e:
-                                logger.debug(f"Error processing RSS entry: {e}")
-                                continue
-                        
-                        logger.info(f"🎯 Found {len([a for a in all_articles if a['source'].startswith(source_name)])} RSS articles with exact ticker matches from {source_name}")
-                        
-            except Exception as e:
-                logger.error(f"Error scraping RSS {source_name}: {e}")
-                continue
+            task = self.scrape_single_rss_source(source_name, rss_url)
+            rss_tasks.append(task)
+        
+        # Execute all RSS scraping tasks in parallel
+        try:
+            results = await asyncio.gather(*rss_tasks, return_exceptions=True)
+            
+            # Process results from all RSS sources
+            for i, result in enumerate(results):
+                source_name = list(self.rss_feeds.keys())[i]
+                if isinstance(result, Exception):
+                    logger.error(f"Error scraping RSS {source_name}: {result}")
+                    continue
+                elif result:
+                    all_articles.extend(result)
+                    logger.info(f"🎯 Found {len(result)} RSS articles with exact ticker matches from {source_name}")
+        
+        except Exception as e:
+            logger.error(f"Error in parallel RSS scraping: {e}")
         
         return all_articles
+
+    async def scrape_single_rss_source(self, source_name: str, rss_url: str) -> List[Dict[str, Any]]:
+        """Scrape a single RSS source"""
+        articles = []
+        
+        try:
+            logger.info(f"🔍 Scraping RSS {source_name}...")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(rss_url, timeout=30) as response:
+                    if response.status != 200:
+                        logger.error(f"❌ Failed to fetch RSS {source_name}: HTTP {response.status}")
+                        return articles
+                    
+                    rss_content = await response.text()
+                    feed = feedparser.parse(rss_content)
+                    
+                    if not feed.entries:
+                        logger.warning(f"❌ No entries in RSS feed for {source_name}")
+                        return articles
+                    
+                    logger.info(f"📰 Found {len(feed.entries)} RSS entries from {source_name}")
+                    
+                    for entry in feed.entries:
+                        try:
+                            title = entry.get('title', '').strip()
+                            url = entry.get('link', '').strip()
+                            description = entry.get('description', '').strip()
+                            published = entry.get('published', '')
+                            
+                            if not title or not url or len(title) < 20:
+                                continue
+                            
+                            # EXACT same ticker extraction logic as web scraper
+                            text_to_search = f"{title} {description}"
+                            found_tickers = self.extract_tickers_from_text(text_to_search)
+                            
+                            if found_tickers:
+                                logger.info(f"✅ RSS TICKER MATCH: {found_tickers} in {source_name} title: {title}")
+                                
+                                # Parse timestamp using EXACT same logic as web scraper
+                                parsed_timestamp = self.parse_relative_time(published)
+                                
+                                # EXACT same current day filtering logic as web scraper
+                                if source_name == 'GlobeNewswire':
+                                    current_date = datetime.now().date()
+                                    article_date = parsed_timestamp.date()
+                                    
+                                    if article_date != current_date:
+                                        logger.debug(f"⏰ SKIPPING old RSS GlobeNewswire article from {article_date}: {title[:50]}...")
+                                        continue
+                                
+                                # EXACT same content hash generation as web scraper
+                                content_hash = self.generate_content_hash(title, url)
+                                
+                                # Create article with EXACT same structure as web scraper
+                                for ticker in found_tickers:
+                                    article = {
+                                        'timestamp': datetime.now(),
+                                        'source': f'{source_name}_RSS',  # Mark as RSS source
+                                        'ticker': ticker,
+                                        'headline': title,
+                                        'published_utc': published,  # Store raw RSS timestamp
+                                        'article_url': url,
+                                        'summary': description if description else title,
+                                        'full_content': f"{title} {description}",
+                                        'detected_at': datetime.now(),
+                                        'processing_latency_ms': 0,
+                                        'market_relevant': 1,
+                                        'source_check_time': datetime.now(),
+                                        'content_hash': content_hash,
+                                        'news_type': 'other',
+                                        'urgency_score': 5
+                                    }
+                                    
+                                    articles.append(article)
+                                    logger.info(f"✅ NEW RSS ARTICLE: {ticker} - {title[:50]}...")
+                            else:
+                                logger.debug(f"❌ No tickers found in RSS: {title[:50]}...")
+                                
+                        except Exception as e:
+                            logger.debug(f"Error processing RSS entry: {e}")
+                            continue
+            
+        except Exception as e:
+            logger.error(f"Error scraping RSS {source_name}: {e}")
+        
+        return articles
 
 async def main():
     """Main function to run the Crawl4AI web scraper"""
