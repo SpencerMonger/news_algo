@@ -193,9 +193,8 @@ class NewswireMonitor:
         return list(found_tickers)
 
     def generate_content_hash(self, title: str, url: str) -> str:
-        """Generate hash for duplicate detection"""
-        content = f"{title}{url}"
-        return hashlib.md5(content.encode()).hexdigest()
+        """Generate hash for duplicate detection based on URL only"""
+        return hashlib.md5(url.encode()).hexdigest()
 
     def is_recent_article(self, published_time: str, max_age_seconds: int = 1800) -> bool:
         """Check if article is recent enough"""
