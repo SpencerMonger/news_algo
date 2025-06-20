@@ -75,8 +75,11 @@ async def main():
         # Start price monitoring loop in background
         price_task = asyncio.create_task(price_monitor.ultra_fast_monitoring_loop())
         
-        # Small delay to ensure price checker is fully running
-        await asyncio.sleep(0.5)
+        # CRITICAL: Wait for price checker to complete its first monitoring cycle
+        # This ensures it's actively running and ready to detect new tickers immediately
+        logger.info("⏳ Waiting for price checker to complete first monitoring cycle...")
+        await price_monitor.ready_event.wait()  # Wait for ready signal instead of fixed delay
+        logger.info("✅ Price checker is now actively monitoring - ready for new tickers")
         
         # FIXED: Start news monitor (will start inserting articles immediately)
         logger.info("🚀 Phase 2: Starting news monitor...")
