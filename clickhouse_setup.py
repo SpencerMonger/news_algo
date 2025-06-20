@@ -446,6 +446,25 @@ class ClickHouseManager:
             logger.error(f"Error dropping breaking_news table: {e}")
             raise
 
+    def drop_all_pipeline_tables(self):
+        """Drop ALL pipeline tables for complete data flow reset"""
+        pipeline_tables = [
+            'breaking_news',
+            'monitored_tickers', 
+            'price_tracking',
+            'news_alert'
+        ]
+        
+        try:
+            for table in pipeline_tables:
+                self.client.command(f"DROP TABLE IF EXISTS News.{table}")
+                logger.info(f"Dropped {table} table for pipeline reset")
+            
+            logger.info("🧹 COMPLETE PIPELINE RESET: All data flow tables cleared")
+        except Exception as e:
+            logger.error(f"Error dropping pipeline tables: {e}")
+            raise
+
     def drop_float_list_table(self):
         """Drop the float_list table to refresh ticker data"""
         try:
@@ -684,8 +703,8 @@ def setup_clickhouse_database():
         # Create database
         ch_manager.create_database()
         
-        # Drop and recreate breaking_news table with new schema for proper deduplication
-        ch_manager.drop_breaking_news_table()
+        # 🧹 COMPLETE PIPELINE RESET: Drop ALL data flow tables for fresh start
+        ch_manager.drop_all_pipeline_tables()
         ch_manager.create_breaking_news_table()
         
         # Check table structure to verify schema

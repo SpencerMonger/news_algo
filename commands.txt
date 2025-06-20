@@ -1,0 +1,5 @@
+# Normal operation (freshness filter enabled)
+python3 run_system.py --skip-list
+
+# Testing mode (freshness filter disabled)
+python3 run_system.py --skip-list --enable-old
