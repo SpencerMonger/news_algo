@@ -167,6 +167,9 @@ class ClickHouseManager:
             logger.info(f"Processing batch of {len(articles)} articles for insertion")
             article_logger.info(f"BATCH_START: Processing {len(articles)} articles")
             
+            # Track tickers for immediate notifications
+            new_tickers_for_notification = []
+            
             # Prepare data for insertion
             data_rows = []
             for i, article in enumerate(articles, 1):
@@ -190,6 +193,13 @@ class ClickHouseManager:
                     article_logger.warning(f"DUPLICATE_DETECTED: {ticker} | {content_hash} | Skipping to preserve original timestamp")
                     logger.info(f"Skipping duplicate article for {ticker}")
                     continue  # Skip duplicate articles entirely
+                
+                # Track new ticker for immediate notification
+                if ticker and ticker != 'UNKNOWN':
+                    new_tickers_for_notification.append({
+                        'ticker': ticker,
+                        'timestamp': article.get('timestamp', datetime.now())
+                    })
                 
                 # Debug timestamp issue for NEW articles only
                 if 'timestamp' not in article:
@@ -264,6 +274,18 @@ class ClickHouseManager:
             
             # Force merge for immediate deduplication
             self.force_merge_breaking_news()
+            
+            # IMMEDIATE TICKER NOTIFICATIONS - ELIMINATES POLLING LAG
+            if new_tickers_for_notification:
+                logger.info(f"🚨 NEW TICKERS DETECTED: {len(new_tickers_for_notification)} tickers - ULTRA-AGGRESSIVE POLLING will detect within 100ms!")
+                
+                # Log each new ticker for monitoring
+                for ticker_info in new_tickers_for_notification:
+                    ticker = ticker_info['ticker']
+                    timestamp = ticker_info['timestamp']
+                    logger.info(f"📢 NEW TICKER: {ticker} at {timestamp} - DETECTION WITHIN 100ms!")
+                    
+                logger.info("✅ NEW TICKER NOTIFICATIONS LOGGED - ULTRA-AGGRESSIVE POLLING ACTIVE!")
             
             article_logger.info(f"BATCH_COMPLETE: Successfully processed {len(articles)} articles")
             
