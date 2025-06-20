@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Set
 import pytz
 from dataclasses import dataclass
-from clickhouse_setup import setup_clickhouse_database
+from clickhouse_setup import ClickHouseManager
 import pandas as pd
 from dotenv import load_dotenv
 from crawl4ai import AsyncWebCrawler, CrawlResult
@@ -42,11 +42,12 @@ class ScrapingTarget:
     enabled: bool = True
 
 class Crawl4AIScraper:
-    def __init__(self):
+    def __init__(self, enable_old=False):
         self.clickhouse_manager = None
         self.crawler = None
         self.batch_queue = []
         self.ticker_list = []
+        self.enable_old = enable_old  # Flag to disable freshness filtering for testing
         
         # Performance tracking
         self.stats = {
@@ -75,8 +76,10 @@ class Crawl4AIScraper:
 
     async def initialize(self):
         """Initialize the Crawl4AI scraper with better error handling"""
-        # Setup ClickHouse connection
-        self.clickhouse_manager = setup_clickhouse_database()
+        # FIXED: Don't call setup_clickhouse_database() as it WIPES all tables!
+        # Instead, create direct connection and assume tables already exist
+        self.clickhouse_manager = ClickHouseManager()
+        self.clickhouse_manager.connect()
         
         # Initialize Crawl4AI AsyncWebCrawler with retry logic
         max_retries = 3
@@ -105,7 +108,7 @@ class Crawl4AIScraper:
         # Compile ticker patterns for faster matching
         self.compile_ticker_patterns()
         
-        logger.info(f"Initialized Crawl4AI Scraper with {len(self.ticker_list)} tickers")
+        logger.info(f"🕥 Web scraper initialized - PRESERVES existing database tables with {len(self.ticker_list)} tickers")
 
     async def load_tickers(self):
         """Load ticker list from ClickHouse database"""
@@ -341,9 +344,36 @@ class Crawl4AIScraper:
                         # Parse the full datetime
                         parsed_timestamp = self.parse_relative_time(time_text)
                         
+                        # FRESHNESS CHECK: Compare time portions only (timezone-agnostic) - CONDITIONAL
+                        if not self.enable_old:  # Only check freshness if enable_old is False
+                            current_time = datetime.now()
+                            
+                            # Extract minute:second from current time (detection time)
+                            current_min_sec = current_time.strftime("%M:%S")
+                            
+                            # Extract minute:second from published time
+                            published_min_sec = parsed_timestamp.strftime("%M:%S")
+                            
+                            # Calculate time difference in minutes and seconds only
+                            current_total_seconds = current_time.minute * 60 + current_time.second
+                            published_total_seconds = parsed_timestamp.minute * 60 + parsed_timestamp.second
+                            
+                            # Handle minute rollover (e.g., published at 59:30, detected at 01:15)
+                            time_diff_seconds = current_total_seconds - published_total_seconds
+                            if time_diff_seconds < 0:
+                                time_diff_seconds += 3600  # Add 60 minutes worth of seconds
+                            
+                            if time_diff_seconds > 120:  # More than 2 minutes old
+                                logger.info(f"⏰ SKIPPING STALE NEWS: {found_tickers} - Published at :{published_min_sec}, detected at :{current_min_sec} ({time_diff_seconds}s diff > 120s): {title[:50]}...")
+                                continue
+                            
+                            logger.info(f"✅ FRESH NEWS: {found_tickers} - Published at :{published_min_sec}, detected at :{current_min_sec} ({time_diff_seconds}s diff < 120s)")
+                        else:
+                            logger.info(f"🔓 PROCESSING OLD NEWS (freshness disabled): {found_tickers} - {title[:50]}...")
+                        
                         # SANITY CHECK: Only apply current day filter to GlobeNewswire (24HOURS can include yesterday)
                         # Other sources (BusinessWire, PRNewswire) already filter to current day
-                        if source_name == 'GlobeNewswire':
+                        if not self.enable_old and source_name == 'GlobeNewswire':  # Only check date if enable_old is False
                             current_date = datetime.now().date()
                             article_date = parsed_timestamp.date()
                             
@@ -440,10 +470,10 @@ class Crawl4AIScraper:
                 await asyncio.sleep(60)
 
     async def buffer_flusher(self):
-        """Periodically flush buffer to ClickHouse"""
+        """Periodically flush buffer to ClickHouse - OPTIMIZED for speed"""
         while True:
             try:
-                await asyncio.sleep(3)  # Flush every 3 seconds for fast detection
+                await asyncio.sleep(0.25)  # Flush every 250ms for ULTRA-fast detection
                 await self.flush_buffer_to_clickhouse()
                 
             except Exception as e:
@@ -729,8 +759,35 @@ class Crawl4AIScraper:
                                 # Parse timestamp using EXACT same logic as web scraper
                                 parsed_timestamp = self.parse_relative_time(published)
                                 
+                                # FRESHNESS CHECK: Compare time portions only (timezone-agnostic) - CONDITIONAL
+                                if not self.enable_old:  # Only check freshness if enable_old is False
+                                    current_time = datetime.now()
+                                    
+                                    # Extract minute:second from current time (detection time)
+                                    current_min_sec = current_time.strftime("%M:%S")
+                                    
+                                    # Extract minute:second from published time
+                                    published_min_sec = parsed_timestamp.strftime("%M:%S")
+                                    
+                                    # Calculate time difference in minutes and seconds only
+                                    current_total_seconds = current_time.minute * 60 + current_time.second
+                                    published_total_seconds = parsed_timestamp.minute * 60 + parsed_timestamp.second
+                                    
+                                    # Handle minute rollover (e.g., published at 59:30, detected at 01:15)
+                                    time_diff_seconds = current_total_seconds - published_total_seconds
+                                    if time_diff_seconds < 0:
+                                        time_diff_seconds += 3600  # Add 60 minutes worth of seconds
+                                    
+                                    if time_diff_seconds > 120:  # More than 2 minutes old
+                                        logger.info(f"⏰ SKIPPING STALE RSS NEWS: {found_tickers} - Published at :{published_min_sec}, detected at :{current_min_sec} ({time_diff_seconds}s diff > 120s): {title[:50]}...")
+                                        continue
+                                    
+                                    logger.info(f"✅ FRESH RSS NEWS: {found_tickers} - Published at :{published_min_sec}, detected at :{current_min_sec} ({time_diff_seconds}s diff < 120s)")
+                                else:
+                                    logger.info(f"🔓 PROCESSING OLD RSS NEWS (freshness disabled): {found_tickers} - {title[:50]}...")
+                                
                                 # EXACT same current day filtering logic as web scraper
-                                if source_name == 'GlobeNewswire':
+                                if not self.enable_old and source_name == 'GlobeNewswire':  # Only check date if enable_old is False
                                     current_date = datetime.now().date()
                                     article_date = parsed_timestamp.date()
                                     
