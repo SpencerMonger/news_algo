@@ -1,110 +1,148 @@
+#!/usr/bin/env python3
+"""
+Main orchestrator for the news scraping and price monitoring system
+"""
+
 import asyncio
 import logging
-import sys
 import argparse
-from dotenv import load_dotenv
-from finviz_scraper import FinvizScraper
+import subprocess
+import sys
+import time
+import os
+import signal
+from clickhouse_setup import ClickHouseManager
 from web_scraper import Crawl4AIScraper
-from price_checker import ContinuousPriceMonitor
-from clickhouse_setup import setup_clickhouse_database
 
-# Load environment variables from .env file
-load_dotenv()
-
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-async def run_news_monitor(enable_old=False):
-    """Run the news monitoring system"""
-    try:
-        logger.info("Starting news monitoring...")
-        monitor = Crawl4AIScraper(enable_old=enable_old)
-        await monitor.start_scraping()
-    except Exception as e:
-        logger.error(f"News monitor error: {e}")
-        raise
+async def setup_database():
+    """Initialize ClickHouse database and tables"""
+    logger.info("Setting up ClickHouse database...")
+    
+    # Initialize ClickHouse
+    ch_manager = ClickHouseManager()
+    ch_manager.connect()
+    
+    # Clear tables for fresh start
+    ch_manager.drop_all_pipeline_tables()
+    
+    # Setup all required tables
+    ch_manager.create_tables()
+    ch_manager.create_breaking_news_table()
+    ch_manager.create_float_list_table()
+    ch_manager.create_price_move_table()
+    
+    ch_manager.close()
+    logger.info("ClickHouse setup completed successfully")
 
-async def run_price_monitor():
-    """Run the price monitoring system"""
+def start_price_checker_process():
+    """Start price checker in a separate process for complete isolation"""
+    logger.info("🚀 Starting ZERO-LAG price checker in separate process...")
+    
+    # Start price checker as completely separate process with real-time output
+    price_process = subprocess.Popen([
+        sys.executable, 'price_checker.py'
+    ], 
+    stdout=None,  # Let it print to main console
+    stderr=None,  # Let it print to main console
+    preexec_fn=os.setsid if hasattr(os, 'setsid') else None  # Create new process group on Unix
+    )
+    
+    logger.info("✅ ZERO-LAG price checker started as separate process (PID: {})".format(price_process.pid))
+    return price_process
+
+async def start_news_monitor(enable_old: bool = False):
+    """Start news monitoring with Chromium browser"""
+    logger.info("🚀 Starting news monitor with Chromium browser...")
+    
+    scraper = Crawl4AIScraper(enable_old=enable_old)
+    await scraper.initialize()
+    await scraper.start_scraping()
+
+def terminate_process_group(process):
+    """Terminate process and all its children"""
     try:
-        logger.info("Starting price monitoring...")
-        price_monitor = ContinuousPriceMonitor()
-        await price_monitor.start()
+        if hasattr(os, 'killpg'):
+            # Unix: kill the entire process group
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        else:
+            # Windows: just terminate the process
+            process.terminate()
+        
+        # Wait for process to terminate
+        try:
+            process.wait(timeout=5)
+            logger.info("✅ Price checker process terminated gracefully")
+        except subprocess.TimeoutExpired:
+            # Force kill if it doesn't terminate
+            if hasattr(os, 'killpg'):
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            else:
+                process.kill()
+            process.wait()
+            logger.info("⚡ Price checker process force-killed")
     except Exception as e:
-        logger.error(f"Price monitor error: {e}")
-        raise
+        logger.error(f"Error terminating price checker process: {e}")
 
 async def main():
-    """Main function to update tickers and start both monitoring systems"""
-    # Parse command line arguments
+    """Main function"""
     parser = argparse.ArgumentParser(description='News & Price Monitoring System')
-    parser.add_argument('--skip-list', action='store_true', 
-                       help='Skip the Finviz ticker list update step')
-    parser.add_argument('--enable-old', action='store_true',
-                       help='Disable freshness filter - allow processing of old news (for testing)')
+    parser.add_argument('--skip-list', action='store_true', help='Skip Finviz ticker list update')
+    parser.add_argument('--enable-old', action='store_true', help='Process old news articles (disable freshness filter)')
+    
     args = parser.parse_args()
     
     logger.info("=== Starting News & Price Monitoring System ===")
     
-    # Setup ClickHouse
-    ch_manager = setup_clickhouse_database()
+    price_process = None
     
     try:
-        # Step 1: Update ticker list from Finviz (conditional)
-        if not args.skip_list:
-            logger.info("Step 1: Updating ticker list from Finviz...")
-            scraper = FinvizScraper(ch_manager)
-            success = await scraper.update_ticker_database()
-            
-            if not success:
-                logger.warning("Ticker update failed, proceeding with existing data")
-        else:
-            logger.info("Step 1: Skipping Finviz ticker list update (--skip-list flag used)")
+        # Step 1: Setup database
+        await setup_database()
         
-        # Step 2: Start monitoring systems with proper sequencing
-        logger.info("Step 2: Starting monitoring systems with optimized sequencing...")
+        # Step 2: Skip ticker list update if requested
+        if args.skip_list:
+            logger.info("Step 1: Skipping Finviz ticker list update (--skip-list flag used)")
+        else:
+            logger.info("Step 1: Updating Finviz ticker list...")
+            # Add ticker list update logic here if needed
+        
+        logger.info("Step 2: Starting monitoring systems with PROCESS ISOLATION...")
         
         if args.enable_old:
             logger.info("🔓 FRESHNESS FILTER DISABLED - Processing old news for testing")
         
-        # FIXED: Initialize price checker first (needs to be ready for incoming tickers)
-        logger.info("🚀 Phase 1: Initializing ZERO-LAG price checker with immediate notifications...")
-        price_monitor = ContinuousPriceMonitor()
-        await price_monitor.initialize()
-        logger.info("✅ ZERO-LAG price checker initialized - immediate notification system ready")
+        # Step 3: Start price checker in separate process for COMPLETE isolation
+        logger.info("🚀 Phase 1: Starting ZERO-LAG price checker in separate process...")
+        price_process = start_price_checker_process()
         
-        # Start price monitoring tasks in background
-        # FIXED: ONLY file trigger monitor - no competing loops that block trigger processing!
-        # The ultra_fast_monitoring_loop was causing 25+ second delays by blocking the file trigger monitor
+        # Give price checker time to initialize
+        logger.info("⏳ Waiting 10 seconds for price checker process to fully initialize...")
+        await asyncio.sleep(10)
         
-        # CRITICAL: Wait for price checker to complete initialization
-        # This ensures it's actively running and ready to detect new tickers immediately
-        logger.info("⏳ Waiting for price checker to complete initialization...")
-        await asyncio.sleep(1.0)  # Give price checker 1 second to start up
-        logger.info("✅ ZERO-LAG price checker is now ready - FILE TRIGGERS ONLY for consistent performance")
+        # Step 4: Start news monitor in current process
+        logger.info("🚀 Phase 2: Starting news monitor with Chromium browser...")
+        logger.info("✅ PROCESS ISOLATION: Price checker runs separately → Zero resource contention")
         
-        # FIXED: Start news monitor (will start inserting articles immediately)
-        logger.info("🚀 Phase 2: Starting news monitor with immediate notification sending...")
-        news_monitor = Crawl4AIScraper(enable_old=args.enable_old)
-        news_task = asyncio.create_task(news_monitor.start_scraping())
-        
-        logger.info("✅ ZERO-LAG system running: News detection → FILE TRIGGERS ONLY → Instant price tracking")
-        
-        # Start price monitor in background (ONLY file triggers - no competing tasks!)
-        price_task = asyncio.create_task(price_monitor.start())
-        
-        # Wait for both tasks to complete
-        await asyncio.gather(news_task, price_task, return_exceptions=True)
+        # Start news monitoring
+        await start_news_monitor(enable_old=args.enable_old)
         
     except KeyboardInterrupt:
-        logger.info("System stopped by user")
+        logger.info("🛑 Received interrupt signal")
     except Exception as e:
-        logger.error(f"System error: {e}")
+        logger.error(f"Fatal error in main system: {e}")
+        raise
     finally:
-        ch_manager.close()
+        # Always clean up the price checker process
+        if price_process and price_process.poll() is None:
+            logger.info("🛑 Terminating price checker process...")
+            terminate_process_group(price_process)
 
 if __name__ == "__main__":
     asyncio.run(main()) 

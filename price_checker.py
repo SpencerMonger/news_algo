@@ -28,93 +28,13 @@ logger = logging.getLogger(__name__)
 # GLOBAL NOTIFICATION QUEUE for immediate ticker notifications
 ticker_notification_queue = asyncio.Queue()
 
-# DATABASE-BASED IMMEDIATE NOTIFICATION SYSTEM for cross-process coordination
-class DatabaseNotificationSystem:
-    def __init__(self, ch_manager):
-        self.ch_manager = ch_manager
-        self.last_notification_check = datetime.now()
-        
-    async def create_notification_table(self):
-        """Create immediate notification table for cross-process coordination"""
-        try:
-            create_table_sql = """
-            CREATE TABLE IF NOT EXISTS News.immediate_notifications (
-                id UUID DEFAULT generateUUIDv4(),
-                ticker String,
-                timestamp DateTime DEFAULT now(),
-                processed UInt8 DEFAULT 0,
-                created_at DateTime DEFAULT now()
-            ) ENGINE = MergeTree()
-            ORDER BY (ticker, created_at)
-            PARTITION BY toYYYYMM(created_at)
-            TTL created_at + INTERVAL 1 HOUR
-            """
-            self.ch_manager.client.command(create_table_sql)
-            logger.info("Created immediate_notifications table for cross-process coordination")
-        except Exception as e:
-            logger.error(f"Error creating notification table: {e}")
-            raise
-            
-    async def send_immediate_notification(self, ticker: str, timestamp: datetime = None):
-        """Send immediate notification via database - works across processes"""
-        if timestamp is None:
-            timestamp = datetime.now()
-            
-        try:
-            notification_data = [(
-                ticker,
-                timestamp,
-                0,  # not processed yet
-                datetime.now()
-            )]
-            
-            self.ch_manager.client.insert(
-                'News.immediate_notifications',
-                notification_data,
-                column_names=['ticker', 'timestamp', 'processed', 'created_at']
-            )
-            logger.info(f"📢 DB IMMEDIATE NOTIFICATION: {ticker} at {timestamp}")
-        except Exception as e:
-            logger.error(f"Error sending DB notification: {e}")
-    
-    async def get_pending_notifications(self):
-        """Get unprocessed immediate notifications"""
-        try:
-            query = """
-            SELECT ticker, timestamp, id
-            FROM News.immediate_notifications
-            WHERE processed = 0
-            AND created_at >= now() - INTERVAL 10 MINUTE
-            ORDER BY created_at ASC
-            """
-            
-            result = self.ch_manager.client.query(query)
-            return result.result_rows
-        except Exception as e:
-            logger.error(f"Error getting pending notifications: {e}")
-            return []
-    
-    async def mark_notification_processed(self, notification_id: str):
-        """Mark notification as processed"""
-        try:
-            update_sql = f"""
-            ALTER TABLE News.immediate_notifications
-            UPDATE processed = 1
-            WHERE id = '{notification_id}'
-            """
-            self.ch_manager.client.command(update_sql)
-        except Exception as e:
-            logger.error(f"Error marking notification processed: {e}")
-
-# Global database notification system
-db_notification_system = None
-
 class ContinuousPriceMonitor:
     def __init__(self):
         self.ch_manager = None
         self.session = None
         self.polygon_api_key = os.getenv('POLYGON_API_KEY', '')
         self.active_tickers: Set[str] = set()  # Track tickers directly from breaking_news
+        self.ticker_timestamps: Dict[str, datetime] = {}  # Track when tickers were added
         self.ready_event = asyncio.Event()  # Signal when monitor is ready for new tickers
         
         if not self.polygon_api_key:
@@ -135,7 +55,6 @@ class ContinuousPriceMonitor:
             'tickers_monitored': 0,
             'price_checks': 0,
             'alerts_triggered': 0,
-            'immediate_notifications': 0,
             'start_time': time.time()
         }
 
@@ -145,11 +64,6 @@ class ContinuousPriceMonitor:
             # Initialize ClickHouse connection
             self.ch_manager = ClickHouseManager()
             self.ch_manager.connect()
-            
-            # REMOVED: Database notification system initialization for consistency
-            # self.notification_system = DatabaseNotificationSystem(self.ch_manager)
-            # await self.notification_system.create_notification_table()
-            # logger.info("Created immediate_notifications table for cross-process coordination")
             
             # Create essential tables
             await self.create_essential_tables()
@@ -161,9 +75,9 @@ class ContinuousPriceMonitor:
             # OPTIMIZED: Aggressive timeouts for consistent 2-second polling cycles
             # Individual requests must complete quickly to avoid blocking polling
             timeout = aiohttp.ClientTimeout(
-                total=3.0,      # 3 second total timeout (was 10) - must be fast for 2s polling
-                connect=1.0,    # 1 second connect timeout (was 3) - proxy connection must be quick
-                sock_read=2.0   # 2 second read timeout (was 5) - proxy processing must be fast
+                total=2.0,      # 2 second total timeout - matches polling interval
+                connect=0.5,    # 0.5 second connect timeout - proxy connection must be quick
+                sock_read=1.5   # 1.5 second read timeout - proxy processing must be fast
             )
             
             self.session = aiohttp.ClientSession(
@@ -220,18 +134,18 @@ class ContinuousPriceMonitor:
             raise
 
     async def get_active_tickers_from_breaking_news(self) -> Set[str]:
-        """Get tickers directly from breaking_news table - ELIMINATES monitored_tickers bottleneck"""
+        """Get tickers directly from breaking_news table - OPTIMIZED to avoid API interference"""
         try:
             query_start = time.time()
             
-            # FIXED: Use FINAL to ensure we see latest data even before table merges
-            # ReplacingMergeTree requires FINAL for immediate visibility of new inserts
+            # OPTIMIZED: Use simpler query without FINAL to avoid slow table merges
+            # Only check for very recent tickers to minimize query time
             query = """
             SELECT DISTINCT ticker
-            FROM News.breaking_news FINAL
-            WHERE detected_at >= now() - INTERVAL 10 MINUTE
+            FROM News.breaking_news
+            WHERE detected_at >= now() - INTERVAL 5 MINUTE
             AND ticker != ''
-            ORDER BY ticker
+            LIMIT 100
             """
             
             result = self.ch_manager.client.query(query)
@@ -239,26 +153,27 @@ class ContinuousPriceMonitor:
             
             query_time = time.time() - query_start
             
-            # DETAILED LOGGING: Show exactly what's happening with timing
-            if current_tickers != self.active_tickers:
+            # Only log if there are changes or query is slow
+            if current_tickers != self.active_tickers or query_time > 0.1:
                 logger.info(f"🔍 TICKER QUERY: Found {len(current_tickers)} tickers in {query_time:.3f}s")
-                logger.info(f"🔍 CURRENT TICKERS: {sorted(current_tickers)}")
-                logger.info(f"🔍 PREVIOUS TICKERS: {sorted(self.active_tickers)}")
-                
-                # Show the actual database records for debugging
-                debug_query = """
-                SELECT ticker, detected_at, timestamp, headline
-                FROM News.breaking_news FINAL
-                WHERE detected_at >= now() - INTERVAL 10 MINUTE
-                AND ticker != ''
-                ORDER BY detected_at DESC
-                LIMIT 5
-                """
-                debug_result = self.ch_manager.client.query(debug_query)
-                logger.info(f"🔍 RECENT DATABASE RECORDS:")
-                for i, row in enumerate(debug_result.result_rows):
-                    ticker, detected_at, timestamp, headline = row
-                    logger.info(f"   {i+1}. {ticker} - detected_at: {detected_at} - headline: {headline[:50]}...")
+                if current_tickers != self.active_tickers:
+                    logger.info(f"🔍 CURRENT TICKERS: {sorted(current_tickers)}")
+                    logger.info(f"🔍 PREVIOUS TICKERS: {sorted(self.active_tickers)}")
+                    
+                    # Show recent records only if tickers changed
+                    debug_query = """
+                    SELECT ticker, detected_at, headline
+                    FROM News.breaking_news
+                    WHERE detected_at >= now() - INTERVAL 5 MINUTE
+                    AND ticker != ''
+                    ORDER BY detected_at DESC
+                    LIMIT 3
+                    """
+                    debug_result = self.ch_manager.client.query(debug_query)
+                    logger.info(f"🔍 RECENT DATABASE RECORDS:")
+                    for i, row in enumerate(debug_result.result_rows):
+                        ticker, detected_at, headline = row
+                        logger.info(f"   {i+1}. {ticker} - detected_at: {detected_at} - headline: {headline[:50]}...")
             
             self.active_tickers = current_tickers
             return current_tickers
@@ -266,98 +181,6 @@ class ContinuousPriceMonitor:
         except Exception as e:
             logger.error(f"Error getting active tickers: {e}")
             return set()
-
-    async def immediate_notification_handler(self):
-        """Handle immediate ticker notifications from database - WORKS ACROSS PROCESSES"""
-        logger.info("🚀 Starting DATABASE-BASED immediate notification handler - CROSS-PROCESS ZERO LAG!")
-        
-        while True:
-            try:
-                # Check for pending notifications in database every 50ms
-                pending_notifications = await db_notification_system.get_pending_notifications()
-                
-                # YIELD CONTROL: Let file trigger monitor monitor run immediately after DB query
-                await asyncio.sleep(0)
-                
-                if pending_notifications:
-                    logger.info(f"🔥 FOUND {len(pending_notifications)} IMMEDIATE NOTIFICATIONS!")
-                    
-                    for notification_row in pending_notifications:
-                        ticker, timestamp, notification_id = notification_row
-                        
-                        self.stats['immediate_notifications'] += 1
-                        logger.info(f"⚡ IMMEDIATE DB NOTIFICATION: {ticker} detected at {timestamp} - INSTANT PRICE CHECK!")
-                        
-                        # Add to active tickers immediately
-                        self.active_tickers.add(ticker)
-                        
-                        # IMMEDIATE price check - no delays whatsoever
-                        await self.track_single_ticker_immediate(ticker)
-                        await self.check_price_alerts_optimized()
-                        
-                        # YIELD CONTROL: Let file trigger monitor monitor run
-                        await asyncio.sleep(0)
-                        
-                        # Second immediate check after 50ms
-                        await asyncio.sleep(0.05)
-                        await self.track_single_ticker_immediate(ticker)
-                        await self.check_price_alerts_optimized()
-                        
-                        # YIELD CONTROL: Let file trigger monitor monitor run
-                        await asyncio.sleep(0)
-                        
-                        # Third immediate check after 100ms
-                        await asyncio.sleep(0.1)
-                        await self.track_single_ticker_immediate(ticker)
-                        await self.check_price_alerts_optimized()
-                        
-                        # YIELD CONTROL: Let file trigger monitor monitor run
-                        await asyncio.sleep(0)
-                        
-                        # Mark as processed
-                        await db_notification_system.mark_notification_processed(notification_id)
-                        
-                        logger.info(f"✅ IMMEDIATE DB PROCESSING COMPLETE for {ticker} - ZERO LAG ACHIEVED!")
-                
-                # Check every 25ms for immediate response (faster than before)
-                await asyncio.sleep(0.025)
-                
-            except Exception as e:
-                logger.error(f"Error in immediate DB notification handler: {e}")
-                await asyncio.sleep(0.025)
-
-    async def track_single_ticker_immediate(self, ticker: str):
-        """Track price for a single ticker immediately - optimized for speed"""
-        try:
-            start_time = time.time()
-            
-            price_result = await self.get_current_price(ticker)
-            
-            if price_result:
-                # Immediate insertion
-                price_data = [(
-                    datetime.now(),
-                    ticker,
-                    price_result['price'],
-                    0,  # Set volume to 0 since we're using quotes not trades
-                    price_result.get('source', 'polygon')
-                )]
-                
-                self.ch_manager.client.insert(
-                    'News.price_tracking',
-                    price_data,
-                    column_names=['timestamp', 'ticker', 'price', 'volume', 'source']
-                )
-                
-                total_time = time.time() - start_time
-                self.stats['price_checks'] += 1
-                logger.info(f"⚡ IMMEDIATE: {ticker} price ${price_result['price']:.4f} tracked in {total_time:.3f}s")
-            else:
-                total_time = time.time() - start_time
-                logger.warning(f"❌ IMMEDIATE: Failed to get price for {ticker} in {total_time:.3f}s")
-                
-        except Exception as e:
-            logger.error(f"Error tracking immediate price for {ticker}: {e}")
 
     async def get_current_price(self, ticker: str) -> Optional[Dict[str, Any]]:
         """Get current price for ticker with ULTRA-FAST timeout and multiple fallback strategies"""
@@ -450,10 +273,10 @@ class ContinuousPriceMonitor:
         try:
             price_results = await asyncio.wait_for(
                 asyncio.gather(*price_tasks, return_exceptions=True),
-                timeout=5.0  # REDUCED: Max 5 seconds for ALL price requests combined (was 10s)
+                timeout=2.0  # 2 seconds max - matches polling interval
             )
         except asyncio.TimeoutError:
-            logger.warning(f"⏱️ BULK TIMEOUT: Price fetching took >5s for {len(self.active_tickers)} tickers - SKIPPING THIS CYCLE")
+            logger.warning(f"⏱️ BULK TIMEOUT: Price fetching took >2s for {len(self.active_tickers)} tickers - SKIPPING THIS CYCLE")
             return
         
         # Process results and prepare batch insert
@@ -624,110 +447,7 @@ class ContinuousPriceMonitor:
         logger.info(f"   Runtime: {runtime/60:.1f} minutes")
         logger.info(f"   Active Tickers: {len(self.active_tickers)}")
         logger.info(f"   Price Checks: {self.stats['price_checks']}")
-        logger.info(f"   Immediate Notifications: {self.stats['immediate_notifications']}")
         logger.info(f"   Alerts Triggered: {self.stats['alerts_triggered']}")
-
-    async def ultra_fast_monitoring_loop(self):
-        """ULTRA-AGGRESSIVE monitoring loop - IMMEDIATE detection within 50ms"""
-        logger.info("🚀 Starting ULTRA-AGGRESSIVE polling monitor - 50ms detection cycles!")
-        
-        cycle = 0
-        consecutive_empty_cycles = 0
-        start_time = time.time()
-        
-        while True:
-            try:
-                cycle += 1
-                cycle_start = time.time()
-                runtime = time.time() - start_time
-                
-                # Get active tickers directly from breaking_news (ultra-aggressive polling)
-                previous_tickers = self.active_tickers.copy()
-                await self.get_active_tickers_from_breaking_news()
-                
-                # YIELD CONTROL: Let file trigger monitor run immediately after DB query
-                await asyncio.sleep(0)
-                
-                # Signal ready after first cycle completes
-                if cycle == 1:
-                    self.ready_event.set()
-                    logger.info("✅ ULTRA-AGGRESSIVE POLLING READY - 50ms detection cycles!")
-                
-                # Check if we have new tickers
-                new_tickers = self.active_tickers - previous_tickers
-                if new_tickers:
-                    consecutive_empty_cycles = 0
-                    logger.info(f"🔥 ULTRA-FAST DETECTION: {new_tickers} - IMMEDIATE PRICE TRACKING!")
-                    
-                    # IMMEDIATE processing for new tickers
-                    for ticker in new_tickers:
-                        logger.info(f"⚡ INSTANT PROCESSING: {ticker}")
-                        await self.track_single_ticker_immediate(ticker)
-                        await self.check_price_alerts_optimized()
-                        
-                        # YIELD CONTROL: Let file trigger monitor run
-                        await asyncio.sleep(0)
-                        
-                        # Second check after 25ms
-                        await asyncio.sleep(0.025)
-                        await self.track_single_ticker_immediate(ticker)
-                        await self.check_price_alerts_optimized()
-                        
-                        # YIELD CONTROL: Let file trigger monitor run
-                        await asyncio.sleep(0)
-                        
-                        # Third check after 50ms
-                        await asyncio.sleep(0.025)
-                        await self.track_single_ticker_immediate(ticker)
-                        await self.check_price_alerts_optimized()
-                        
-                        # YIELD CONTROL: Let file trigger monitor run
-                        await asyncio.sleep(0)
-                        
-                        logger.info(f"✅ INSTANT PROCESSING COMPLETE: {ticker}")
-                    
-                elif self.active_tickers:
-                    # Regular price tracking for existing tickers
-                    await self.track_prices_parallel()
-                    await self.check_price_alerts_optimized()
-                    consecutive_empty_cycles = 0
-                    
-                    # YIELD CONTROL: Let file trigger monitor run
-                    await asyncio.sleep(0)
-                else:
-                    consecutive_empty_cycles += 1
-                    if consecutive_empty_cycles <= 3:
-                        logger.debug(f"⏳ Cycle {cycle}: No active tickers")
-                
-                # Report stats every 2 minutes
-                if cycle % 1200 == 0:  # Adjusted for faster cycles (50ms * 1200 = 60s)
-                    await self.report_stats()
-                
-                cycle_time = time.time() - cycle_start
-                logger.debug(f"⚡ Cycle {cycle} completed in {cycle_time:.3f}s")
-                
-                # ULTRA-AGGRESSIVE TIMING:
-                # First 60 seconds: 50ms cycles (MAXIMUM SPEED)
-                # After 60 seconds: 100ms cycles (still very fast)
-                # After 5 minutes: 200ms cycles (normal speed)
-                if runtime < 60:
-                    target_cycle_time = 0.05  # 50ms - ULTRA AGGRESSIVE for first minute
-                    if cycle <= 10:
-                        logger.info(f"🔥 ULTRA-AGGRESSIVE MODE: Cycle {cycle} - 50ms intervals")
-                elif runtime < 300:
-                    target_cycle_time = 0.1  # 100ms - still very fast for 5 minutes
-                else:
-                    target_cycle_time = 0.2  # 200ms - normal speed after 5 minutes
-                
-                sleep_time = max(0, target_cycle_time - cycle_time)
-                if sleep_time > 0:
-                    await asyncio.sleep(sleep_time)
-                else:
-                    await asyncio.sleep(0.001)  # Minimum sleep but yield control frequently
-                
-            except Exception as e:
-                logger.error(f"Error in ultra-aggressive monitoring loop: {e}")
-                await asyncio.sleep(0.05)  # Brief pause on error
 
     async def cleanup(self):
         """Clean up resources"""
@@ -747,16 +467,16 @@ class ContinuousPriceMonitor:
             logger.info("🔌 Testing API connectivity...")
             await self.test_api_connectivity()
             
-            # Start ZERO-LAG monitoring with BOTH file triggers AND continuous polling
-            logger.info("⚡ Starting ZERO-LAG monitoring with FILE TRIGGERS + CONTINUOUS POLLING...")
-            logger.info("✅ ZERO-LAG Price Monitor operational - DUAL SYSTEM for maximum performance!")
+            # Start monitoring with file triggers for notifications and polling for price inserts
+            logger.info("⚡ Starting monitoring: FILE TRIGGERS for notifications + CONTINUOUS POLLING for price inserts...")
+            logger.info("✅ Price Monitor operational - Clean separation: notifications vs price tracking!")
             
-            # FIXED: Run BOTH file trigger monitor AND continuous polling in parallel
-            # File triggers = immediate detection (1-2 seconds)
-            # Continuous polling = regular price updates (every 2 seconds)
+            # Run BOTH file trigger monitor AND continuous polling in parallel
+            # File triggers = immediate ticker notifications (add to active_tickers)
+            # Continuous polling = ALL price database operations (every 2 seconds)
             await asyncio.gather(
-                self.file_trigger_monitor_async(),      # Immediate trigger processing
-                self.continuous_polling_loop()          # Regular 2-second polling
+                self.file_trigger_monitor_async(),      # Ticker notifications only
+                self.continuous_polling_loop()          # ALL price database operations
             )
             
         except KeyboardInterrupt:
@@ -787,13 +507,13 @@ class ContinuousPriceMonitor:
             logger.warning("🚨 Severe API issues detected - price monitoring will likely fail")
 
     async def file_trigger_monitor_async(self):
-        """Async file trigger monitor that runs in main event loop with proper access to class attributes"""
+        """Async file trigger monitor that runs in main event loop - ONLY adds tickers to polling queue"""
         import os
         import json
         import glob
         
         trigger_dir = "triggers"
-        logger.info("🚀 Starting ASYNC FILE TRIGGER MONITOR - IMMEDIATE PROCESSING!")
+        logger.info("🚀 Starting ASYNC FILE TRIGGER MONITOR - NOTIFICATION ONLY (no direct price inserts)")
         
         while True:
             try:
@@ -802,7 +522,7 @@ class ContinuousPriceMonitor:
                 trigger_files = glob.glob(trigger_pattern)
                 
                 if trigger_files:
-                    # CONSISTENCY FIX: Process triggers ONE AT A TIME for consistent timing
+                    # Process triggers ONE AT A TIME for consistent timing
                     # Sort by creation time to ensure fair processing order
                     trigger_files.sort(key=os.path.getctime)
                     
@@ -817,14 +537,11 @@ class ContinuousPriceMonitor:
                             ticker = trigger_data['ticker']
                             logger.info(f"⚡ ASYNC MONITOR: Processing trigger for {ticker}")
                             
-                            # Add to active tickers immediately (proper access to self.active_tickers)
+                            # FIXED: ONLY add to active tickers - NO direct price inserts
+                            # Let the continuous_polling_loop handle ALL price database operations
                             self.active_tickers.add(ticker)
-                            logger.info(f"🎯 ASYNC MONITOR: Added {ticker} to active tracking")
-                            
-                            # CONSISTENCY FIX: Process immediately and wait for completion
-                            # This ensures each ticker gets processed fully before the next one
-                            await self.track_single_ticker_immediate(ticker)
-                            logger.info(f"⚡ ASYNC MONITOR: Completed immediate price check for {ticker}")
+                            self.ticker_timestamps[ticker] = datetime.now()  # Track when ticker was added
+                            logger.info(f"🎯 ASYNC MONITOR: Added {ticker} to active tracking (polling will handle price inserts)")
                             
                             # Remove trigger file after successful processing
                             os.remove(trigger_file)
@@ -844,18 +561,46 @@ class ContinuousPriceMonitor:
                 logger.error(f"ASYNC MONITOR: Error in file trigger monitor: {e}")
                 await asyncio.sleep(0.001)
 
+    async def cleanup_old_tickers(self):
+        """Remove tickers older than 30 minutes from active tracking"""
+        if not self.ticker_timestamps:
+            return
+            
+        current_time = datetime.now()
+        cutoff_time = current_time - timedelta(minutes=30)
+        
+        old_tickers = []
+        for ticker, timestamp in self.ticker_timestamps.items():
+            if timestamp < cutoff_time:
+                old_tickers.append(ticker)
+        
+        if old_tickers:
+            for ticker in old_tickers:
+                self.active_tickers.discard(ticker)
+                del self.ticker_timestamps[ticker]
+            
+            logger.info(f"🧹 CLEANUP: Removed {len(old_tickers)} old tickers from active tracking: {old_tickers}")
+
     async def continuous_polling_loop(self):
-        """Continuous polling loop for regular price updates every 2 seconds"""
-        logger.info("🔄 Starting CONTINUOUS POLLING LOOP - 2 second intervals for active tickers")
+        """Continuous polling loop for regular price updates every 2 seconds - ZERO DATABASE QUERIES"""
+        logger.info("🔄 Starting CONTINUOUS POLLING LOOP - 2 second intervals, FILE TRIGGERS ONLY (no database queries)")
         
         cycle = 0
+        last_cleanup = time.time()
+        
         while True:
             try:
                 cycle += 1
                 cycle_start = time.time()
                 
-                # Get active tickers from database
-                await self.get_active_tickers_from_breaking_news()
+                # ELIMINATED: No more database queries - rely ONLY on file triggers
+                # File triggers will add tickers immediately to active_tickers
+                # This eliminates ALL database interference with API calls
+                
+                # Clean up old tickers every 5 minutes
+                if time.time() - last_cleanup > 300:  # 5 minutes
+                    await self.cleanup_old_tickers()
+                    last_cleanup = time.time()
                 
                 if self.active_tickers:
                     logger.info(f"🔄 POLLING CYCLE {cycle}: Checking prices for {len(self.active_tickers)} active tickers")

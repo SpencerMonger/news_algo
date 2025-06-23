@@ -89,9 +89,15 @@ class Crawl4AIScraper:
                     verbose=True,
                     headless=True,
                     browser_type="chromium",
-                    # Add these for stability
+                    # Optimized settings to reduce resource usage and prevent API interference
                     max_idle_time=30000,  # 30 seconds
-                    keep_alive=True
+                    keep_alive=True,
+                    # Additional resource optimization
+                    max_memory_usage=512,  # Limit memory to 512MB
+                    max_cpu_usage=50,      # Limit CPU usage to 50%
+                    # Network optimization to avoid interfering with price checker
+                    max_concurrent_sessions=2,  # Limit concurrent browser sessions
+                    delay_between_requests=1.0   # 1 second delay between requests
                 )
                 await self.crawler.start()
                 logger.info(f"✅ Crawl4AI browser started successfully (attempt {attempt + 1})")

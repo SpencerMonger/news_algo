@@ -294,26 +294,6 @@ class ClickHouseManager:
             if new_tickers_for_notification:
                 logger.info(f"🚨 TRULY NEW TICKERS DETECTED: {len(new_tickers_for_notification)} tickers - SENDING IMMEDIATE NOTIFICATIONS!")
                 
-                # FIXED: Actually send immediate notifications to the database
-                notification_data = []
-                for ticker_info in new_tickers_for_notification:
-                    ticker = ticker_info['ticker']
-                    timestamp = ticker_info['timestamp']
-                    
-                    notification_data.append((
-                        ticker,
-                        timestamp,
-                        0,  # not processed yet
-                        datetime.now()
-                    ))
-                
-                # Insert immediate notifications
-                self.client.insert(
-                    'News.immediate_notifications',
-                    notification_data,
-                    column_names=['ticker', 'timestamp', 'processed', 'created_at']
-                )
-                
                 # ZERO-LAG SOLUTION: Trigger immediate price checking directly
                 logger.info(f"⚡ ZERO-LAG: Triggering IMMEDIATE price checks for {len(new_tickers_for_notification)} tickers!")
                 
@@ -344,7 +324,6 @@ class ClickHouseManager:
                         
                 except Exception as e:
                     logger.warning(f"⚠️ Could not create trigger files: {e}")
-                    logger.info("📢 Falling back to database notifications only")
                 
                 for ticker_info in new_tickers_for_notification:
                     ticker = ticker_info['ticker']
