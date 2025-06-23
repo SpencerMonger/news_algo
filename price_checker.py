@@ -158,19 +158,19 @@ class ContinuousPriceMonitor:
             self.active_tickers = await self.get_active_tickers_from_breaking_news()
             logger.info(f"✅ ZERO-LAG Price Monitor initialized with FILE TRIGGERS ONLY - {len(self.active_tickers)} active tickers!")
             
-            # OPTIMIZED: More generous timeouts for proxy server stability
-            # The proxy server needs more time than direct API calls
+            # OPTIMIZED: Aggressive timeouts for consistent 2-second polling cycles
+            # Individual requests must complete quickly to avoid blocking polling
             timeout = aiohttp.ClientTimeout(
-                total=10.0,     # 10 second total timeout (was 2) - proxy needs more time
-                connect=3.0,    # 3 second connect timeout (was 0.5) - proxy connection slower
-                sock_read=5.0   # 5 second read timeout (was 1) - proxy processing slower
+                total=3.0,      # 3 second total timeout (was 10) - must be fast for 2s polling
+                connect=1.0,    # 1 second connect timeout (was 3) - proxy connection must be quick
+                sock_read=2.0   # 2 second read timeout (was 5) - proxy processing must be fast
             )
             
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=aiohttp.TCPConnector(
-                    limit=10,           # REDUCED: Fewer concurrent connections to avoid overwhelming proxy
-                    limit_per_host=5,   # REDUCED: Fewer connections per host for proxy stability
+                    limit=50,           # INCREASED: More concurrent connections for multiple operations
+                    limit_per_host=20,  # INCREASED: More connections per host for parallel API calls
                     ttl_dns_cache=300,  # DNS cache for 5 minutes
                     use_dns_cache=True,
                     keepalive_timeout=30,
@@ -436,24 +436,24 @@ class ContinuousPriceMonitor:
         return None
 
     async def track_prices_parallel(self):
-        """Get current prices for all active tickers in PARALLEL with ULTRA-FAST timeouts"""
+        """Get current prices for all active tickers in PARALLEL with OPTIMIZED timeouts"""
         if not self.active_tickers:
             return
         
-        # ULTRA-FAST: Track timing for optimization
+        # OPTIMIZED: Track timing for performance monitoring
         start_time = time.time()
         
         # Create parallel price fetching tasks
         price_tasks = [self.get_current_price(ticker) for ticker in self.active_tickers]
         
-        # Execute all price requests in parallel with timeout
+        # Execute all price requests in parallel with REDUCED timeout
         try:
             price_results = await asyncio.wait_for(
                 asyncio.gather(*price_tasks, return_exceptions=True),
-                timeout=10.0  # INCREASED: Max 10 seconds for ALL price requests combined
+                timeout=5.0  # REDUCED: Max 5 seconds for ALL price requests combined (was 10s)
             )
         except asyncio.TimeoutError:
-            logger.warning(f"⏱️ BULK TIMEOUT: Price fetching took >10s for {len(self.active_tickers)} tickers - CONTINUING ANYWAY")
+            logger.warning(f"⏱️ BULK TIMEOUT: Price fetching took >5s for {len(self.active_tickers)} tickers - SKIPPING THIS CYCLE")
             return
         
         # Process results and prepare batch insert
@@ -492,7 +492,7 @@ class ContinuousPriceMonitor:
             logger.info(f"⚡ PARALLEL: Tracked {successful_prices}/{len(self.active_tickers)} ticker prices in {total_time:.3f}s")
             
             if failed_tickers:
-                logger.warning(f"⚠️ Failed to get prices for: {failed_tickers}")
+                logger.debug(f"⚠️ Failed to get prices for: {failed_tickers}")
         else:
             total_time = time.time() - start_time
             logger.warning(f"❌ No price data retrieved for any tickers in {total_time:.3f}s - API issues or rate limiting")
@@ -740,22 +740,24 @@ class ContinuousPriceMonitor:
     async def start(self):
         """Start the continuous price monitoring system"""
         try:
-            logger.info("🚀 Starting ZERO-LAG Price Monitor with FILE TRIGGERS ONLY!")
+            logger.info("🚀 Starting ZERO-LAG Price Monitor with FILE TRIGGERS + CONTINUOUS POLLING!")
             await self.initialize()
             
             # Test API connectivity
             logger.info("🔌 Testing API connectivity...")
             await self.test_api_connectivity()
             
-            # Start ZERO-LAG monitoring with file triggers ONLY
-            logger.info("⚡ Starting ZERO-LAG monitoring with FILE TRIGGERS ONLY...")
+            # Start ZERO-LAG monitoring with BOTH file triggers AND continuous polling
+            logger.info("⚡ Starting ZERO-LAG monitoring with FILE TRIGGERS + CONTINUOUS POLLING...")
+            logger.info("✅ ZERO-LAG Price Monitor operational - DUAL SYSTEM for maximum performance!")
             
-            # FIXED: ONLY file trigger monitor - no competing loops!
-            # The ultra_fast_monitoring_loop was BLOCKING the file trigger monitor
-            logger.info("✅ ZERO-LAG Price Monitor operational - FILE TRIGGERS ONLY for maximum performance!")
-            
-            # ONLY run file trigger monitor - this eliminates ALL competition and blocking
-            await self.file_trigger_monitor_async()
+            # FIXED: Run BOTH file trigger monitor AND continuous polling in parallel
+            # File triggers = immediate detection (1-2 seconds)
+            # Continuous polling = regular price updates (every 2 seconds)
+            await asyncio.gather(
+                self.file_trigger_monitor_async(),      # Immediate trigger processing
+                self.continuous_polling_loop()          # Regular 2-second polling
+            )
             
         except KeyboardInterrupt:
             logger.info("🛑 Received interrupt signal")
@@ -841,6 +843,38 @@ class ContinuousPriceMonitor:
             except Exception as e:
                 logger.error(f"ASYNC MONITOR: Error in file trigger monitor: {e}")
                 await asyncio.sleep(0.001)
+
+    async def continuous_polling_loop(self):
+        """Continuous polling loop for regular price updates every 2 seconds"""
+        logger.info("🔄 Starting CONTINUOUS POLLING LOOP - 2 second intervals for active tickers")
+        
+        cycle = 0
+        while True:
+            try:
+                cycle += 1
+                cycle_start = time.time()
+                
+                # Get active tickers from database
+                await self.get_active_tickers_from_breaking_news()
+                
+                if self.active_tickers:
+                    logger.info(f"🔄 POLLING CYCLE {cycle}: Checking prices for {len(self.active_tickers)} active tickers")
+                    
+                    # Track prices for all active tickers
+                    await self.track_prices_parallel()
+                    await self.check_price_alerts_optimized()
+                    
+                    cycle_time = time.time() - cycle_start
+                    logger.info(f"✅ POLLING CYCLE {cycle}: Completed in {cycle_time:.3f}s")
+                else:
+                    logger.debug(f"⏳ POLLING CYCLE {cycle}: No active tickers")
+                
+                # Wait 2 seconds before next cycle
+                await asyncio.sleep(2.0)
+                
+            except Exception as e:
+                logger.error(f"Error in continuous polling loop: {e}")
+                await asyncio.sleep(2.0)  # Continue with 2-second intervals even on error
 
 
 # GLOBAL NOTIFICATION FUNCTION for immediate ticker notifications
