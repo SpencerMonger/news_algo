@@ -75,46 +75,94 @@ class Crawl4AIScraper:
         }
 
     async def initialize(self):
-        """Initialize the Crawl4AI scraper with better error handling"""
+        """Initialize the Crawl4AI scraper with SPEED-OPTIMIZED CPU efficiency"""
+        logger.info("🚀 Initializing Crawl4AI scraper with SPEED-OPTIMIZED CPU efficiency...")
+        
         # FIXED: Don't call setup_clickhouse_database() as it WIPES all tables!
         # Instead, create direct connection and assume tables already exist
         self.clickhouse_manager = ClickHouseManager()
         self.clickhouse_manager.connect()
         
-        # Initialize Crawl4AI AsyncWebCrawler with retry logic
+        # Initialize Crawl4AI AsyncWebCrawler with SPEED-OPTIMIZED CPU efficiency
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 self.crawler = AsyncWebCrawler(
-                    verbose=True,
+                    verbose=False,  # Reduced logging to save CPU
                     headless=True,
                     browser_type="chromium",
-                    # Optimized settings to reduce resource usage and prevent API interference
-                    max_idle_time=30000,  # 30 seconds
+                    
+                    # SPEED-OPTIMIZED: Maintain performance while reducing CPU usage
+                    max_idle_time=30000,  # 30s - reasonable timeout
                     keep_alive=True,
-                    # Additional resource optimization
-                    max_memory_usage=512,  # Limit memory to 512MB
-                    max_cpu_usage=50,      # Limit CPU usage to 50%
-                    # Network optimization to avoid interfering with price checker
-                    max_concurrent_sessions=2,  # Limit concurrent browser sessions
-                    delay_between_requests=1.0   # 1 second delay between requests
+                    
+                    # EFFICIENT RESOURCE LIMITS - Balance speed vs CPU
+                    max_memory_usage=512,  # 512MB - enough for fast processing
+                    max_concurrent_sessions=2,  # 2 sessions for parallel processing
+                    delay_between_requests=0.5,  # Fast 0.5s delay for speed
+                    
+                    # CPU-EFFICIENT BROWSER FLAGS - Reduce CPU without slowing down
+                    extra_args=[
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        
+                        # DISABLE CPU-INTENSIVE FEATURES (keep speed)
+                        "--disable-gpu",  # No GPU rendering needed for scraping
+                        "--disable-software-rasterizer",
+                        "--disable-background-timer-throttling",  # CRITICAL: Don't throttle our timers
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-renderer-backgrounding",
+                        "--disable-features=TranslateUI",
+                        "--disable-ipc-flooding-protection",
+                        
+                        # EFFICIENT MEMORY MANAGEMENT
+                        "--memory-pressure-off",
+                        "--max_old_space_size=256",  # Reasonable memory limit
+                        "--aggressive-cache-discard",  # Discard unused cache aggressively
+                        
+                        # DISABLE UNNECESSARY FEATURES (saves CPU)
+                        "--disable-extensions",
+                        "--disable-plugins",
+                        "--disable-images",  # Don't load images - saves bandwidth & CPU
+                        "--disable-javascript",  # We only need HTML structure
+                        "--disable-web-security",  # Skip security checks for speed
+                        "--disable-features=VizDisplayCompositor",
+                        
+                        # NETWORK OPTIMIZATIONS (faster loading)
+                        "--disable-background-networking",
+                        "--disable-sync",
+                        "--disable-default-apps",
+                        "--disable-component-update",
+                        
+                        # PROCESS OPTIMIZATIONS
+                        "--disable-hang-monitor",  # Don't monitor for hangs
+                        "--disable-prompt-on-repost",
+                        "--disable-client-side-phishing-detection",
+                        "--disable-component-extensions-with-background-pages",
+                        
+                        # PERFORMANCE FLAGS
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-popup-blocking",
+                        "--disable-notifications",
+                    ]
                 )
                 await self.crawler.start()
-                logger.info(f"✅ Crawl4AI browser started successfully (attempt {attempt + 1})")
+                logger.info(f"✅ Crawl4AI browser started with SPEED-OPTIMIZED efficiency (attempt {attempt + 1})")
                 break
             except Exception as e:
                 logger.warning(f"❌ Failed to start Crawl4AI browser (attempt {attempt + 1}): {e}")
                 if attempt == max_retries - 1:
                     raise Exception(f"Failed to initialize Crawl4AI after {max_retries} attempts")
-                await asyncio.sleep(2)
+                await asyncio.sleep(2)  # Quick retry delay
         
-        # Load ticker list
+        # Load ticker list efficiently
         await self.load_tickers()
         
         # Compile ticker patterns for faster matching
         self.compile_ticker_patterns()
         
-        logger.info(f"🕥 Web scraper initialized - PRESERVES existing database tables with {len(self.ticker_list)} tickers")
+        logger.info(f"🕥 Web scraper initialized with SPEED-OPTIMIZED efficiency - {len(self.ticker_list)} tickers")
 
     async def load_tickers(self):
         """Load ticker list from ClickHouse database"""
@@ -281,17 +329,17 @@ class Crawl4AIScraper:
         return all_articles
 
     async def scrape_single_source(self, source_name: str, source_url: str) -> List[Dict[str, Any]]:
-        """Scrape a single newswire source"""
+        """Scrape a single newswire source with SPEED-OPTIMIZED efficiency"""
         articles = []
         
         try:
-            logger.info(f"🔍 Scraping {source_name}...")
+            logger.info(f"🔍 Scraping {source_name} with speed optimization...")
             
             result: CrawlResult = await self.crawler.arun(
                 url=source_url,
                 wait_for="css:.news-item, .search-result, .bw-release-story, .newsreleaseheadline",
-                delay_before_return_html=2.0,
-                timeout=30
+                delay_before_return_html=1.0,  # Fast 1s delay for speed
+                timeout=15  # Quick 15s timeout for speed
             )
             
             if not result.success or not result.html:
@@ -305,6 +353,7 @@ class Crawl4AIScraper:
             
             logger.info(f"📰 Found {len(article_links)} potential articles from {source_name}")
             
+            # SPEED-OPTIMIZED: Process articles efficiently without unnecessary delays
             for link in article_links:
                 try:
                     title = link.get_text(strip=True)
@@ -448,8 +497,8 @@ class Crawl4AIScraper:
             self.stats['errors'] = self.stats.get('errors', 0) + 1
 
     async def monitor_all_newswires(self):
-        """Monitor ALL newswire sources for exact ticker matches"""
-        logger.info("Starting ALL newswire monitoring (GlobeNewswire, BusinessWire, PRNewswire, AccessNewswire)...")
+        """Monitor ALL newswire sources for exact ticker matches with SPEED-OPTIMIZED efficiency"""
+        logger.info("Starting ALL newswire monitoring with SPEED-OPTIMIZED efficiency...")
         
         while True:
             try:
@@ -465,21 +514,21 @@ class Crawl4AIScraper:
                 total_time = time.time() - start_time
                 logger.info(f"🔄 All newswires scan completed: {len(articles)} articles in {total_time:.2f}s")
                 
-                # Adaptive polling: wait minimum 5 seconds, but ensure cycles don't overlap
-                min_wait = 5.0  # Reduced from 10s for faster monitoring after cold start
+                # SPEED-OPTIMIZED: Fast cycle times for rapid news detection
+                min_wait = 5.0  # Fast 5s cycles for rapid news detection
                 if total_time < min_wait:
                     wait_time = min_wait - total_time
-                    logger.debug(f"⏱️ Cycle took {total_time:.2f}s, waiting additional {wait_time:.2f}s")
+                    logger.debug(f"⏱️ SPEED CYCLE: Completed in {total_time:.2f}s, waiting {wait_time:.2f}s for next cycle")
                     await asyncio.sleep(wait_time)
                 else:
-                    # Cycle took longer than minimum - add small buffer to prevent immediate restart
-                    buffer_time = 2.0
-                    logger.info(f"⚠️ Cycle took {total_time:.2f}s (longer than {min_wait}s minimum), adding {buffer_time}s buffer")
+                    # Cycle took longer than minimum - brief pause to prevent overwhelming
+                    buffer_time = 1.0  # Brief 1s buffer for efficiency
+                    logger.info(f"⚠️ LONG CYCLE: {total_time:.2f}s (longer than {min_wait}s), adding {buffer_time}s buffer")
                     await asyncio.sleep(buffer_time)
                 
             except Exception as e:
                 logger.error(f"Error in newswire monitoring: {e}")
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)  # Quick error recovery for speed
 
     async def buffer_flusher(self):
         """Periodically flush buffer to ClickHouse - OPTIMIZED for speed"""
@@ -580,7 +629,7 @@ class Crawl4AIScraper:
                             published = entry.get('published', '')
                             recent_titles.append(f"{title[:50]}... ({published})")
                         
-                        logger.info(f"📊 RSS COMPARISON for {site_config['name']}: Found {len(feed.entries)} RSS entries")
+                        logger.info(f"🔄 RSS COMPARISON for {site_config['name']}: Found {len(feed.entries)} RSS entries")
                         for i, title in enumerate(recent_titles[:3]):
                             logger.info(f"   RSS #{i+1}: {title}")
                         
@@ -663,8 +712,8 @@ class Crawl4AIScraper:
         return current_time
 
     async def rss_comparison_monitor(self):
-        """RSS monitor for comparison - EXACT same logic as web scraper"""
-        logger.info("Starting RSS comparison monitoring with EXACT same logic as web scraper...")
+        """RSS monitor for comparison with SPEED-OPTIMIZED efficiency"""
+        logger.info("Starting RSS comparison monitoring with SPEED-OPTIMIZED efficiency...")
         
         while True:
             try:
@@ -684,21 +733,21 @@ class Crawl4AIScraper:
                 total_time = time.time() - start_time
                 logger.info(f"🔄 RSS feeds scan completed: {len(articles)} articles in {total_time:.2f}s")
                 
-                # Adaptive polling: wait minimum 5 seconds, but ensure cycles don't overlap
-                min_wait = 5.0  # Reduced from 10s for faster monitoring after cold start
+                # SPEED-OPTIMIZED: Fast RSS cycles for rapid news detection
+                min_wait = 8.0  # Fast 8s cycles for RSS (slightly slower than web scraping)
                 if total_time < min_wait:
                     wait_time = min_wait - total_time
-                    logger.debug(f"⏱️ Cycle took {total_time:.2f}s, waiting additional {wait_time:.2f}s")
+                    logger.debug(f"⏱️ RSS SPEED CYCLE: Completed in {total_time:.2f}s, waiting {wait_time:.2f}s for next cycle")
                     await asyncio.sleep(wait_time)
                 else:
-                    # Cycle took longer than minimum - add small buffer to prevent immediate restart
-                    buffer_time = 2.0
-                    logger.info(f"⚠️ Cycle took {total_time:.2f}s (longer than {min_wait}s minimum), adding {buffer_time}s buffer")
+                    # Cycle took longer than minimum - brief pause to prevent overwhelming
+                    buffer_time = 2.0  # Brief 2s buffer for RSS efficiency
+                    logger.info(f"⚠️ RSS LONG CYCLE: {total_time:.2f}s (longer than {min_wait}s), adding {buffer_time}s buffer")
                     await asyncio.sleep(buffer_time)
                 
             except Exception as e:
                 logger.error(f"Error in RSS monitoring: {e}")
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)  # Quick error recovery for speed
 
     async def scrape_all_rss_feeds(self) -> List[Dict[str, Any]]:
         """Scrape all RSS feeds in parallel using EXACT same ticker extraction logic"""
