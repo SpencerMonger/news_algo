@@ -407,6 +407,12 @@ class Crawl4AIScraper:
                             # Add article directly to batch (let database handle duplicates)
                             articles.append(article)
                             logger.info(f"✅ NEW ARTICLE: {ticker} - {title[:50]}...")
+                            
+                            # 🚀 ZERO-LAG: Create immediate trigger file for instant price checking
+                            try:
+                                self.clickhouse_manager.create_immediate_trigger(ticker, parsed_timestamp)
+                            except Exception as e:
+                                logger.warning(f"⚠️ Could not create immediate trigger for {ticker}: {e}")
                     else:
                         logger.debug(f"❌ No tickers found in: {title[:50]}...")
                     
@@ -820,6 +826,12 @@ class Crawl4AIScraper:
                                     
                                     articles.append(article)
                                     logger.info(f"✅ NEW RSS ARTICLE: {ticker} - {title[:50]}...")
+                                    
+                                    # 🚀 ZERO-LAG: Create immediate trigger file for instant price checking
+                                    try:
+                                        self.clickhouse_manager.create_immediate_trigger(ticker, parsed_timestamp)
+                                    except Exception as e:
+                                        logger.warning(f"⚠️ Could not create immediate trigger for {ticker}: {e}")
                             else:
                                 logger.debug(f"❌ No tickers found in RSS: {title[:50]}...")
                                 

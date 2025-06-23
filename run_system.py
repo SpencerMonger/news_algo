@@ -2,10 +2,14 @@ import asyncio
 import logging
 import sys
 import argparse
+from dotenv import load_dotenv
 from finviz_scraper import FinvizScraper
 from web_scraper import Crawl4AIScraper
 from price_checker import ContinuousPriceMonitor
 from clickhouse_setup import setup_clickhouse_database
+
+# Load environment variables from .env file
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,26 +71,30 @@ async def main():
             logger.info("🔓 FRESHNESS FILTER DISABLED - Processing old news for testing")
         
         # FIXED: Initialize price checker first (needs to be ready for incoming tickers)
-        logger.info("🚀 Phase 1: Initializing price checker...")
+        logger.info("🚀 Phase 1: Initializing ZERO-LAG price checker with immediate notifications...")
         price_monitor = ContinuousPriceMonitor()
         await price_monitor.initialize()
-        logger.info("✅ Price checker initialized and ready for new tickers")
+        logger.info("✅ ZERO-LAG price checker initialized - immediate notification system ready")
         
-        # Start price monitoring loop in background
-        price_task = asyncio.create_task(price_monitor.ultra_fast_monitoring_loop())
+        # Start price monitoring tasks in background
+        # FIXED: ONLY file trigger monitor - no competing loops that block trigger processing!
+        # The ultra_fast_monitoring_loop was causing 25+ second delays by blocking the file trigger monitor
         
-        # CRITICAL: Wait for price checker to complete its first monitoring cycle
+        # CRITICAL: Wait for price checker to complete initialization
         # This ensures it's actively running and ready to detect new tickers immediately
-        logger.info("⏳ Waiting for price checker to complete first monitoring cycle...")
-        await price_monitor.ready_event.wait()  # Wait for ready signal instead of fixed delay
-        logger.info("✅ Price checker is now actively monitoring - ready for new tickers")
+        logger.info("⏳ Waiting for price checker to complete initialization...")
+        await asyncio.sleep(1.0)  # Give price checker 1 second to start up
+        logger.info("✅ ZERO-LAG price checker is now ready - FILE TRIGGERS ONLY for consistent performance")
         
         # FIXED: Start news monitor (will start inserting articles immediately)
-        logger.info("🚀 Phase 2: Starting news monitor...")
+        logger.info("🚀 Phase 2: Starting news monitor with immediate notification sending...")
         news_monitor = Crawl4AIScraper(enable_old=args.enable_old)
         news_task = asyncio.create_task(news_monitor.start_scraping())
         
-        logger.info("✅ Both systems running concurrently with optimized sequencing")
+        logger.info("✅ ZERO-LAG system running: News detection → FILE TRIGGERS ONLY → Instant price tracking")
+        
+        # Start price monitor in background (ONLY file triggers - no competing tasks!)
+        price_task = asyncio.create_task(price_monitor.start())
         
         # Wait for both tasks to complete
         await asyncio.gather(news_task, price_task, return_exceptions=True)

@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 import clickhouse_connect
 import os
 from dotenv import load_dotenv
+import json
 
 # Load environment variables
 load_dotenv()
@@ -167,7 +168,17 @@ class ClickHouseManager:
             logger.info(f"Processing batch of {len(articles)} articles for insertion")
             article_logger.info(f"BATCH_START: Processing {len(articles)} articles")
             
-            # Track tickers for immediate notifications
+            # Get recently seen tickers to avoid duplicate notifications
+            recent_tickers_query = """
+            SELECT DISTINCT ticker
+            FROM News.breaking_news
+            WHERE detected_at >= now() - INTERVAL 10 MINUTE
+            AND ticker != ''
+            """
+            recent_result = self.client.query(recent_tickers_query)
+            recently_seen_tickers = {row[0] for row in recent_result.result_rows}
+            
+            # Track tickers for immediate notifications (only TRULY NEW tickers)
             new_tickers_for_notification = []
             
             # Prepare data for insertion
@@ -194,12 +205,16 @@ class ClickHouseManager:
                     logger.info(f"Skipping duplicate article for {ticker}")
                     continue  # Skip duplicate articles entirely
                 
-                # Track new ticker for immediate notification
-                if ticker and ticker != 'UNKNOWN':
+                # FIXED: Only track TRULY NEW tickers for immediate notification
+                if ticker and ticker != 'UNKNOWN' and ticker not in recently_seen_tickers:
                     new_tickers_for_notification.append({
                         'ticker': ticker,
                         'timestamp': article.get('timestamp', datetime.now())
                     })
+                    logger.info(f"🔥 TRULY NEW TICKER DETECTED: {ticker} - WILL TRIGGER IMMEDIATE NOTIFICATION!")
+                    recently_seen_tickers.add(ticker)  # Add to set to avoid duplicate notifications in same batch
+                elif ticker and ticker != 'UNKNOWN':
+                    logger.debug(f"📝 EXISTING TICKER: {ticker} - no immediate notification needed")
                 
                 # Debug timestamp issue for NEW articles only
                 if 'timestamp' not in article:
@@ -258,7 +273,7 @@ class ClickHouseManager:
             
             # Log insertion attempt
             insertion_time = datetime.now()
-            article_logger.info(f"DB_INSERT_START: {insertion_time} | {len(articles)} articles")
+            article_logger.info(f"DB_INSERT_START: {insertion_time} | {len(data_rows)} articles")
             
             result = self.client.insert(
                 'News.breaking_news',
@@ -269,27 +284,79 @@ class ClickHouseManager:
             completion_time = datetime.now()
             insert_duration = (completion_time - insertion_time).total_seconds()
             
-            logger.info(f"Inserted {len(articles)} articles into ClickHouse in {insert_duration:.2f}s")
-            article_logger.info(f"DB_INSERT_COMPLETE: {completion_time} | {len(articles)} articles | Duration: {insert_duration:.2f}s")
+            logger.info(f"Inserted {len(data_rows)} articles into ClickHouse in {insert_duration:.2f}s")
+            article_logger.info(f"DB_INSERT_COMPLETE: {completion_time} | {len(data_rows)} articles | Duration: {insert_duration:.2f}s")
             
             # Force merge for immediate deduplication
             self.force_merge_breaking_news()
             
             # IMMEDIATE TICKER NOTIFICATIONS - ELIMINATES POLLING LAG
             if new_tickers_for_notification:
-                logger.info(f"🚨 NEW TICKERS DETECTED: {len(new_tickers_for_notification)} tickers - ULTRA-AGGRESSIVE POLLING will detect within 100ms!")
+                logger.info(f"🚨 TRULY NEW TICKERS DETECTED: {len(new_tickers_for_notification)} tickers - SENDING IMMEDIATE NOTIFICATIONS!")
                 
-                # Log each new ticker for monitoring
+                # FIXED: Actually send immediate notifications to the database
+                notification_data = []
                 for ticker_info in new_tickers_for_notification:
                     ticker = ticker_info['ticker']
                     timestamp = ticker_info['timestamp']
-                    logger.info(f"📢 NEW TICKER: {ticker} at {timestamp} - DETECTION WITHIN 100ms!")
                     
-                logger.info("✅ NEW TICKER NOTIFICATIONS LOGGED - ULTRA-AGGRESSIVE POLLING ACTIVE!")
+                    notification_data.append((
+                        ticker,
+                        timestamp,
+                        0,  # not processed yet
+                        datetime.now()
+                    ))
+                
+                # Insert immediate notifications
+                self.client.insert(
+                    'News.immediate_notifications',
+                    notification_data,
+                    column_names=['ticker', 'timestamp', 'processed', 'created_at']
+                )
+                
+                # ZERO-LAG SOLUTION: Trigger immediate price checking directly
+                logger.info(f"⚡ ZERO-LAG: Triggering IMMEDIATE price checks for {len(new_tickers_for_notification)} tickers!")
+                
+                # SIMPLE FILE-BASED TRIGGER: Create trigger files for immediate processing
+                try:
+                    # Create triggers directory if it doesn't exist
+                    trigger_dir = "triggers"
+                    os.makedirs(trigger_dir, exist_ok=True)
+                    
+                    # Create immediate trigger files
+                    for ticker_info in new_tickers_for_notification:
+                        ticker = ticker_info['ticker']
+                        timestamp = ticker_info['timestamp']
+                        
+                        # Create trigger file with timestamp
+                        trigger_file = os.path.join(trigger_dir, f"immediate_{ticker}_{int(datetime.now().timestamp())}.json")
+                        trigger_data = {
+                            "ticker": ticker,
+                            "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
+                            "trigger_type": "immediate_price_check",
+                            "created_at": datetime.now().isoformat()
+                        }
+                        
+                        with open(trigger_file, 'w') as f:
+                            json.dump(trigger_data, f)
+                        
+                        logger.info(f"🚀 IMMEDIATE TRIGGER: Created {trigger_file} for {ticker}")
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not create trigger files: {e}")
+                    logger.info("📢 Falling back to database notifications only")
+                
+                for ticker_info in new_tickers_for_notification:
+                    ticker = ticker_info['ticker']
+                    timestamp = ticker_info['timestamp']
+                    logger.info(f"📢 IMMEDIATE NOTIFICATION QUEUED: {ticker} at {timestamp}")
+                    
+            else:
+                logger.info("📝 No truly new tickers detected - all tickers were recently seen")
+                
+            logger.info(f"✅ IMMEDIATE NOTIFICATIONS: Processed {len(new_tickers_for_notification)} truly new tickers")
             
-            article_logger.info(f"BATCH_COMPLETE: Successfully processed {len(articles)} articles")
-            
-            return len(articles)
+            return len(data_rows)
             
         except Exception as e:
             error_time = datetime.now()
@@ -603,6 +670,22 @@ class ClickHouseManager:
             # NOTE: breaking_news table is created separately via create_breaking_news_table()
             # Removed duplicate definition to avoid schema conflicts
 
+            # FIXED: Create immediate_notifications table for zero-lag detection
+            immediate_notifications_sql = """
+            CREATE TABLE IF NOT EXISTS News.immediate_notifications (
+                id UUID DEFAULT generateUUIDv4(),
+                ticker String,
+                timestamp DateTime DEFAULT now(),
+                processed UInt8 DEFAULT 0,
+                created_at DateTime DEFAULT now()
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, created_at)
+            PARTITION BY toYYYYMM(created_at)
+            TTL created_at + INTERVAL 1 HOUR
+            """
+            self.client.command(immediate_notifications_sql)
+            logger.info("Created immediate_notifications table for zero-lag detection")
+
             # Float list table
             float_list_sql = """
             CREATE TABLE IF NOT EXISTS News.float_list (
@@ -713,6 +796,35 @@ class ClickHouseManager:
             logger.info(f"Table creation SQL: {result.result_rows[0][0] if result.result_rows else 'No result'}")
         except Exception as e:
             logger.error(f"Error checking table structure: {e}")
+
+    def create_immediate_trigger(self, ticker: str, timestamp: datetime = None):
+        """Create immediate trigger file for zero-lag price checking"""
+        try:
+            if timestamp is None:
+                timestamp = datetime.now()
+                
+            # Create triggers directory if it doesn't exist
+            trigger_dir = "triggers"
+            os.makedirs(trigger_dir, exist_ok=True)
+            
+            # Create immediate trigger file with timestamp
+            trigger_file = os.path.join(trigger_dir, f"immediate_{ticker}_{int(datetime.now().timestamp())}.json")
+            trigger_data = {
+                "ticker": ticker,
+                "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
+                "trigger_type": "immediate_price_check",
+                "created_at": datetime.now().isoformat()
+            }
+            
+            with open(trigger_file, 'w') as f:
+                json.dump(trigger_data, f)
+            
+            logger.info(f"🚀 ZERO-LAG TRIGGER: Created {trigger_file} for {ticker} immediately!")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not create immediate trigger for {ticker}: {e}")
+            return False
 
 def setup_clickhouse_database():
     """Initialize ClickHouse database and tables"""
