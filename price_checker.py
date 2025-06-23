@@ -158,18 +158,19 @@ class ContinuousPriceMonitor:
             self.active_tickers = await self.get_active_tickers_from_breaking_news()
             logger.info(f"✅ ZERO-LAG Price Monitor initialized with FILE TRIGGERS ONLY - {len(self.active_tickers)} active tickers!")
             
-            # ULTRA-OPTIMIZED: Aggressive timeouts for FASTEST possible API responses
+            # OPTIMIZED: More generous timeouts for proxy server stability
+            # The proxy server needs more time than direct API calls
             timeout = aiohttp.ClientTimeout(
-                total=2.0,      # 2 second total timeout (was 5)
-                connect=0.5,    # 0.5 second connect timeout (was 2)
-                sock_read=1.0   # 1 second read timeout (was 3)
+                total=10.0,     # 10 second total timeout (was 2) - proxy needs more time
+                connect=3.0,    # 3 second connect timeout (was 0.5) - proxy connection slower
+                sock_read=5.0   # 5 second read timeout (was 1) - proxy processing slower
             )
             
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=aiohttp.TCPConnector(
-                    limit=50,           # Increased concurrent connections
-                    limit_per_host=20,  # More connections per host
+                    limit=10,           # REDUCED: Fewer concurrent connections to avoid overwhelming proxy
+                    limit_per_host=5,   # REDUCED: Fewer connections per host for proxy stability
                     ttl_dns_cache=300,  # DNS cache for 5 minutes
                     use_dns_cache=True,
                     keepalive_timeout=30,
