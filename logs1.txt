@@ -1,0 +1,742 @@
+synk@SYNR:~/Development/newshead$ python3 run_system.py --skip-list --enable-old
+2025-06-23 19:53:06,073 - __main__ - INFO - === Starting News & Price Monitoring System ===
+2025-06-23 19:53:06,073 - __main__ - INFO - Setting up ClickHouse database...
+2025-06-23 19:53:06,107 - clickhouse_setup - INFO - Connected to ClickHouse at 10.0.0.56:8123
+2025-06-23 19:53:06,107 - clickhouse_setup - INFO - Connected to ClickHouse at 10.0.0.56:8123
+2025-06-23 19:53:06,108 - clickhouse_setup - INFO - Dropped breaking_news table for pipeline reset
+2025-06-23 19:53:06,108 - clickhouse_setup - INFO - Dropped breaking_news table for pipeline reset
+2025-06-23 19:53:06,108 - clickhouse_setup - INFO - Dropped monitored_tickers table for pipeline reset
+2025-06-23 19:53:06,108 - clickhouse_setup - INFO - Dropped monitored_tickers table for pipeline reset
+2025-06-23 19:53:06,109 - clickhouse_setup - INFO - Dropped price_tracking table for pipeline reset
+2025-06-23 19:53:06,109 - clickhouse_setup - INFO - Dropped price_tracking table for pipeline reset
+2025-06-23 19:53:06,110 - clickhouse_setup - INFO - Dropped news_alert table for pipeline reset
+2025-06-23 19:53:06,110 - clickhouse_setup - INFO - Dropped news_alert table for pipeline reset
+2025-06-23 19:53:06,110 - clickhouse_setup - INFO - 🧹 COMPLETE PIPELINE RESET: All data flow tables cleared
+2025-06-23 19:53:06,110 - clickhouse_setup - INFO - 🧹 COMPLETE PIPELINE RESET: All data flow tables cleared
+2025-06-23 19:53:06,110 - clickhouse_setup - INFO - News database created/verified
+2025-06-23 19:53:06,110 - clickhouse_setup - INFO - News database created/verified
+2025-06-23 19:53:06,111 - clickhouse_setup - INFO - Created immediate_notifications table for zero-lag detection
+2025-06-23 19:53:06,111 - clickhouse_setup - INFO - Created immediate_notifications table for zero-lag detection
+2025-06-23 19:53:06,111 - clickhouse_setup - INFO - float_list table created/verified
+2025-06-23 19:53:06,111 - clickhouse_setup - INFO - float_list table created/verified
+2025-06-23 19:53:06,112 - clickhouse_setup - INFO - price_move table created/verified
+2025-06-23 19:53:06,112 - clickhouse_setup - INFO - price_move table created/verified
+2025-06-23 19:53:06,122 - clickhouse_setup - INFO - monitored_tickers table created/verified
+2025-06-23 19:53:06,122 - clickhouse_setup - INFO - monitored_tickers table created/verified
+2025-06-23 19:53:06,124 - clickhouse_setup - INFO - price_tracking table created/verified
+2025-06-23 19:53:06,124 - clickhouse_setup - INFO - price_tracking table created/verified
+2025-06-23 19:53:06,126 - clickhouse_setup - INFO - news_alert table created/verified
+2025-06-23 19:53:06,126 - clickhouse_setup - INFO - news_alert table created/verified
+2025-06-23 19:53:06,128 - clickhouse_setup - INFO - breaking_news table created/verified with timestamp preservation
+2025-06-23 19:53:06,128 - clickhouse_setup - INFO - breaking_news table created/verified with timestamp preservation
+2025-06-23 19:53:06,129 - clickhouse_setup - INFO - float_list table created/verified
+2025-06-23 19:53:06,129 - clickhouse_setup - INFO - float_list table created/verified
+2025-06-23 19:53:06,129 - clickhouse_setup - INFO - price_move table created/verified
+2025-06-23 19:53:06,129 - clickhouse_setup - INFO - price_move table created/verified
+2025-06-23 19:53:06,129 - clickhouse_setup - INFO - ClickHouse connection closed
+2025-06-23 19:53:06,129 - clickhouse_setup - INFO - ClickHouse connection closed
+2025-06-23 19:53:06,129 - __main__ - INFO - ClickHouse setup completed successfully
+2025-06-23 19:53:06,129 - __main__ - INFO - Step 1: Skipping Finviz ticker list update (--skip-list flag used)
+2025-06-23 19:53:06,129 - __main__ - INFO - Step 2: Starting monitoring systems with PROCESS ISOLATION...
+2025-06-23 19:53:06,129 - __main__ - INFO - 🔓 FRESHNESS FILTER DISABLED - Processing old news for testing
+2025-06-23 19:53:06,129 - __main__ - INFO - 🚀 Phase 1: Starting ZERO-LAG price checker in separate process...
+2025-06-23 19:53:06,129 - __main__ - INFO - 🚀 Starting ZERO-LAG price checker in separate process...
+2025-06-23 19:53:06,136 - __main__ - INFO - ✅ ZERO-LAG price checker started as separate process (PID: 2709493)
+2025-06-23 19:53:06,137 - __main__ - INFO - ⏳ Waiting 10 seconds for price checker process to fully initialize...
+2025-06-23 19:53:06,376 - asyncio - DEBUG - Using selector: EpollSelector
+2025-06-23 19:53:06,376 - __main__ - INFO - 🚀 Starting ZERO-LAG Continuous Price Monitor with IMMEDIATE NOTIFICATIONS
+2025-06-23 19:53:06,376 - __main__ - INFO - ⚡ ZERO-LAG: Direct article insertion → immediate notification → instant price tracking
+2025-06-23 19:53:06,376 - __main__ - INFO - Using proxy URL: http://3.128.134.41:80
+2025-06-23 19:53:06,376 - __main__ - INFO - 🚀 Starting ZERO-LAG Price Monitor with FILE TRIGGERS + CONTINUOUS POLLING!
+2025-06-23 19:53:06,383 - clickhouse_setup - INFO - Connected to ClickHouse at 10.0.0.56:8123
+2025-06-23 19:53:06,383 - clickhouse_setup - INFO - Connected to ClickHouse at 10.0.0.56:8123
+2025-06-23 19:53:06,383 - __main__ - INFO - Created price_tracking table
+2025-06-23 19:53:06,384 - __main__ - INFO - Created news_alert table
+2025-06-23 19:53:06,385 - __main__ - INFO - ✅ ZERO-LAG Price Monitor initialized with FILE TRIGGERS ONLY - 0 active tickers!
+2025-06-23 19:53:06,385 - __main__ - INFO - 🔌 Testing API connectivity...
+2025-06-23 19:53:06,385 - __main__ - INFO - 🔬 Testing API connectivity with AAPL...
+2025-06-23 19:53:06,583 - __main__ - DEBUG - ⚡ AAPL: $201.6400 (NBBO) in 0.198s
+2025-06-23 19:53:06,584 - __main__ - INFO - ✅ API TEST SUCCESS: AAPL = $201.6400 in 0.198s
+2025-06-23 19:53:06,584 - __main__ - INFO - ⚡ Starting monitoring: FILE TRIGGERS for notifications + CONTINUOUS POLLING for price inserts...
+2025-06-23 19:53:06,584 - __main__ - INFO - ✅ Price Monitor operational - Clean separation: notifications vs price tracking!
+2025-06-23 19:53:06,584 - __main__ - INFO - 🚀 Starting ASYNC FILE TRIGGER MONITOR - NOTIFICATION ONLY (no direct price inserts)
+2025-06-23 19:53:06,584 - __main__ - INFO - 🔄 Starting CONTINUOUS POLLING LOOP - 2 second intervals, FILE TRIGGERS ONLY (no database queries)
+2025-06-23 19:53:06,584 - __main__ - DEBUG - ⏳ POLLING CYCLE 1: No active tickers
+2025-06-23 19:53:08,585 - __main__ - DEBUG - ⏳ POLLING CYCLE 2: No active tickers
+2025-06-23 19:53:10,586 - __main__ - DEBUG - ⏳ POLLING CYCLE 3: No active tickers
+2025-06-23 19:53:12,586 - __main__ - DEBUG - ⏳ POLLING CYCLE 4: No active tickers
+2025-06-23 19:53:14,587 - __main__ - DEBUG - ⏳ POLLING CYCLE 5: No active tickers
+2025-06-23 19:53:16,147 - __main__ - INFO - 🚀 Phase 2: Starting news monitor with Chromium browser...
+2025-06-23 19:53:16,147 - __main__ - INFO - ✅ PROCESS ISOLATION: Price checker runs separately → Zero resource contention
+2025-06-23 19:53:16,147 - __main__ - INFO - 🚀 Starting news monitor with Chromium browser...
+2025-06-23 19:53:16,147 - web_scraper - INFO - 🚀 Initializing Crawl4AI scraper with SPEED-OPTIMIZED CPU efficiency...
+2025-06-23 19:53:16,154 - clickhouse_setup - INFO - Connected to ClickHouse at 10.0.0.56:8123
+2025-06-23 19:53:16,154 - clickhouse_setup - INFO - Connected to ClickHouse at 10.0.0.56:8123
+[INIT].... → Crawl4AI 0.6.3 
+2025-06-23 19:53:16,429 - web_scraper - INFO - ✅ Crawl4AI browser started with SPEED-OPTIMIZED efficiency (attempt 1)
+2025-06-23 19:53:16,432 - clickhouse_setup - INFO - Retrieved 954 active tickers from database
+2025-06-23 19:53:16,432 - clickhouse_setup - INFO - Retrieved 954 active tickers from database
+2025-06-23 19:53:16,432 - web_scraper - INFO - Loaded 954 tickers from database
+2025-06-23 19:53:16,432 - web_scraper - INFO - 🕥 Web scraper initialized with SPEED-OPTIMIZED efficiency - 954 tickers
+2025-06-23 19:53:16,432 - web_scraper - INFO - 🚀 Starting BULK scraping (get all articles, filter locally - MUCH faster)...
+2025-06-23 19:53:16,432 - web_scraper - INFO - 🚀 Initializing Crawl4AI scraper with SPEED-OPTIMIZED CPU efficiency...
+2025-06-23 19:53:16,438 - clickhouse_setup - INFO - Connected to ClickHouse at 10.0.0.56:8123
+2025-06-23 19:53:16,438 - clickhouse_setup - INFO - Connected to ClickHouse at 10.0.0.56:8123
+2025-06-23 19:53:16,587 - __main__ - DEBUG - ⏳ POLLING CYCLE 6: No active tickers
+[INIT].... → Crawl4AI 0.6.3 
+2025-06-23 19:53:16,710 - web_scraper - INFO - ✅ Crawl4AI browser started with SPEED-OPTIMIZED efficiency (attempt 1)
+2025-06-23 19:53:16,713 - clickhouse_setup - INFO - Retrieved 954 active tickers from database
+2025-06-23 19:53:16,713 - clickhouse_setup - INFO - Retrieved 954 active tickers from database
+2025-06-23 19:53:16,713 - web_scraper - INFO - Loaded 954 tickers from database
+2025-06-23 19:53:16,713 - web_scraper - INFO - 🕥 Web scraper initialized with SPEED-OPTIMIZED efficiency - 954 tickers
+2025-06-23 19:53:16,713 - web_scraper - INFO - Starting ALL newswire monitoring with SPEED-OPTIMIZED efficiency...
+2025-06-23 19:53:16,713 - web_scraper - INFO - Starting RSS comparison monitoring with SPEED-OPTIMIZED efficiency...
+2025-06-23 19:53:16,713 - web_scraper - INFO - 🔍 Scraping GlobeNewswire with speed optimization...
+2025-06-23 19:53:16,720 - web_scraper - INFO - 🔍 Scraping BusinessWire with speed optimization...
+2025-06-23 19:53:16,726 - web_scraper - INFO - 🔍 Scraping PRNewswire with speed optimization...
+2025-06-23 19:53:16,731 - web_scraper - INFO - 🔍 Scraping AccessNewswire with speed optimization...
+2025-06-23 19:53:16,737 - web_scraper - INFO - 🔍 Scraping RSS GlobeNewswire...
+2025-06-23 19:53:16,737 - web_scraper - INFO - 🔍 Scraping RSS BusinessWire...
+2025-06-23 19:53:16,737 - web_scraper - INFO - 🔍 Scraping RSS PRNewswire...
+2025-06-23 19:53:17,111 - web_scraper - INFO - 📰 Found 20 RSS entries from PRNewswire
+2025-06-23 19:53:18,393 - web_scraper - INFO - 📰 Found 20 RSS entries from GlobeNewswire
+2025-06-23 19:53:18,587 - __main__ - DEBUG - ⏳ POLLING CYCLE 7: No active tickers
+2025-06-23 19:53:19,151 - web_scraper - INFO - ✅ RSS TICKER MATCH: ['LTRY'] in GlobeNewswire title: Lottery.com and Sports.com Drivers Shine at Road America
+2025-06-23 19:53:19,151 - web_scraper - INFO - 🕐 TIME ONLY: 'Mon, 23 Jun 2025 16:10 GMT' -> 2025-06-23 16:10:00 (diff: 13399.2s)
+2025-06-23 19:53:19,152 - web_scraper - INFO - 🔓 PROCESSING OLD RSS NEWS (freshness disabled): ['LTRY'] - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:53:19,152 - web_scraper - INFO - ✅ NEW RSS ARTICLE: LTRY - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:53:19,152 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708399.json for LTRY immediately!
+2025-06-23 19:53:19,152 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708399.json for LTRY immediately!
+2025-06-23 19:53:19,152 - __main__ - INFO - 🔥 ASYNC MONITOR: FOUND 1 IMMEDIATE TRIGGER FILES!
+2025-06-23 19:53:19,152 - __main__ - INFO - ⚡ ASYNC MONITOR: Processing trigger for LTRY
+2025-06-23 19:53:19,152 - __main__ - INFO - 🎯 ASYNC MONITOR: Added LTRY to active tracking (polling will handle price inserts)
+2025-06-23 19:53:19,152 - __main__ - INFO - ✅ ASYNC MONITOR: Processed and removed trigger for LTRY
+2025-06-23 19:53:19,660 - web_scraper - INFO - 📰 Found 16 RSS entries from BusinessWire
+2025-06-23 19:53:20,588 - __main__ - INFO - 🔄 POLLING CYCLE 8: Checking prices for 1 active tickers
+2025-06-23 19:53:20,687 - web_scraper - INFO - 🎯 Found 1 RSS articles with exact ticker matches from GlobeNewswire
+2025-06-23 19:53:20,687 - web_scraper - INFO - 🔄 RSS feeds scan completed: 1 articles in 3.97s
+2025-06-23 19:53:20,743 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.155s
+2025-06-23 19:53:20,747 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:20,748 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.159s
+2025-06-23 19:53:20,753 - __main__ - INFO - ✅ POLLING CYCLE 8: Completed in 0.165s
+[FETCH]... ↓ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 4.12s 
+[SCRAPE].. ◆ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 0.09s 
+[COMPLETE] ● https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 4.21s 
+2025-06-23 19:53:20,974 - web_scraper - INFO - 📰 Found 291 potential articles from AccessNewswire
+2025-06-23 19:53:22,753 - __main__ - INFO - 🔄 POLLING CYCLE 9: Checking prices for 1 active tickers
+2025-06-23 19:53:22,913 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.160s
+2025-06-23 19:53:22,917 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:22,917 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.164s
+2025-06-23 19:53:22,923 - __main__ - INFO - ✅ POLLING CYCLE 9: Completed in 0.169s
+2025-06-23 19:53:24,474 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:53:24,474 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:53:24,474 - article_events - INFO - BATCH_START: Processing 1 articles
+2025-06-23 19:53:24,478 - clickhouse_setup - INFO - 🔥 TRULY NEW TICKER DETECTED: LTRY - WILL TRIGGER IMMEDIATE NOTIFICATION!
+2025-06-23 19:53:24,478 - clickhouse_setup - INFO - 🔥 TRULY NEW TICKER DETECTED: LTRY - WILL TRIGGER IMMEDIATE NOTIFICATION!
+2025-06-23 19:53:24,478 - clickhouse_setup - INFO - Using existing timestamp for ticker LTRY: 2025-06-23 19:53:19.152037
+2025-06-23 19:53:24,478 - clickhouse_setup - INFO - Using existing timestamp for ticker LTRY: 2025-06-23 19:53:19.152037
+2025-06-23 19:53:24,478 - article_events - INFO - ARTICLE_01: LTRY | 2025-06-23 19:53:19.152037 | GlobeNewswire_RSS_RSS | Lottery.com and Sports.com Drivers Shine at Road America
+2025-06-23 19:53:24,478 - article_events - INFO - CONTENT_HASH: LTRY | 025e54120cd13cdc2a6ac9cffe26c235
+2025-06-23 19:53:24,478 - article_events - INFO - DB_INSERT_START: 2025-06-23 19:53:24.478522 | 1 articles
+2025-06-23 19:53:24,481 - clickhouse_setup - INFO - Inserted 1 articles into ClickHouse in 0.00s
+2025-06-23 19:53:24,481 - clickhouse_setup - INFO - Inserted 1 articles into ClickHouse in 0.00s
+2025-06-23 19:53:24,481 - article_events - INFO - DB_INSERT_COMPLETE: 2025-06-23 19:53:24.481847 | 1 articles | Duration: 0.00s
+2025-06-23 19:53:24,483 - clickhouse_setup - INFO - Forced merge/optimization of breaking_news table
+2025-06-23 19:53:24,483 - clickhouse_setup - INFO - Forced merge/optimization of breaking_news table
+2025-06-23 19:53:24,483 - clickhouse_setup - INFO - 🚨 TRULY NEW TICKERS DETECTED: 1 tickers - SENDING IMMEDIATE NOTIFICATIONS!
+2025-06-23 19:53:24,483 - clickhouse_setup - INFO - 🚨 TRULY NEW TICKERS DETECTED: 1 tickers - SENDING IMMEDIATE NOTIFICATIONS!
+2025-06-23 19:53:24,483 - clickhouse_setup - INFO - ⚡ ZERO-LAG: Triggering IMMEDIATE price checks for 1 tickers!
+2025-06-23 19:53:24,483 - clickhouse_setup - INFO - ⚡ ZERO-LAG: Triggering IMMEDIATE price checks for 1 tickers!
+2025-06-23 19:53:24,484 - clickhouse_setup - INFO - 🚀 IMMEDIATE TRIGGER: Created triggers/immediate_LTRY_1750708404.json for LTRY
+2025-06-23 19:53:24,484 - clickhouse_setup - INFO - 🚀 IMMEDIATE TRIGGER: Created triggers/immediate_LTRY_1750708404.json for LTRY
+2025-06-23 19:53:24,484 - clickhouse_setup - INFO - 📢 IMMEDIATE NOTIFICATION QUEUED: LTRY at 2025-06-23 19:53:19.152037
+2025-06-23 19:53:24,484 - clickhouse_setup - INFO - 📢 IMMEDIATE NOTIFICATION QUEUED: LTRY at 2025-06-23 19:53:19.152037
+2025-06-23 19:53:24,484 - clickhouse_setup - INFO - ✅ IMMEDIATE NOTIFICATIONS: Processed 1 truly new tickers
+2025-06-23 19:53:24,484 - clickhouse_setup - INFO - ✅ IMMEDIATE NOTIFICATIONS: Processed 1 truly new tickers
+2025-06-23 19:53:24,484 - web_scraper - INFO - Flushed 1 articles to ClickHouse
+2025-06-23 19:53:24,484 - __main__ - INFO - 🔥 ASYNC MONITOR: FOUND 1 IMMEDIATE TRIGGER FILES!
+2025-06-23 19:53:24,484 - __main__ - INFO - ⚡ ASYNC MONITOR: Processing trigger for LTRY
+2025-06-23 19:53:24,484 - __main__ - INFO - 🎯 ASYNC MONITOR: Added LTRY to active tracking (polling will handle price inserts)
+2025-06-23 19:53:24,484 - __main__ - INFO - ✅ ASYNC MONITOR: Processed and removed trigger for LTRY
+[FETCH]... ↓ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 7.77s 
+[SCRAPE].. ◆ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 0.06s 
+[COMPLETE] ● https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 7.82s 
+2025-06-23 19:53:24,563 - web_scraper - INFO - 📰 Found 125 potential articles from GlobeNewswire
+2025-06-23 19:53:24,923 - __main__ - INFO - 🔄 POLLING CYCLE 10: Checking prices for 1 active tickers
+2025-06-23 19:53:25,083 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.159s
+2025-06-23 19:53:25,086 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:25,086 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.162s
+2025-06-23 19:53:25,091 - __main__ - INFO - ✅ POLLING CYCLE 10: Completed in 0.168s
+2025-06-23 19:53:27,091 - __main__ - INFO - 🔄 POLLING CYCLE 11: Checking prices for 1 active tickers
+2025-06-23 19:53:27,239 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.148s
+2025-06-23 19:53:27,243 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:27,243 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.151s
+2025-06-23 19:53:27,248 - __main__ - INFO - ✅ POLLING CYCLE 11: Completed in 0.157s
+[FETCH]... ↓ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 10.89s 
+[SCRAPE].. ◆ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.16s 
+[COMPLETE] ● https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 11.05s 
+2025-06-23 19:53:27,823 - web_scraper - INFO - 📰 Found 592 potential articles from PRNewswire
+2025-06-23 19:53:29,249 - __main__ - INFO - 🔄 POLLING CYCLE 12: Checking prices for 1 active tickers
+2025-06-23 19:53:29,410 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.161s
+2025-06-23 19:53:29,413 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:29,413 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.165s
+2025-06-23 19:53:29,419 - __main__ - INFO - ✅ POLLING CYCLE 12: Completed in 0.170s
+2025-06-23 19:53:31,420 - __main__ - INFO - 🔄 POLLING CYCLE 13: Checking prices for 1 active tickers
+2025-06-23 19:53:31,594 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.174s
+2025-06-23 19:53:31,598 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:31,598 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.177s
+2025-06-23 19:53:31,603 - __main__ - INFO - ✅ POLLING CYCLE 13: Completed in 0.182s
+2025-06-23 19:53:33,604 - __main__ - INFO - 🔄 POLLING CYCLE 14: Checking prices for 1 active tickers
+2025-06-23 19:53:33,751 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.147s
+2025-06-23 19:53:33,754 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:33,754 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.150s
+2025-06-23 19:53:33,760 - __main__ - INFO - ✅ POLLING CYCLE 14: Completed in 0.156s
+2025-06-23 19:53:35,760 - __main__ - INFO - 🔄 POLLING CYCLE 15: Checking prices for 1 active tickers
+2025-06-23 19:53:35,914 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.154s
+2025-06-23 19:53:35,917 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:35,917 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.157s
+2025-06-23 19:53:35,923 - __main__ - INFO - ✅ POLLING CYCLE 15: Completed in 0.163s
+2025-06-23 19:53:37,924 - __main__ - INFO - 🔄 POLLING CYCLE 16: Checking prices for 1 active tickers
+2025-06-23 19:53:38,071 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.147s
+2025-06-23 19:53:38,074 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:38,074 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.150s
+2025-06-23 19:53:38,080 - __main__ - INFO - ✅ POLLING CYCLE 16: Completed in 0.156s
+2025-06-23 19:53:40,080 - __main__ - INFO - 🔄 POLLING CYCLE 17: Checking prices for 1 active tickers
+2025-06-23 19:53:40,240 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.160s
+2025-06-23 19:53:40,243 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:40,243 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.163s
+2025-06-23 19:53:40,249 - __main__ - INFO - ✅ POLLING CYCLE 17: Completed in 0.169s
+2025-06-23 19:53:40,616 - web_scraper - INFO - 🔍 Scraping RSS GlobeNewswire...
+2025-06-23 19:53:40,616 - web_scraper - INFO - 🔍 Scraping RSS BusinessWire...
+2025-06-23 19:53:40,616 - web_scraper - INFO - 🔍 Scraping RSS PRNewswire...
+[FETCH]... ↓ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 23.89s 
+[SCRAPE].. ◆ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 0.04s 
+[COMPLETE] ● https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 23.93s 
+2025-06-23 19:53:40,673 - web_scraper - INFO - 📰 Found 100 potential articles from BusinessWire
+2025-06-23 19:53:41,543 - web_scraper - INFO - 🔄 All newswires scan completed: 0 articles in 24.83s
+2025-06-23 19:53:41,543 - web_scraper - INFO - ⚠️ LONG CYCLE: 24.83s (longer than 5.0s), adding 1.0s buffer
+2025-06-23 19:53:41,616 - web_scraper - INFO - 📰 Found 20 RSS entries from GlobeNewswire
+2025-06-23 19:53:42,250 - __main__ - INFO - 🔄 POLLING CYCLE 18: Checking prices for 1 active tickers
+2025-06-23 19:53:42,380 - web_scraper - INFO - ✅ RSS TICKER MATCH: ['LTRY'] in GlobeNewswire title: Lottery.com and Sports.com Drivers Shine at Road America
+2025-06-23 19:53:42,381 - web_scraper - INFO - 🕐 TIME ONLY: 'Mon, 23 Jun 2025 16:10 GMT' -> 2025-06-23 16:10:00 (diff: 13422.4s)
+2025-06-23 19:53:42,381 - web_scraper - INFO - 🔓 PROCESSING OLD RSS NEWS (freshness disabled): ['LTRY'] - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:53:42,381 - web_scraper - INFO - ✅ NEW RSS ARTICLE: LTRY - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:53:42,381 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708422.json for LTRY immediately!
+2025-06-23 19:53:42,381 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708422.json for LTRY immediately!
+2025-06-23 19:53:42,382 - __main__ - INFO - 🔥 ASYNC MONITOR: FOUND 1 IMMEDIATE TRIGGER FILES!
+2025-06-23 19:53:42,382 - __main__ - INFO - ⚡ ASYNC MONITOR: Processing trigger for LTRY
+2025-06-23 19:53:42,382 - __main__ - INFO - 🎯 ASYNC MONITOR: Added LTRY to active tracking (polling will handle price inserts)
+2025-06-23 19:53:42,382 - __main__ - INFO - ✅ ASYNC MONITOR: Processed and removed trigger for LTRY
+2025-06-23 19:53:42,430 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.180s
+2025-06-23 19:53:42,433 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:42,433 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.184s
+2025-06-23 19:53:42,439 - __main__ - INFO - ✅ POLLING CYCLE 18: Completed in 0.189s
+2025-06-23 19:53:42,887 - web_scraper - INFO - 📰 Found 16 RSS entries from BusinessWire
+2025-06-23 19:53:43,918 - web_scraper - INFO - 📰 Found 20 RSS entries from PRNewswire
+2025-06-23 19:53:44,439 - __main__ - INFO - 🔄 POLLING CYCLE 19: Checking prices for 1 active tickers
+2025-06-23 19:53:44,590 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.151s
+2025-06-23 19:53:44,593 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:44,593 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.154s
+2025-06-23 19:53:44,599 - __main__ - INFO - ✅ POLLING CYCLE 19: Completed in 0.160s
+2025-06-23 19:53:45,182 - web_scraper - INFO - 🔍 Scraping GlobeNewswire with speed optimization...
+2025-06-23 19:53:45,189 - web_scraper - INFO - 🔍 Scraping BusinessWire with speed optimization...
+2025-06-23 19:53:45,195 - web_scraper - INFO - 🔍 Scraping PRNewswire with speed optimization...
+2025-06-23 19:53:45,201 - web_scraper - INFO - 🔍 Scraping AccessNewswire with speed optimization...
+2025-06-23 19:53:45,208 - web_scraper - INFO - 🎯 Found 1 RSS articles with exact ticker matches from GlobeNewswire
+2025-06-23 19:53:45,209 - web_scraper - INFO - 🔄 RSS feeds scan completed: 1 articles in 17.59s
+2025-06-23 19:53:45,209 - web_scraper - INFO - ⚠️ RSS LONG CYCLE: 17.59s (longer than 8.0s), adding 2.0s buffer
+2025-06-23 19:53:45,433 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:53:45,433 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:53:45,433 - article_events - INFO - BATCH_START: Processing 1 articles
+2025-06-23 19:53:45,438 - article_events - WARNING - DUPLICATE_DETECTED: LTRY | 025e54120cd13cdc2a6ac9cffe26c235 | Skipping to preserve original timestamp
+2025-06-23 19:53:45,438 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:53:45,438 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:53:45,438 - article_events - INFO - No new articles to insert (all were duplicates)
+2025-06-23 19:53:45,438 - web_scraper - INFO - Flushed 0 articles to ClickHouse
+[FETCH]... ↓ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.38s 
+[SCRAPE].. ◆ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.13s 
+[COMPLETE] ● https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.52s 
+2025-06-23 19:53:45,766 - web_scraper - INFO - 📰 Found 593 potential articles from PRNewswire
+2025-06-23 19:53:46,600 - __main__ - INFO - 🔄 POLLING CYCLE 20: Checking prices for 1 active tickers
+2025-06-23 19:53:46,753 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.153s
+2025-06-23 19:53:46,756 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:46,756 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.156s
+2025-06-23 19:53:46,762 - __main__ - INFO - ✅ POLLING CYCLE 20: Completed in 0.162s
+2025-06-23 19:53:48,762 - __main__ - INFO - 🔄 POLLING CYCLE 21: Checking prices for 1 active tickers
+2025-06-23 19:53:48,909 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.146s
+2025-06-23 19:53:48,912 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:48,912 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.150s
+2025-06-23 19:53:48,918 - __main__ - INFO - ✅ POLLING CYCLE 21: Completed in 0.156s
+2025-06-23 19:53:50,919 - __main__ - INFO - 🔄 POLLING CYCLE 22: Checking prices for 1 active tickers
+2025-06-23 19:53:51,083 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.163s
+2025-06-23 19:53:51,087 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:51,087 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.168s
+2025-06-23 19:53:51,094 - __main__ - INFO - ✅ POLLING CYCLE 22: Completed in 0.174s
+2025-06-23 19:53:53,094 - __main__ - INFO - 🔄 POLLING CYCLE 23: Checking prices for 1 active tickers
+2025-06-23 19:53:53,240 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.146s
+2025-06-23 19:53:53,244 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:53,244 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.150s
+2025-06-23 19:53:53,251 - __main__ - INFO - ✅ POLLING CYCLE 23: Completed in 0.157s
+2025-06-23 19:53:55,251 - __main__ - INFO - 🔄 POLLING CYCLE 24: Checking prices for 1 active tickers
+2025-06-23 19:53:55,400 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.149s
+2025-06-23 19:53:55,404 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:55,404 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.153s
+2025-06-23 19:53:55,410 - __main__ - INFO - ✅ POLLING CYCLE 24: Completed in 0.159s
+2025-06-23 19:53:57,410 - __main__ - INFO - 🔄 POLLING CYCLE 25: Checking prices for 1 active tickers
+2025-06-23 19:53:57,565 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.154s
+2025-06-23 19:53:57,568 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:57,568 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.158s
+2025-06-23 19:53:57,574 - __main__ - INFO - ✅ POLLING CYCLE 25: Completed in 0.163s
+2025-06-23 19:53:58,042 - web_scraper - INFO - 🔍 Scraping RSS GlobeNewswire...
+2025-06-23 19:53:58,042 - web_scraper - INFO - 🔍 Scraping RSS BusinessWire...
+2025-06-23 19:53:58,042 - web_scraper - INFO - 🔍 Scraping RSS PRNewswire...
+2025-06-23 19:53:58,123 - web_scraper - INFO - 📰 Found 20 RSS entries from GlobeNewswire
+2025-06-23 19:53:58,881 - web_scraper - INFO - ✅ RSS TICKER MATCH: ['LTRY'] in GlobeNewswire title: Lottery.com and Sports.com Drivers Shine at Road America
+2025-06-23 19:53:58,881 - web_scraper - INFO - 🕐 TIME ONLY: 'Mon, 23 Jun 2025 16:10 GMT' -> 2025-06-23 16:10:00 (diff: 13438.9s)
+2025-06-23 19:53:58,881 - web_scraper - INFO - 🔓 PROCESSING OLD RSS NEWS (freshness disabled): ['LTRY'] - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:53:58,881 - web_scraper - INFO - ✅ NEW RSS ARTICLE: LTRY - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:53:58,881 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708438.json for LTRY immediately!
+2025-06-23 19:53:58,881 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708438.json for LTRY immediately!
+2025-06-23 19:53:58,882 - __main__ - INFO - 🔥 ASYNC MONITOR: FOUND 1 IMMEDIATE TRIGGER FILES!
+2025-06-23 19:53:58,882 - __main__ - INFO - ⚡ ASYNC MONITOR: Processing trigger for LTRY
+2025-06-23 19:53:58,882 - __main__ - INFO - 🎯 ASYNC MONITOR: Added LTRY to active tracking (polling will handle price inserts)
+2025-06-23 19:53:58,882 - __main__ - INFO - ✅ ASYNC MONITOR: Processed and removed trigger for LTRY
+2025-06-23 19:53:59,395 - web_scraper - INFO - 📰 Found 20 RSS entries from PRNewswire
+2025-06-23 19:53:59,574 - __main__ - INFO - 🔄 POLLING CYCLE 26: Checking prices for 1 active tickers
+2025-06-23 19:53:59,725 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.151s
+2025-06-23 19:53:59,729 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:53:59,729 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.155s
+2025-06-23 19:53:59,734 - __main__ - INFO - ✅ POLLING CYCLE 26: Completed in 0.161s
+2025-06-23 19:54:00,661 - web_scraper - INFO - 📰 Found 16 RSS entries from BusinessWire
+2025-06-23 19:54:01,680 - web_scraper - INFO - 🎯 Found 1 RSS articles with exact ticker matches from GlobeNewswire
+2025-06-23 19:54:01,680 - web_scraper - INFO - 🔄 RSS feeds scan completed: 1 articles in 3.64s
+[FETCH]... ↓ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 16.48s 
+2025-06-23 19:54:01,735 - __main__ - INFO - 🔄 POLLING CYCLE 27: Checking prices for 1 active tickers
+[SCRAPE].. ◆ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 0.14s 
+[COMPLETE] ● https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 16.63s 
+2025-06-23 19:54:01,863 - web_scraper - INFO - 📰 Found 291 potential articles from AccessNewswire
+2025-06-23 19:54:01,889 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.154s
+2025-06-23 19:54:01,893 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:01,893 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.157s
+2025-06-23 19:54:01,898 - __main__ - INFO - ✅ POLLING CYCLE 27: Completed in 0.163s
+2025-06-23 19:54:03,899 - __main__ - INFO - 🔄 POLLING CYCLE 28: Checking prices for 1 active tickers
+2025-06-23 19:54:04,065 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.166s
+2025-06-23 19:54:04,068 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:04,068 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.169s
+2025-06-23 19:54:04,073 - __main__ - INFO - ✅ POLLING CYCLE 28: Completed in 0.174s
+2025-06-23 19:54:05,406 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:54:05,406 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:54:05,406 - article_events - INFO - BATCH_START: Processing 1 articles
+2025-06-23 19:54:05,411 - article_events - WARNING - DUPLICATE_DETECTED: LTRY | 025e54120cd13cdc2a6ac9cffe26c235 | Skipping to preserve original timestamp
+2025-06-23 19:54:05,411 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:54:05,411 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:54:05,411 - article_events - INFO - No new articles to insert (all were duplicates)
+2025-06-23 19:54:05,411 - web_scraper - INFO - Flushed 0 articles to ClickHouse
+[FETCH]... ↓ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 20.22s 
+[SCRAPE].. ◆ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 0.06s 
+[COMPLETE] ● https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 20.28s 
+2025-06-23 19:54:05,490 - web_scraper - INFO - 📰 Found 125 potential articles from GlobeNewswire
+2025-06-23 19:54:06,074 - __main__ - INFO - 🔄 POLLING CYCLE 29: Checking prices for 1 active tickers
+2025-06-23 19:54:06,433 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.359s
+2025-06-23 19:54:06,436 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:06,437 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.362s
+2025-06-23 19:54:06,442 - __main__ - INFO - ✅ POLLING CYCLE 29: Completed in 0.367s
+2025-06-23 19:54:08,443 - __main__ - INFO - 🔄 POLLING CYCLE 30: Checking prices for 1 active tickers
+[FETCH]... ↓ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 23.39s 
+2025-06-23 19:54:08,587 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.145s
+2025-06-23 19:54:08,591 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:08,591 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.148s
+2025-06-23 19:54:08,596 - __main__ - INFO - ✅ POLLING CYCLE 30: Completed in 0.154s
+[SCRAPE].. ◆ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 0.04s 
+[COMPLETE] ● https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 23.43s 
+2025-06-23 19:54:08,639 - web_scraper - INFO - 📰 Found 100 potential articles from BusinessWire
+2025-06-23 19:54:09,506 - web_scraper - INFO - 🔍 Scraping RSS GlobeNewswire...
+2025-06-23 19:54:09,506 - web_scraper - INFO - 🔍 Scraping RSS BusinessWire...
+2025-06-23 19:54:09,506 - web_scraper - INFO - 🔍 Scraping RSS PRNewswire...
+2025-06-23 19:54:09,506 - web_scraper - INFO - 🔄 All newswires scan completed: 0 articles in 24.32s
+2025-06-23 19:54:09,506 - web_scraper - INFO - ⚠️ LONG CYCLE: 24.32s (longer than 5.0s), adding 1.0s buffer
+2025-06-23 19:54:09,619 - web_scraper - INFO - 📰 Found 20 RSS entries from PRNewswire
+2025-06-23 19:54:10,597 - __main__ - INFO - 🔄 POLLING CYCLE 31: Checking prices for 1 active tickers
+2025-06-23 19:54:10,746 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.149s
+2025-06-23 19:54:10,750 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:10,750 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.153s
+2025-06-23 19:54:10,755 - __main__ - INFO - ✅ POLLING CYCLE 31: Completed in 0.159s
+2025-06-23 19:54:10,873 - web_scraper - INFO - 📰 Found 20 RSS entries from GlobeNewswire
+2025-06-23 19:54:11,646 - web_scraper - INFO - ✅ RSS TICKER MATCH: ['LTRY'] in GlobeNewswire title: Lottery.com and Sports.com Drivers Shine at Road America
+2025-06-23 19:54:11,647 - web_scraper - INFO - 🕐 TIME ONLY: 'Mon, 23 Jun 2025 16:10 GMT' -> 2025-06-23 16:10:00 (diff: 13451.6s)
+2025-06-23 19:54:11,647 - web_scraper - INFO - 🔓 PROCESSING OLD RSS NEWS (freshness disabled): ['LTRY'] - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:54:11,647 - web_scraper - INFO - ✅ NEW RSS ARTICLE: LTRY - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:54:11,647 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708451.json for LTRY immediately!
+2025-06-23 19:54:11,647 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708451.json for LTRY immediately!
+2025-06-23 19:54:11,648 - __main__ - INFO - 🔥 ASYNC MONITOR: FOUND 1 IMMEDIATE TRIGGER FILES!
+2025-06-23 19:54:11,648 - __main__ - INFO - ⚡ ASYNC MONITOR: Processing trigger for LTRY
+2025-06-23 19:54:11,648 - __main__ - INFO - 🎯 ASYNC MONITOR: Added LTRY to active tracking (polling will handle price inserts)
+2025-06-23 19:54:11,648 - __main__ - INFO - ✅ ASYNC MONITOR: Processed and removed trigger for LTRY
+2025-06-23 19:54:12,388 - web_scraper - INFO - 🔍 Scraping GlobeNewswire with speed optimization...
+2025-06-23 19:54:12,402 - web_scraper - INFO - 🔍 Scraping BusinessWire with speed optimization...
+2025-06-23 19:54:12,416 - web_scraper - INFO - 🔍 Scraping PRNewswire with speed optimization...
+2025-06-23 19:54:12,427 - web_scraper - INFO - 🔍 Scraping AccessNewswire with speed optimization...
+2025-06-23 19:54:12,459 - web_scraper - INFO - 📰 Found 16 RSS entries from BusinessWire
+2025-06-23 19:54:12,756 - __main__ - INFO - 🔄 POLLING CYCLE 32: Checking prices for 1 active tickers
+2025-06-23 19:54:12,902 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.145s
+2025-06-23 19:54:12,942 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:12,943 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.186s
+2025-06-23 19:54:13,005 - __main__ - INFO - ✅ POLLING CYCLE 32: Completed in 0.249s
+2025-06-23 19:54:14,247 - web_scraper - INFO - 🎯 Found 1 RSS articles with exact ticker matches from GlobeNewswire
+2025-06-23 19:54:14,247 - web_scraper - INFO - 🔄 RSS feeds scan completed: 1 articles in 5.67s
+2025-06-23 19:54:14,498 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:54:14,498 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:54:14,500 - article_events - INFO - BATCH_START: Processing 1 articles
+2025-06-23 19:54:14,535 - article_events - WARNING - DUPLICATE_DETECTED: LTRY | 025e54120cd13cdc2a6ac9cffe26c235 | Skipping to preserve original timestamp
+2025-06-23 19:54:14,535 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:54:14,535 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:54:14,536 - article_events - INFO - No new articles to insert (all were duplicates)
+2025-06-23 19:54:14,536 - web_scraper - INFO - Flushed 0 articles to ClickHouse
+2025-06-23 19:54:15,007 - __main__ - INFO - 🔄 POLLING CYCLE 33: Checking prices for 1 active tickers
+[FETCH]... ↓ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 2.62s 
+2025-06-23 19:54:15,161 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.153s
+2025-06-23 19:54:15,165 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:15,165 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.158s
+[SCRAPE].. ◆ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.12s 
+[COMPLETE] ● https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 2.74s 
+2025-06-23 19:54:15,172 - __main__ - INFO - ✅ POLLING CYCLE 33: Completed in 0.166s
+2025-06-23 19:54:15,282 - web_scraper - INFO - 📰 Found 579 potential articles from PRNewswire
+2025-06-23 19:54:17,173 - __main__ - INFO - 🔄 POLLING CYCLE 34: Checking prices for 1 active tickers
+2025-06-23 19:54:17,330 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.157s
+2025-06-23 19:54:17,340 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:17,340 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.167s
+2025-06-23 19:54:17,345 - __main__ - INFO - ✅ POLLING CYCLE 34: Completed in 0.172s
+2025-06-23 19:54:19,346 - __main__ - INFO - 🔄 POLLING CYCLE 35: Checking prices for 1 active tickers
+2025-06-23 19:54:19,501 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.155s
+2025-06-23 19:54:19,504 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:19,504 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.159s
+2025-06-23 19:54:19,510 - __main__ - INFO - ✅ POLLING CYCLE 35: Completed in 0.164s
+2025-06-23 19:54:21,511 - __main__ - INFO - 🔄 POLLING CYCLE 36: Checking prices for 1 active tickers
+2025-06-23 19:54:21,661 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.150s
+2025-06-23 19:54:21,666 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:21,666 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.155s
+2025-06-23 19:54:21,674 - __main__ - INFO - ✅ POLLING CYCLE 36: Completed in 0.163s
+2025-06-23 19:54:23,674 - __main__ - INFO - 🔄 POLLING CYCLE 37: Checking prices for 1 active tickers
+2025-06-23 19:54:23,896 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.222s
+2025-06-23 19:54:23,901 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:23,901 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.227s
+2025-06-23 19:54:23,907 - __main__ - INFO - ✅ POLLING CYCLE 37: Completed in 0.233s
+2025-06-23 19:54:25,908 - __main__ - INFO - 🔄 POLLING CYCLE 38: Checking prices for 1 active tickers
+2025-06-23 19:54:26,059 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.151s
+2025-06-23 19:54:26,062 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:26,062 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.155s
+2025-06-23 19:54:26,069 - __main__ - INFO - ✅ POLLING CYCLE 38: Completed in 0.161s
+2025-06-23 19:54:27,598 - web_scraper - INFO - SCRAPING STATS - Runtime: 1750708467.6s, Web Processed: 0, RSS Processed: 4, Total Inserted: 1, Errors: 0, Web Rate: 0.00/sec, RSS Rate: 0.00/sec
+2025-06-23 19:54:27,598 - web_scraper - INFO - 🔍 Scraping RSS GlobeNewswire...
+2025-06-23 19:54:27,598 - web_scraper - INFO - 🔍 Scraping RSS BusinessWire...
+2025-06-23 19:54:27,598 - web_scraper - INFO - 🔍 Scraping RSS PRNewswire...
+[FETCH]... ↓ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 15.23s 
+[SCRAPE].. ◆ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 0.06s 
+[COMPLETE] ● https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 15.29s 
+2025-06-23 19:54:27,704 - web_scraper - INFO - 📰 Found 125 potential articles from GlobeNewswire
+2025-06-23 19:54:28,070 - __main__ - INFO - 🔄 POLLING CYCLE 39: Checking prices for 1 active tickers
+2025-06-23 19:54:28,222 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.152s
+2025-06-23 19:54:28,225 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:28,225 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.155s
+2025-06-23 19:54:28,231 - __main__ - INFO - ✅ POLLING CYCLE 39: Completed in 0.161s
+2025-06-23 19:54:30,232 - __main__ - INFO - 🔄 POLLING CYCLE 40: Checking prices for 1 active tickers
+2025-06-23 19:54:30,384 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.152s
+2025-06-23 19:54:30,387 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:30,387 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.156s
+2025-06-23 19:54:30,392 - __main__ - INFO - ✅ POLLING CYCLE 40: Completed in 0.161s
+[FETCH]... ↓ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 18.40s 
+[SCRAPE].. ◆ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 0.04s 
+[COMPLETE] ● https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 18.44s 
+2025-06-23 19:54:30,873 - web_scraper - INFO - 📰 Found 100 potential articles from BusinessWire
+2025-06-23 19:54:31,755 - web_scraper - INFO - 📰 Found 20 RSS entries from GlobeNewswire
+2025-06-23 19:54:32,393 - __main__ - INFO - 🔄 POLLING CYCLE 41: Checking prices for 1 active tickers
+2025-06-23 19:54:32,519 - web_scraper - INFO - ✅ RSS TICKER MATCH: ['LTRY'] in GlobeNewswire title: Lottery.com and Sports.com Drivers Shine at Road America
+2025-06-23 19:54:32,520 - web_scraper - INFO - 🕐 TIME ONLY: 'Mon, 23 Jun 2025 16:10 GMT' -> 2025-06-23 16:10:00 (diff: 13472.5s)
+2025-06-23 19:54:32,520 - web_scraper - INFO - 🔓 PROCESSING OLD RSS NEWS (freshness disabled): ['LTRY'] - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:54:32,520 - web_scraper - INFO - ✅ NEW RSS ARTICLE: LTRY - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:54:32,520 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708472.json for LTRY immediately!
+2025-06-23 19:54:32,520 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708472.json for LTRY immediately!
+2025-06-23 19:54:32,521 - __main__ - INFO - 🔥 ASYNC MONITOR: FOUND 1 IMMEDIATE TRIGGER FILES!
+2025-06-23 19:54:32,521 - __main__ - INFO - ⚡ ASYNC MONITOR: Processing trigger for LTRY
+2025-06-23 19:54:32,521 - __main__ - INFO - 🎯 ASYNC MONITOR: Added LTRY to active tracking (polling will handle price inserts)
+2025-06-23 19:54:32,521 - __main__ - INFO - ✅ ASYNC MONITOR: Processed and removed trigger for LTRY
+2025-06-23 19:54:32,541 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.148s
+2025-06-23 19:54:32,544 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:32,544 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.151s
+2025-06-23 19:54:32,550 - __main__ - INFO - ✅ POLLING CYCLE 41: Completed in 0.157s
+[FETCH]... ↓ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 20.60s 
+[SCRAPE].. ◆ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 0.08s 
+[COMPLETE] ● https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 20.69s 
+2025-06-23 19:54:33,153 - web_scraper - INFO - 📰 Found 291 potential articles from AccessNewswire
+2025-06-23 19:54:34,551 - __main__ - INFO - 🔄 POLLING CYCLE 42: Checking prices for 1 active tickers
+2025-06-23 19:54:34,704 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.153s
+2025-06-23 19:54:34,707 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:34,707 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.156s
+2025-06-23 19:54:34,714 - __main__ - INFO - ✅ POLLING CYCLE 42: Completed in 0.163s
+2025-06-23 19:54:36,644 - web_scraper - INFO - 🔄 All newswires scan completed: 0 articles in 24.26s
+2025-06-23 19:54:36,644 - web_scraper - INFO - ⚠️ LONG CYCLE: 24.26s (longer than 5.0s), adding 1.0s buffer
+2025-06-23 19:54:36,653 - web_scraper - INFO - 📰 Found 20 RSS entries from PRNewswire
+2025-06-23 19:54:36,715 - __main__ - INFO - 🔄 POLLING CYCLE 43: Checking prices for 1 active tickers
+2025-06-23 19:54:36,861 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.146s
+2025-06-23 19:54:36,864 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:36,864 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.150s
+2025-06-23 19:54:36,869 - __main__ - INFO - ✅ POLLING CYCLE 43: Completed in 0.155s
+2025-06-23 19:54:37,906 - web_scraper - INFO - 📰 Found 16 RSS entries from BusinessWire
+2025-06-23 19:54:38,870 - __main__ - INFO - 🔄 POLLING CYCLE 44: Checking prices for 1 active tickers
+2025-06-23 19:54:38,933 - web_scraper - INFO - 🔍 Scraping GlobeNewswire with speed optimization...
+2025-06-23 19:54:38,940 - web_scraper - INFO - 🔍 Scraping BusinessWire with speed optimization...
+2025-06-23 19:54:38,946 - web_scraper - INFO - 🔍 Scraping PRNewswire with speed optimization...
+2025-06-23 19:54:38,952 - web_scraper - INFO - 🔍 Scraping AccessNewswire with speed optimization...
+2025-06-23 19:54:38,959 - web_scraper - INFO - 🎯 Found 1 RSS articles with exact ticker matches from GlobeNewswire
+2025-06-23 19:54:38,959 - web_scraper - INFO - 🔄 RSS feeds scan completed: 1 articles in 11.36s
+2025-06-23 19:54:38,959 - web_scraper - INFO - ⚠️ RSS LONG CYCLE: 11.36s (longer than 8.0s), adding 2.0s buffer
+2025-06-23 19:54:39,022 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.152s
+2025-06-23 19:54:39,032 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:39,032 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.162s
+2025-06-23 19:54:39,037 - __main__ - INFO - ✅ POLLING CYCLE 44: Completed in 0.167s
+2025-06-23 19:54:39,209 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:54:39,209 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:54:39,209 - article_events - INFO - BATCH_START: Processing 1 articles
+2025-06-23 19:54:39,215 - article_events - WARNING - DUPLICATE_DETECTED: LTRY | 025e54120cd13cdc2a6ac9cffe26c235 | Skipping to preserve original timestamp
+2025-06-23 19:54:39,215 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:54:39,215 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:54:39,215 - article_events - INFO - No new articles to insert (all were duplicates)
+2025-06-23 19:54:39,215 - web_scraper - INFO - Flushed 0 articles to ClickHouse
+[FETCH]... ↓ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.63s 
+[SCRAPE].. ◆ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.19s 
+[COMPLETE] ● https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.83s 
+2025-06-23 19:54:39,822 - web_scraper - INFO - 📰 Found 593 potential articles from PRNewswire
+2025-06-23 19:54:41,038 - __main__ - INFO - 🔄 POLLING CYCLE 45: Checking prices for 1 active tickers
+2025-06-23 19:54:41,192 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.154s
+2025-06-23 19:54:41,196 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:41,196 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.157s
+2025-06-23 19:54:41,201 - __main__ - INFO - ✅ POLLING CYCLE 45: Completed in 0.163s
+2025-06-23 19:54:43,201 - __main__ - INFO - 🔄 POLLING CYCLE 46: Checking prices for 1 active tickers
+2025-06-23 19:54:43,355 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.154s
+2025-06-23 19:54:43,359 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:43,359 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.157s
+2025-06-23 19:54:43,365 - __main__ - INFO - ✅ POLLING CYCLE 46: Completed in 0.163s
+2025-06-23 19:54:45,365 - __main__ - INFO - 🔄 POLLING CYCLE 47: Checking prices for 1 active tickers
+2025-06-23 19:54:45,521 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.156s
+2025-06-23 19:54:45,525 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:45,526 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.160s
+2025-06-23 19:54:45,534 - __main__ - INFO - ✅ POLLING CYCLE 47: Completed in 0.168s
+2025-06-23 19:54:47,534 - __main__ - INFO - 🔄 POLLING CYCLE 48: Checking prices for 1 active tickers
+2025-06-23 19:54:47,688 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.154s
+2025-06-23 19:54:47,692 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:47,692 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.158s
+2025-06-23 19:54:47,698 - __main__ - INFO - ✅ POLLING CYCLE 48: Completed in 0.164s
+2025-06-23 19:54:49,699 - __main__ - INFO - 🔄 POLLING CYCLE 49: Checking prices for 1 active tickers
+2025-06-23 19:54:49,856 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.156s
+2025-06-23 19:54:49,864 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:49,864 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.164s
+2025-06-23 19:54:49,871 - __main__ - INFO - ✅ POLLING CYCLE 49: Completed in 0.172s
+2025-06-23 19:54:51,871 - __main__ - INFO - 🔄 POLLING CYCLE 50: Checking prices for 1 active tickers
+2025-06-23 19:54:52,025 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.153s
+2025-06-23 19:54:52,028 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:52,028 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.157s
+2025-06-23 19:54:52,034 - __main__ - INFO - ✅ POLLING CYCLE 50: Completed in 0.163s
+2025-06-23 19:54:52,094 - web_scraper - INFO - 🔍 Scraping RSS GlobeNewswire...
+2025-06-23 19:54:52,095 - web_scraper - INFO - 🔍 Scraping RSS BusinessWire...
+2025-06-23 19:54:52,095 - web_scraper - INFO - 🔍 Scraping RSS PRNewswire...
+[FETCH]... ↓ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 13.16s 
+[SCRAPE].. ◆ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 0.08s 
+[COMPLETE] ● https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 13.24s 
+2025-06-23 19:54:52,232 - web_scraper - INFO - 📰 Found 291 potential articles from AccessNewswire
+2025-06-23 19:54:54,035 - __main__ - INFO - 🔄 POLLING CYCLE 51: Checking prices for 1 active tickers
+2025-06-23 19:54:54,199 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.165s
+2025-06-23 19:54:54,203 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:54,203 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.168s
+2025-06-23 19:54:54,208 - __main__ - INFO - ✅ POLLING CYCLE 51: Completed in 0.174s
+[FETCH]... ↓ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 16.79s 
+[SCRAPE].. ◆ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 0.04s 
+[COMPLETE] ● https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 16.83s 
+2025-06-23 19:54:55,791 - web_scraper - INFO - 📰 Found 100 potential articles from BusinessWire
+2025-06-23 19:54:56,209 - __main__ - INFO - 🔄 POLLING CYCLE 52: Checking prices for 1 active tickers
+2025-06-23 19:54:56,375 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.165s
+2025-06-23 19:54:56,378 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:56,378 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.169s
+2025-06-23 19:54:56,384 - __main__ - INFO - ✅ POLLING CYCLE 52: Completed in 0.174s
+[FETCH]... ↓ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 17.72s 
+[SCRAPE].. ◆ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 0.05s 
+[COMPLETE] ● https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 17.77s 
+2025-06-23 19:54:56,732 - web_scraper - INFO - 📰 Found 125 potential articles from GlobeNewswire
+2025-06-23 19:54:58,385 - __main__ - INFO - 🔄 POLLING CYCLE 53: Checking prices for 1 active tickers
+2025-06-23 19:54:58,546 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.161s
+2025-06-23 19:54:58,549 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:54:58,549 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.165s
+2025-06-23 19:54:58,555 - __main__ - INFO - ✅ POLLING CYCLE 53: Completed in 0.170s
+2025-06-23 19:54:59,818 - web_scraper - INFO - 🔄 All newswires scan completed: 0 articles in 20.88s
+2025-06-23 19:54:59,818 - web_scraper - INFO - ⚠️ LONG CYCLE: 20.88s (longer than 5.0s), adding 1.0s buffer
+2025-06-23 19:54:59,826 - web_scraper - INFO - 📰 Found 20 RSS entries from GlobeNewswire
+2025-06-23 19:55:00,555 - __main__ - INFO - 🔄 POLLING CYCLE 54: Checking prices for 1 active tickers
+2025-06-23 19:55:00,582 - web_scraper - INFO - ✅ RSS TICKER MATCH: ['LTRY'] in GlobeNewswire title: Lottery.com and Sports.com Drivers Shine at Road America
+2025-06-23 19:55:00,582 - web_scraper - INFO - 🕐 TIME ONLY: 'Mon, 23 Jun 2025 16:10 GMT' -> 2025-06-23 16:10:00 (diff: 13500.6s)
+2025-06-23 19:55:00,582 - web_scraper - INFO - 🔓 PROCESSING OLD RSS NEWS (freshness disabled): ['LTRY'] - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:55:00,582 - web_scraper - INFO - ✅ NEW RSS ARTICLE: LTRY - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:55:00,582 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708500.json for LTRY immediately!
+2025-06-23 19:55:00,582 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708500.json for LTRY immediately!
+2025-06-23 19:55:00,583 - __main__ - INFO - 🔥 ASYNC MONITOR: FOUND 1 IMMEDIATE TRIGGER FILES!
+2025-06-23 19:55:00,583 - __main__ - INFO - ⚡ ASYNC MONITOR: Processing trigger for LTRY
+2025-06-23 19:55:00,583 - __main__ - INFO - 🎯 ASYNC MONITOR: Added LTRY to active tracking (polling will handle price inserts)
+2025-06-23 19:55:00,583 - __main__ - INFO - ✅ ASYNC MONITOR: Processed and removed trigger for LTRY
+2025-06-23 19:55:00,739 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.184s
+2025-06-23 19:55:00,742 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:00,742 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.187s
+2025-06-23 19:55:00,748 - __main__ - INFO - ✅ POLLING CYCLE 54: Completed in 0.192s
+2025-06-23 19:55:01,075 - web_scraper - INFO - 🔍 Scraping GlobeNewswire with speed optimization...
+2025-06-23 19:55:01,081 - web_scraper - INFO - 🔍 Scraping BusinessWire with speed optimization...
+2025-06-23 19:55:01,087 - web_scraper - INFO - 🔍 Scraping PRNewswire with speed optimization...
+2025-06-23 19:55:01,093 - web_scraper - INFO - 🔍 Scraping AccessNewswire with speed optimization...
+2025-06-23 19:55:01,127 - web_scraper - INFO - 📰 Found 20 RSS entries from PRNewswire
+2025-06-23 19:55:02,430 - web_scraper - INFO - 📰 Found 16 RSS entries from BusinessWire
+2025-06-23 19:55:02,749 - __main__ - INFO - 🔄 POLLING CYCLE 55: Checking prices for 1 active tickers
+2025-06-23 19:55:03,294 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.545s
+2025-06-23 19:55:03,297 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:03,297 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.549s
+2025-06-23 19:55:03,303 - __main__ - INFO - ✅ POLLING CYCLE 55: Completed in 0.554s
+2025-06-23 19:55:03,448 - web_scraper - INFO - 🎯 Found 1 RSS articles with exact ticker matches from GlobeNewswire
+2025-06-23 19:55:03,448 - web_scraper - INFO - 🔄 RSS feeds scan completed: 1 articles in 11.35s
+2025-06-23 19:55:03,448 - web_scraper - INFO - ⚠️ RSS LONG CYCLE: 11.35s (longer than 8.0s), adding 2.0s buffer
+[FETCH]... ↓ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 2.58s 
+[SCRAPE].. ◆ https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 0.09s 
+[COMPLETE] ● https://www.accessnewswire.com/newsroom                                                              | ✓ | ⏱: 2.67s 
+2025-06-23 19:55:03,796 - web_scraper - INFO - 📰 Found 291 potential articles from AccessNewswire
+2025-06-23 19:55:05,304 - __main__ - INFO - 🔄 POLLING CYCLE 56: Checking prices for 1 active tickers
+2025-06-23 19:55:05,912 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.608s
+2025-06-23 19:55:05,915 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:05,915 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.611s
+2025-06-23 19:55:05,921 - __main__ - INFO - ✅ POLLING CYCLE 56: Completed in 0.617s
+2025-06-23 19:55:07,470 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:55:07,470 - clickhouse_setup - INFO - Processing batch of 1 articles for insertion
+2025-06-23 19:55:07,471 - article_events - INFO - BATCH_START: Processing 1 articles
+2025-06-23 19:55:07,539 - article_events - WARNING - DUPLICATE_DETECTED: LTRY | 025e54120cd13cdc2a6ac9cffe26c235 | Skipping to preserve original timestamp
+2025-06-23 19:55:07,540 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:55:07,540 - clickhouse_setup - INFO - Skipping duplicate article for LTRY
+2025-06-23 19:55:07,540 - article_events - INFO - No new articles to insert (all were duplicates)
+2025-06-23 19:55:07,540 - web_scraper - INFO - Flushed 0 articles to ClickHouse
+2025-06-23 19:55:07,541 - web_scraper - INFO - 🔍 Scraping RSS GlobeNewswire...
+2025-06-23 19:55:07,543 - web_scraper - INFO - 🔍 Scraping RSS BusinessWire...
+2025-06-23 19:55:07,544 - web_scraper - INFO - 🔍 Scraping RSS PRNewswire...
+[FETCH]... ↓ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 6.47s 
+[SCRAPE].. ◆ https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 0.23s 
+[COMPLETE] ● https://www.globenewswire.com/en/search/date/24HOURS?pageSize=50&page=1                              | ✓ | ⏱: 6.71s 
+2025-06-23 19:55:07,895 - web_scraper - INFO - 📰 Found 125 potential articles from GlobeNewswire
+2025-06-23 19:55:07,922 - __main__ - INFO - 🔄 POLLING CYCLE 57: Checking prices for 1 active tickers
+2025-06-23 19:55:08,141 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.218s
+2025-06-23 19:55:08,187 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:08,188 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.265s
+2025-06-23 19:55:08,260 - __main__ - INFO - ✅ POLLING CYCLE 57: Completed in 0.338s
+2025-06-23 19:55:10,261 - __main__ - INFO - 🔄 POLLING CYCLE 58: Checking prices for 1 active tickers
+2025-06-23 19:55:10,453 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.192s
+2025-06-23 19:55:10,456 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:10,457 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.195s
+2025-06-23 19:55:10,462 - __main__ - INFO - ✅ POLLING CYCLE 58: Completed in 0.201s
+[FETCH]... ↓ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 10.81s 
+[SCRAPE].. ◆ https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 0.12s 
+[COMPLETE] ● https://www.prnewswire.com/news-releases/news-releases-list/?page=1&pagesize=50                      | ✓ | ⏱: 10.93s 
+2025-06-23 19:55:12,062 - web_scraper - INFO - 📰 Found 580 potential articles from PRNewswire
+2025-06-23 19:55:12,463 - __main__ - INFO - 🔄 POLLING CYCLE 59: Checking prices for 1 active tickers
+2025-06-23 19:55:12,677 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.214s
+2025-06-23 19:55:12,688 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:12,688 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.225s
+2025-06-23 19:55:12,693 - __main__ - INFO - ✅ POLLING CYCLE 59: Completed in 0.230s
+2025-06-23 19:55:14,694 - __main__ - INFO - 🔄 POLLING CYCLE 60: Checking prices for 1 active tickers
+2025-06-23 19:55:14,848 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.155s
+2025-06-23 19:55:14,852 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:14,852 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.158s
+2025-06-23 19:55:14,857 - __main__ - INFO - ✅ POLLING CYCLE 60: Completed in 0.164s
+2025-06-23 19:55:16,857 - __main__ - INFO - 🔄 POLLING CYCLE 61: Checking prices for 1 active tickers
+2025-06-23 19:55:17,007 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.150s
+2025-06-23 19:55:17,010 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:17,010 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.153s
+2025-06-23 19:55:17,016 - __main__ - INFO - ✅ POLLING CYCLE 61: Completed in 0.159s
+2025-06-23 19:55:19,017 - __main__ - INFO - 🔄 POLLING CYCLE 62: Checking prices for 1 active tickers
+2025-06-23 19:55:19,188 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.171s
+2025-06-23 19:55:19,191 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:19,191 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.174s
+2025-06-23 19:55:19,197 - __main__ - INFO - ✅ POLLING CYCLE 62: Completed in 0.180s
+2025-06-23 19:55:21,198 - __main__ - INFO - 🔄 POLLING CYCLE 63: Checking prices for 1 active tickers
+2025-06-23 19:55:21,387 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.189s
+2025-06-23 19:55:21,391 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:21,391 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.193s
+2025-06-23 19:55:21,397 - __main__ - INFO - ✅ POLLING CYCLE 63: Completed in 0.199s
+2025-06-23 19:55:23,398 - __main__ - INFO - 🔄 POLLING CYCLE 64: Checking prices for 1 active tickers
+2025-06-23 19:55:23,563 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.165s
+2025-06-23 19:55:23,566 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:23,566 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.168s
+2025-06-23 19:55:23,572 - __main__ - INFO - ✅ POLLING CYCLE 64: Completed in 0.174s
+[FETCH]... ↓ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 23.03s 
+[SCRAPE].. ◆ https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 0.09s 
+[COMPLETE] ● https://www.businesswire.com/newsroom?language=en                                                    | ✓ | ⏱: 23.13s 
+2025-06-23 19:55:24,229 - web_scraper - INFO - 📰 Found 100 potential articles from BusinessWire
+2025-06-23 19:55:25,090 - web_scraper - INFO - 🔄 All newswires scan completed: 0 articles in 24.02s
+2025-06-23 19:55:25,090 - web_scraper - INFO - ⚠️ LONG CYCLE: 24.02s (longer than 5.0s), adding 1.0s buffer
+2025-06-23 19:55:25,146 - web_scraper - INFO - 📰 Found 20 RSS entries from GlobeNewswire
+2025-06-23 19:55:25,572 - __main__ - INFO - 🔄 POLLING CYCLE 65: Checking prices for 1 active tickers
+2025-06-23 19:55:25,724 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.152s
+2025-06-23 19:55:25,727 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:25,727 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.155s
+2025-06-23 19:55:25,732 - __main__ - INFO - ✅ POLLING CYCLE 65: Completed in 0.160s
+2025-06-23 19:55:25,889 - web_scraper - INFO - ✅ RSS TICKER MATCH: ['LTRY'] in GlobeNewswire title: Lottery.com and Sports.com Drivers Shine at Road America
+2025-06-23 19:55:25,890 - web_scraper - INFO - 🕐 TIME ONLY: 'Mon, 23 Jun 2025 16:10 GMT' -> 2025-06-23 16:10:00 (diff: 13525.9s)
+2025-06-23 19:55:25,890 - web_scraper - INFO - 🔓 PROCESSING OLD RSS NEWS (freshness disabled): ['LTRY'] - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:55:25,890 - web_scraper - INFO - ✅ NEW RSS ARTICLE: LTRY - Lottery.com and Sports.com Drivers Shine at Road A...
+2025-06-23 19:55:25,890 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708525.json for LTRY immediately!
+2025-06-23 19:55:25,890 - clickhouse_setup - INFO - 🚀 ZERO-LAG TRIGGER: Created triggers/immediate_LTRY_1750708525.json for LTRY immediately!
+2025-06-23 19:55:25,890 - __main__ - INFO - 🔥 ASYNC MONITOR: FOUND 1 IMMEDIATE TRIGGER FILES!
+2025-06-23 19:55:25,890 - __main__ - INFO - ⚡ ASYNC MONITOR: Processing trigger for LTRY
+2025-06-23 19:55:25,890 - __main__ - INFO - 🎯 ASYNC MONITOR: Added LTRY to active tracking (polling will handle price inserts)
+2025-06-23 19:55:25,890 - __main__ - INFO - ✅ ASYNC MONITOR: Processed and removed trigger for LTRY
+2025-06-23 19:55:26,393 - web_scraper - INFO - 📰 Found 16 RSS entries from BusinessWire
+2025-06-23 19:55:27,407 - web_scraper - INFO - 📰 Found 20 RSS entries from PRNewswire
+2025-06-23 19:55:27,733 - __main__ - INFO - 🔄 POLLING CYCLE 66: Checking prices for 1 active tickers
+2025-06-23 19:55:27,890 - __main__ - DEBUG - ⚡ LTRY: $1.2350 (NBBO) in 0.157s
+2025-06-23 19:55:27,893 - clickhouse_connect.driver.httpclient - DEBUG - Context insert response code: 200, content: b''
+2025-06-23 19:55:27,893 - __main__ - INFO - ⚡ PARALLEL: Tracked 1/1 ticker prices in 0.160s
+2025-06-23 19:55:27,899 - __main__ - INFO - ✅ POLLING CYCLE 66: Completed in 0.166s
+^C^CTraceback (most recent call last):
+  File "/usr/lib/python3.10/asyncio/runners.py", line 44, in run
+    return loop.run_until_complete(main)
+  File "/usr/lib/python3.10/asyncio/base_events.py", line 636, in run_until_complete
+    self.run_forever()
+  File "/usr/lib/python3.10/asyncio/base_events.py", line 603, in run_forever
+    self._run_once()
+  File "/usr/lib/python3.10/asyncio/base_events.py", line 1909, in _run_once
+    handle._run()
+  File "/usr/lib/python3.10/asyncio/events.py", line 80, in _run
+    self._context.run(self._callback, *self._args)
+  File "/home/synk/Development/newshead/web_scraper.py", line 815, in scrape_single_rss_source
+    found_tickers = self.extract_tickers_from_text(text_to_search)
+  File "/home/synk/Development/newshead/web_scraper.py", line 227, in extract_tickers_from_text
+    if re.search(pattern, text, re.IGNORECASE):
+  File "/usr/lib/python3.10/re.py", line 200, in search
+    return _compile(pattern, flags).search(string)
+  File "/usr/lib/python3.10/re.py", line 303, in _compile
+    p = sre_compile.compile(pattern, flags)
+  File "/usr/lib/python3.10/sre_compile.py", line 792, in compile
+    code = _code(p, flags)
+  File "/usr/lib/python3.10/sre_compile.py", line 631, in _code
+    _compile(code, p.data, flags)
+KeyboardInterrupt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/synk/Development/newshead/run_system.py", line 148, in <module>
+    asyncio.run(main()) 
+  File "/usr/lib/python3.10/asyncio/runners.py", line 47, in run
+    _cancel_all_tasks(loop)
+  File "/usr/lib/python3.10/asyncio/runners.py", line 63, in _cancel_all_tasks
+    loop.run_until_complete(tasks.gather(*to_cancel, return_exceptions=True))
+  File "/usr/lib/python3.10/asyncio/base_events.py", line 636, in run_until_complete
+    self.run_forever()
+  File "/usr/lib/python3.10/asyncio/base_events.py", line 603, in run_forever
+    self._run_once()
+  File "/usr/lib/python3.10/asyncio/base_events.py", line 1871, in _run_once
+    event_list = self._selector.select(timeout)
+  File "/usr/lib/python3.10/selectors.py", line 469, in select
+    fd_event_list = self._selector.poll(timeout, max_ev)
+KeyboardInterrupt
+2025-06-23 19:55:28,779 - __main__ - INFO - 🛑 Terminating price checker process...
+2025-06-23 19:55:28,787 - __main__ - INFO - ✅ Price checker process terminated gracefully
