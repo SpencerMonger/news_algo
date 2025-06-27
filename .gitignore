@@ -1,12 +1,21 @@
-# env
-.news-env
+# Environment files (CRITICAL - contains API keys and secrets)
+.env
+.env.*
+!.env.example
+!.env.template
+.venv
+env/
+venv/
+ENV/
+news-env/
 
 # Python cache files
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 
-# Data files
+# Data files and databases
 *.csv
 *.json
 *.xlsx
@@ -16,17 +25,16 @@ __pycache__/
 *.sqlite3
 price_matches/
 triggers/
+data_files/*.csv
+data_files/*.json
 
-# Logs
+# Logs and temporary files
 *.log
 logs/
-
-# Environment files
-.env
-.venv
-env/
-venv/
-ENV/
+*.tmp
+*.bak
+*.swp
+*~
 
 # IDE specific files
 .idea/
@@ -34,6 +42,22 @@ ENV/
 *.swp
 *.swo
 .DS_Store
+.cursor/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Testing
+.coverage
+.pytest_cache/
+.tox/
+htmlcov/
+
+# Jupyter Notebook
+.ipynb_checkpoints
 
 # Large media files
 *.mp4
@@ -42,23 +66,34 @@ ENV/
 *.avi
 *.mov
 
-# Temporary files
-*.tmp
-*.bak
-*.swp
-*~
+# OS generated files
+Thumbs.db
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 
-# Distribution / packaging
-dist/
-build/
-*.egg-info/
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env/
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Local configuration files
+config.local.*
+secrets.*
+credentials.*
 
-# virtual environment
-news-env/
+# Backup files
+*.backup
+*.old
 
-# data
+# Data directories
 backend/data/
 backend/tests/data/
+data/
+temp/
+tmp/
