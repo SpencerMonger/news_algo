@@ -14,6 +14,7 @@ import signal
 from clickhouse_setup import ClickHouseManager
 from web_scraper import Crawl4AIScraper
 from log_manager import setup_comprehensive_logging
+from finviz_scraper import FinvizScraper
 
 # Global log manager for cleanup
 log_manager = None
@@ -130,7 +131,28 @@ async def main():
             logging.info("Step 1: Skipping Finviz ticker list update (--skip-list flag used)")
         else:
             logging.info("Step 1: Updating Finviz ticker list...")
-            # Add ticker list update logic here if needed
+            # Import and run the Finviz scraper
+            
+            # Create ClickHouse manager for the scraper
+            ch_manager = ClickHouseManager()
+            ch_manager.connect()
+            
+            try:
+                # Create and run Finviz scraper
+                finviz_scraper = FinvizScraper(ch_manager)
+                success = await finviz_scraper.update_ticker_database()
+                
+                if success:
+                    logging.info("✅ Finviz ticker list updated successfully")
+                else:
+                    logging.error("❌ Failed to update Finviz ticker list")
+                    raise Exception("Finviz ticker update failed")
+                    
+            except Exception as e:
+                logging.error(f"❌ Error updating Finviz ticker list: {e}")
+                raise
+            finally:
+                ch_manager.close()
         
         logging.info("Step 2: Starting monitoring systems with PROCESS ISOLATION...")
         

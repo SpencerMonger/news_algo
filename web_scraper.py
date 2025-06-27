@@ -167,27 +167,22 @@ class Crawl4AIScraper:
     async def load_tickers(self):
         """Load ticker list from ClickHouse database"""
         try:
-            # Try to get tickers from database first
+            # Get tickers from database - NO CSV fallback allowed
             db_tickers = self.clickhouse_manager.get_active_tickers()
             
             if db_tickers:
                 self.ticker_list = db_tickers
                 logger.info(f"Loaded {len(self.ticker_list)} tickers from database")
             else:
-                # Fallback to CSV file if database is empty
-                logger.warning("No tickers in database, falling back to CSV file")
-                csv_path = os.path.join('data_files', 'FV_master_u50float_u10price.csv')
-                if os.path.exists('data_files/FV_master_u50float_u10price.csv'):
-                    df = pd.read_csv('data_files/FV_master_u50float_u10price.csv')
-                    self.ticker_list = [str(ticker).strip().upper() for ticker in df['Ticker'].tolist() if pd.notna(ticker)]
-                    logger.info(f"Loaded {len(self.ticker_list)} tickers from CSV fallback")
-                else:
-                    logger.error("No CSV fallback file found")
-                    self.ticker_list = []
+                # NO CSV fallback - system should fail if database is empty
+                logger.error("❌ CRITICAL ERROR: No tickers found in float_list table!")
+                logger.error("❌ The system requires the Finviz scraper to populate the float_list table first")
+                logger.error("❌ Run the system without --skip-list flag to update ticker list")
+                raise Exception("No tickers in database - float_list table is empty")
                     
         except Exception as e:
             logger.error(f"Error loading tickers: {e}")
-            self.ticker_list = []
+            raise  # Re-raise the exception to stop the system
 
     def compile_ticker_patterns(self):
         """Simple ticker matching - just exact ticker in all caps"""
