@@ -298,48 +298,69 @@ class FinvizScraper:
         return all_tickers
 
     async def update_ticker_database(self):
-        """Main function to update ticker database"""
+        """Main function to update ticker database with retry logic"""
         logger.info("Starting Finviz ticker database update")
         
-        # Create HTTP session with longer timeout
-        timeout = aiohttp.ClientTimeout(total=60)
-        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-        self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        max_attempts = 3
+        attempt = 1
         
-        try:
-            # Skip login - the screener URL works without authentication
-            logger.info("Skipping login - accessing public screener directly")
+        while attempt <= max_attempts:
+            logger.info(f"Attempt {attempt} of {max_attempts} to update ticker database")
             
-            # Small delay before starting
-            await asyncio.sleep(1)
+            # Create HTTP session with longer timeout
+            timeout = aiohttp.ClientTimeout(total=60)
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
             
-            # Scrape all tickers
-            tickers = await self.scrape_all_pages()
-            
-            if not tickers:
-                logger.error("No tickers scraped")
-                return False
-            
-            # Drop the existing float_list table to refresh data
-            logger.info("Dropping existing float_list table for complete refresh")
-            self.ch_manager.drop_float_list_table()
-            
-            # Recreate the float_list table
-            logger.info("Recreating float_list table")
-            self.ch_manager.create_float_list_table()
-            
-            # Insert into ClickHouse
-            inserted_count = self.ch_manager.insert_tickers(tickers)
-            
-            logger.info(f"Successfully updated {inserted_count} tickers in database")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error updating ticker database: {e}")
-            return False
-        finally:
-            if self.session:
-                await self.session.close()
+            try:
+                # Skip login - the screener URL works without authentication
+                logger.info("Skipping login - accessing public screener directly")
+                
+                # Small delay before starting
+                await asyncio.sleep(1)
+                
+                # Scrape all tickers
+                tickers = await self.scrape_all_pages()
+                
+                if not tickers:
+                    logger.error(f"No tickers scraped on attempt {attempt}")
+                    raise Exception("No tickers scraped from Finviz")
+                
+                # Drop the existing float_list table to refresh data
+                logger.info("Dropping existing float_list table for complete refresh")
+                self.ch_manager.drop_float_list_table()
+                
+                # Recreate the float_list table
+                logger.info("Recreating float_list table")
+                self.ch_manager.create_float_list_table()
+                
+                # Insert into ClickHouse
+                inserted_count = self.ch_manager.insert_tickers(tickers)
+                
+                if inserted_count == 0:
+                    logger.error(f"No tickers inserted into database on attempt {attempt}")
+                    raise Exception("No tickers inserted into database")
+                
+                logger.info(f"Successfully updated {inserted_count} tickers in database on attempt {attempt}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error updating ticker database on attempt {attempt}: {e}")
+                
+                if attempt == max_attempts:
+                    logger.error(f"All {max_attempts} attempts failed. Ticker database update failed permanently.")
+                    return False
+                else:
+                    logger.info(f"Retrying in 5 seconds... (attempt {attempt + 1} of {max_attempts})")
+                    await asyncio.sleep(5)
+                    
+            finally:
+                if self.session:
+                    await self.session.close()
+                    
+            attempt += 1
+        
+        return False
 
 async def main():
     """Main function to run the Finviz scraper"""
