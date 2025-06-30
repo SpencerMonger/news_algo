@@ -49,6 +49,12 @@ class Crawl4AIScraper:
         self.ticker_list = []
         self.enable_old = enable_old  # Flag to disable freshness filtering for testing
         
+        # Debug logging to confirm enable_old flag
+        if self.enable_old:
+            logger.info("🔓 FRESHNESS FILTER DISABLED - Will process old news articles")
+        else:
+            logger.info("⏰ FRESHNESS FILTER ENABLED - Will skip articles older than 2 minutes")
+        
         # Performance tracking
         self.stats = {
             'articles_processed': 0,
@@ -395,7 +401,10 @@ class Crawl4AIScraper:
                         parsed_timestamp = self.parse_relative_time(time_text)
                         
                         # FRESHNESS CHECK: Compare time portions only (timezone-agnostic) - CONDITIONAL
+                        logger.debug(f"🔍 FRESHNESS CHECK: enable_old={self.enable_old}, checking freshness={not self.enable_old}")
+                        
                         if not self.enable_old:  # Only check freshness if enable_old is False
+                            logger.debug(f"⏰ FRESHNESS FILTERING ENABLED - Checking if article is fresh enough")
                             current_time = datetime.now()
                             
                             # Extract minute:second from current time (detection time)
@@ -816,7 +825,10 @@ class Crawl4AIScraper:
                                 parsed_timestamp = self.parse_relative_time(published)
                                 
                                 # FRESHNESS CHECK: Compare time portions only (timezone-agnostic) - CONDITIONAL
+                                logger.debug(f"🔍 FRESHNESS CHECK: enable_old={self.enable_old}, checking freshness={not self.enable_old}")
+                                
                                 if not self.enable_old:  # Only check freshness if enable_old is False
+                                    logger.debug(f"⏰ FRESHNESS FILTERING ENABLED - Checking if article is fresh enough")
                                     current_time = datetime.now()
                                     
                                     # Extract minute:second from current time (detection time)

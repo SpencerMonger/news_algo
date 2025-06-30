@@ -131,7 +131,13 @@ patterns = [
 - **Aggressive Timeouts**: 2s total, 0.5s connect, 1.5s read
 - **Parallel Processing**: Bulk API calls for multiple tickers
 - **Smart Caching**: 10-second database query cache
-- **Multiple Fallback Strategies**: NBBO → Trades → Aggregates
+- **Clean Failure Handling**: Skip failed requests, maintain 2-second intervals
+
+**Price Data Strategy**:
+- **Single Endpoint**: `/v2/last/trade/{ticker}` - Uses only actual executed trade prices
+- **No Fallbacks**: Unreliable NBBO calculations removed entirely
+- **Skip on Failure**: Failed requests are skipped to maintain clean intervals
+- **Reliability Priority**: Only real trade prices prevent phantom price alerts (e.g., FEAM $4.05, CAPS $4.06 issues)
 
 **Price Alert Logic**:
 ```python

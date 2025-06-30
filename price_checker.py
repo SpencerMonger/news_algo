@@ -183,49 +183,15 @@ class ContinuousPriceMonitor:
             return set()
 
     async def get_current_price(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Get current price for ticker with ULTRA-FAST timeout and multiple fallback strategies"""
+        """Get current price for ticker using ONLY last trade endpoint - no unreliable fallbacks"""
         try:
-            # Strategy 1: Try NBBO (real-time quotes) first - fastest
-            url = f"{self.base_url}/v2/last/nbbo/{ticker}"
+            # Use Last Trade endpoint only - most accurate actual price
+            url = f"{self.base_url}/v2/last/trade/{ticker}"
             params = {'apikey': self.polygon_api_key}
             
             start_time = time.time()
             try:
                 async with self.session.get(url, params=params) as response:
-                    api_time = time.time() - start_time
-                    
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        if 'results' in data and data['results']:
-                            result = data['results']
-                            # Use bid/ask midpoint for current price
-                            bid = result.get('P', 0.0)  # bid price
-                            ask = result.get('p', 0.0)  # ask price
-                            
-                            if bid > 0 and ask > 0:
-                                current_price = (bid + ask) / 2
-                                logger.debug(f"⚡ {ticker}: ${current_price:.4f} (NBBO) in {api_time:.3f}s")
-                                return {
-                                    'price': current_price,
-                                    'bid': bid,
-                                    'ask': ask,
-                                    'timestamp': datetime.now(pytz.UTC),
-                                    'source': 'nbbo'
-                                }
-                    elif response.status == 429:
-                        logger.warning(f"⚠️ Rate limited for {ticker} - trying fallback")
-                    else:
-                        logger.debug(f"NBBO API returned status {response.status} for {ticker}")
-            except asyncio.TimeoutError:
-                logger.debug(f"⏱️ NBBO TIMEOUT for {ticker} - trying fallback")
-            except Exception as e:
-                logger.debug(f"NBBO error for {ticker}: {e} - trying fallback")
-            
-            # Strategy 2: Fallback to last trade endpoint
-            fallback_url = f"{self.base_url}/v2/last/trade/{ticker}"
-            try:
-                async with self.session.get(fallback_url, params=params) as response:
                     api_time = time.time() - start_time
                     
                     if response.status == 200:
@@ -242,19 +208,21 @@ class ContinuousPriceMonitor:
                                     'timestamp': datetime.now(pytz.UTC),
                                     'source': 'trade'
                                 }
+                    elif response.status == 429:
+                        logger.debug(f"⚠️ Rate limited for {ticker} - skipping this cycle")
                     else:
-                        logger.debug(f"Trade API returned status {response.status} for {ticker}")
+                        logger.debug(f"Trade API returned status {response.status} for {ticker} - skipping")
             except asyncio.TimeoutError:
-                logger.debug(f"⏱️ TRADE TIMEOUT for {ticker}")
+                logger.debug(f"⏱️ TIMEOUT for {ticker} - skipping this cycle")
             except Exception as e:
-                logger.debug(f"Trade error for {ticker}: {e}")
+                logger.debug(f"Trade error for {ticker}: {e} - skipping")
             
-            # Strategy 3: If both fail, log and return None (don't block other tickers)
+            # No fallback - just skip failed requests to maintain clean intervals
             total_time = time.time() - start_time
-            logger.warning(f"❌ ALL ENDPOINTS FAILED for {ticker} in {total_time:.3f}s")
+            logger.debug(f"❌ Skipping {ticker} this cycle (failed in {total_time:.3f}s)")
                     
         except Exception as e:
-            logger.debug(f"Fatal error getting price for {ticker}: {e}")
+            logger.debug(f"Fatal error getting price for {ticker}: {e} - skipping")
         
         return None
 
