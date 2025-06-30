@@ -86,18 +86,18 @@ if [ ! -z "$system_pids" ]; then
     sleep 1
 fi
 
-# Run script in screen session with full path to Python
-echo "$(date) [UTC]: Starting run_system.py in a screen session" >> "$LOG_FILE"
-cd "$PROJECT_DIR" && screen -dmS newshead $PYTHON_BIN run_system.py
-echo "Started screen session with name 'newshead'" >> "$EXEC_LOG"
+# Run script in screen session with WebSocket mode enabled
+echo "$(date) [UTC]: Starting run_system.py with WebSocket mode in a screen session" >> "$LOG_FILE"
+cd "$PROJECT_DIR" && screen -dmS newshead $PYTHON_BIN run_system.py --socket
+echo "Started screen session with name 'newshead' using WebSocket mode" >> "$EXEC_LOG"
 
 # Give it a moment to start
 sleep 2
 
 # Verify screen session is running
 if screen -ls | grep -q "newshead"; then
-    echo "$(date) [UTC]: Confirmed newshead screen session is running" >> "$LOG_FILE"
-    echo "SUCCESS: newshead screen session is running" >> "$LOG_FILE"
+    echo "$(date) [UTC]: Confirmed newshead screen session is running with WebSocket mode" >> "$LOG_FILE"
+    echo "SUCCESS: newshead screen session is running with WebSocket mode" >> "$LOG_FILE"
 else
     echo "$(date) [UTC]: ERROR: Failed to start newshead screen session" >> "$LOG_FILE"
     echo "ERROR: Failed to start newshead screen session" >> "$LOG_FILE"

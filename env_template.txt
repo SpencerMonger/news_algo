@@ -8,6 +8,13 @@ CLICKHOUSE_PASSWORD=
 FINVIZ_EMAIL=your_email@example.com
 FINVIZ_PASSWORD=your_password
 
+# Benzinga Pro Credentials
+BENZINGA_EMAIL=your_benzinga_email@example.com
+BENZINGA_PASSWORD=your_benzinga_password
+
+# Benzinga API Key for WebSocket streaming
+BENZINGA_API_KEY=your_benzinga_api_key_here
+
 # Polygon API (if still needed for price checking)
 POLYGON_API_KEY=your_polygon_api_key_here
 PROXY_URL=

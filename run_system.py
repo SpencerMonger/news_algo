@@ -12,7 +12,6 @@ import time
 import os
 import signal
 from clickhouse_setup import ClickHouseManager
-from web_scraper import Crawl4AIScraper
 from log_manager import setup_comprehensive_logging
 from finviz_scraper import FinvizScraper
 
@@ -71,11 +70,24 @@ def start_price_checker_process():
     
     return price_process
 
-async def start_news_monitor(enable_old: bool = False):
-    """Start news monitoring with Chromium browser"""
-    logging.info("🚀 Starting news monitor with Chromium browser...")
+async def start_news_monitor(enable_old: bool = False, use_websocket: bool = False, process_any_ticker: bool = False):
+    """Start news monitoring with either web scraper (default) or WebSocket scraper"""
     
-    scraper = Crawl4AIScraper(enable_old=enable_old)
+    if use_websocket:
+        logging.info("🚀 Starting Benzinga WebSocket news monitor...")
+        from benzinga_websocket import Crawl4AIScraper
+        scraper_type = "Benzinga WebSocket"
+        # Pass both enable_old and process_any_ticker to WebSocket scraper
+        scraper = Crawl4AIScraper(enable_old=enable_old, process_any_ticker=process_any_ticker)
+    else:
+        logging.info("🚀 Starting web scraper news monitor with Chromium browser...")
+        from web_scraper import Crawl4AIScraper
+        scraper_type = "Web Scraper"
+        # Web scraper only uses enable_old parameter
+        scraper = Crawl4AIScraper(enable_old=enable_old)
+    
+    logging.info(f"📡 Selected scraper: {scraper_type}")
+    
     await scraper.initialize()
     await scraper.start_scraping()
 
@@ -114,11 +126,25 @@ async def main():
     parser = argparse.ArgumentParser(description='News & Price Monitoring System')
     parser.add_argument('--skip-list', action='store_true', help='Skip Finviz ticker list update')
     parser.add_argument('--enable-old', action='store_true', help='Process old news articles (disable freshness filter)')
+    parser.add_argument('--socket', action='store_true', help='Use Benzinga WebSocket instead of web scraper (default: web scraper)')
+    parser.add_argument('--any', action='store_true', help='Process any ticker symbols found (only works with --socket, bypasses ticker list filtering)')
     
     args = parser.parse_args()
     
     logging.info("=== Starting News & Price Monitoring System ===")
     logging.info(f"Command line arguments: {vars(args)}")
+    
+    # Log scraper selection
+    if args.socket:
+        logging.info("🔌 WEBSOCKET MODE: Using Benzinga WebSocket for real-time news")
+        if args.any:
+            logging.info("🎯 ANY TICKER MODE: Will process any ticker symbols found (bypassing database list)")
+        else:
+            logging.info("📋 DATABASE TICKER MODE: Will only process tickers from database list")
+    else:
+        logging.info("🌐 WEB SCRAPER MODE: Using traditional web scraping (default)")
+        if args.any:
+            logging.warning("⚠️ --any flag ignored: Only works with --socket mode")
     
     price_process = None
     
@@ -168,11 +194,17 @@ async def main():
         await asyncio.sleep(10)
         
         # Step 4: Start news monitor in current process
-        logging.info("🚀 Phase 2: Starting news monitor with Chromium browser...")
+        if args.socket:
+            logging.info("🚀 Phase 2: Starting Benzinga WebSocket news monitor...")
+            logging.info("⚡ REAL-TIME MODE: WebSocket provides sub-second news detection")
+        else:
+            logging.info("🚀 Phase 2: Starting web scraper news monitor with Chromium browser...")
+            logging.info("🌐 TRADITIONAL MODE: Web scraping with browser automation")
+            
         logging.info("✅ PROCESS ISOLATION: Price checker runs separately → Zero resource contention")
         
         # Start news monitoring
-        await start_news_monitor(enable_old=args.enable_old)
+        await start_news_monitor(enable_old=args.enable_old, use_websocket=args.socket, process_any_ticker=args.any)
         
     except KeyboardInterrupt:
         logging.info("🛑 Received interrupt signal")

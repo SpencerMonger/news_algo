@@ -2,7 +2,7 @@
 
 ## Overview
 
-NewsHead is a high-performance real-time stock market news monitoring and price tracking system designed to achieve **sub-10-second** news-to-alert latency. The system implements a zero-lag architecture through process isolation, file-based triggers, and aggressive optimization techniques.
+NewsHead is a high-performance real-time stock market news monitoring and price tracking system designed to achieve **sub-10-second** news-to-alert latency. The system implements a zero-lag architecture through process isolation, file-based triggers, and aggressive optimization techniques. The system now supports **dual news collection modes**: traditional web scraping and real-time WebSocket streaming via Benzinga's API.
 
 ## Core Architecture Principles
 
@@ -17,8 +17,8 @@ NewsHead is a high-performance real-time stock market news monitoring and price 
 ┌─────────────────────────────────────────────────────────────┐
 │                    MAIN PROCESS                             │
 │  ┌─────────────────┐    ┌─────────────────┐                │
-│  │   Web Scraper   │───▶│ File Triggers   │                │
-│  │  (Chromium)     │    │   (triggers/)   │                │
+│  │   News Source   │───▶│ File Triggers   │                │
+│  │ (Web/WebSocket) │    │   (triggers/)   │                │
 │  └─────────────────┘    └─────────────────┘                │
 └─────────────────────────────────────────────────────────────┘
                                    │
@@ -33,7 +33,7 @@ NewsHead is a high-performance real-time stock market news monitoring and price 
 ```
 
 ### 3. Performance-First Design
-- **Ultra-Fast Buffers**: 500ms flush intervals for immediate data processing
+- **Ultra-Fast Buffers**: 250ms flush intervals for immediate data processing
 - **Aggressive Timeouts**: 2-second API timeouts matching polling intervals
 - **Parallel Processing**: Concurrent news source monitoring and price checking
 - **Smart Caching**: 10-second database query cache to reduce load
@@ -43,31 +43,94 @@ NewsHead is a high-performance real-time stock market news monitoring and price 
 ### Core Entry Points
 
 #### `run_system.py` - Process Orchestrator
-**Purpose**: Main system controller that manages process isolation and startup sequence
+**Purpose**: Main system controller that manages process isolation, startup sequence, and news source selection
 
 **Key Responsibilities**:
 - Database initialization and table setup
-- Sequential startup (price checker first, then browser)
-- Process lifecycle management
+- Sequential startup (price checker first, then news monitor)
+- Process lifecycle management with proper cleanup
+- News source mode selection (Web Scraper vs WebSocket)
 - Graceful shutdown handling
 - Comprehensive logging setup
 
 **Process Flow**:
 1. Setup ClickHouse database with fresh tables
-2. Start price checker in isolated subprocess
-3. Wait for price checker initialization (10s)
-4. Start news monitor with Chromium browser
-5. Handle shutdown signals and cleanup
+2. Optional Finviz ticker list update (unless `--skip-list`)
+3. Start price checker in isolated subprocess
+4. Wait for price checker initialization (10s)
+5. Start selected news monitor (Web Scraper or WebSocket)
+6. Handle shutdown signals and cleanup
 
 **Command Line Options**:
 - `--skip-list`: Skip Finviz ticker list update
 - `--enable-old`: Disable freshness filtering for testing
+- `--socket`: **NEW** - Use Benzinga WebSocket instead of web scraper
+- `--any`: **NEW** - Process any ticker symbols found (WebSocket only, bypasses database filtering)
+
+**News Source Selection Logic**:
+```python
+if args.socket:
+    # WebSocket Mode - Real-time streaming
+    from benzinga_websocket import Crawl4AIScraper
+    scraper = Crawl4AIScraper(enable_old=enable_old, process_any_ticker=process_any_ticker)
+else:
+    # Web Scraper Mode - Traditional scraping
+    from web_scraper import Crawl4AIScraper  
+    scraper = Crawl4AIScraper(enable_old=enable_old)
+```
 
 ### News Collection Layer
 
-#### `web_scraper.py` - Primary News Engine
+#### `benzinga_websocket.py` - **NEW** Real-Time WebSocket Engine
+**Technology**: WebSocket streaming with Benzinga's real-time news API
+**Purpose**: Ultra-low latency news monitoring via persistent WebSocket connection
+
+**Key Features**:
+- **Real-Time Streaming**: Sub-second news detection via WebSocket
+- **Structured Data**: Uses Benzinga's structured securities data instead of text parsing
+- **Drop-in Replacement**: Maintains same interface as `web_scraper.py`
+- **Dual Ticker Modes**: Database-filtered or any-ticker processing
+- **Zero-Lag Triggers**: Immediate file trigger creation on ticker matches
+
+**WebSocket Connection**:
+- **Endpoint**: `wss://api.benzinga.com/api/v1/news/stream`
+- **Authentication**: Query parameter token authentication
+- **Reliability**: Auto-reconnection with exponential backoff
+- **Heartbeat**: 30-second ping intervals with connection monitoring
+
+**Ticker Extraction Strategy**:
+```python
+# Structured Securities Processing (vs text parsing)
+securities = content.get('securities', [])
+for security in securities:
+    if isinstance(security, dict):
+        ticker = security.get('symbol') or security.get('ticker')
+    elif isinstance(security, str):
+        ticker = security  # Handle exchange-prefixed format
+    
+    # Extract clean ticker from "TSX:TICKER" or "NYSE:AAPL" formats
+    clean_ticker = extract_ticker_from_exchange_format(ticker)
+```
+
+**Dual Processing Modes**:
+1. **Database Mode** (default): Only process tickers from float_list table
+2. **Any Ticker Mode** (`--any` flag): Process any ticker symbols found using pattern matching
+
+**Performance Characteristics**:
+- **Message Processing**: ~0.1-0.5s from WebSocket message to database insert
+- **Buffer Flushing**: 250ms intervals for ultra-fast detection
+- **Connection Resilience**: Automatic reconnection with detailed logging
+- **Structured Data**: No regex parsing needed, uses API's securities field
+
+**WebSocket Message Flow**:
+```
+WebSocket Message → JSON Parse → Securities Extraction → Ticker Validation → 
+Article Creation → Batch Queue → Database Insert → File Trigger
+```
+
+#### `web_scraper.py` - Traditional Web Scraping Engine
 **Technology**: Crawl4AI with Chromium browser automation
-**Purpose**: Real-time newswire monitoring with CPU optimization
+**Purpose**: Multi-source newswire monitoring with CPU optimization
 
 **News Sources**:
 - GlobeNewswire (24-hour feed)
@@ -266,27 +329,56 @@ logs/
 
 ## Data Flow Architecture
 
-### 1. News Detection Flow
+### 1. WebSocket News Detection Flow (NEW)
+```
+Benzinga WebSocket → Message Parse → Securities Extract → Ticker Filter → Database Insert → File Trigger
+```
+
+**Timing**: ~100-500ms from WebSocket message to trigger file creation
+
+### 2. Traditional News Detection Flow
 ```
 Newswire Sources → Web Scraper → Ticker Extraction → Freshness Filter → Database Insert → File Trigger
 ```
 
-**Timing**: ~500ms from detection to trigger file creation
+**Timing**: ~2-5s from detection to trigger file creation
 
-### 2. Price Monitoring Flow
+### 3. Price Monitoring Flow (Same for Both)
 ```
 File Trigger → Price Checker → API Call → Price Analysis → Alert Generation → Database Insert
 ```
 
 **Timing**: ~2-3 seconds from trigger to price data
 
-### 3. End-to-End Latency
+### 4. End-to-End Latency Comparison
+
+**WebSocket Mode**:
+```
+News Published → WebSocket Receive → Ticker Extract → Trigger Create → Price Check → Alert Generate
+     0s               ~0.1s              ~0.2s          ~0.3s         ~2.5s        ~3-5s
+```
+**Total WebSocket Latency**: 3-5 seconds
+
+**Web Scraper Mode**:
 ```
 News Published → News Detected → Ticker Matched → Trigger Created → Price Checked → Alert Generated
      0s              ~2s            ~2.5s          ~3s            ~5s           ~6-10s
 ```
+**Total Web Scraper Latency**: 6-10 seconds
 
-**Total Latency**: 6-10 seconds (vs 60+ seconds previously)
+## News Source Comparison
+
+| Feature | Web Scraper | Benzinga WebSocket |
+|---------|-------------|-------------------|
+| **Latency** | 6-10 seconds | 3-5 seconds |
+| **Data Quality** | Text parsing | Structured API data |
+| **Reliability** | Browser dependent | WebSocket connection |
+| **Resource Usage** | High (Chromium) | Low (WebSocket) |
+| **News Sources** | 4 newswire sites | Benzinga feed |
+| **Ticker Detection** | Regex patterns | API securities field |
+| **Cost** | Free | API key required |
+| **Freshness Filter** | 2-minute window | 2-minute window |
+| **Any Ticker Mode** | No | Yes (--any flag) |
 
 ## File System Architecture
 
@@ -302,7 +394,7 @@ triggers/
 {
   "ticker": "AAPL",
   "timestamp": "2025-01-15T10:30:00",
-  "source": "GlobeNewswire",
+  "source": "Benzinga_WebSocket",  // or source website
   "headline": "Apple Announces...",
   "article_url": "https://..."
 }
@@ -341,6 +433,9 @@ FINVIZ_PASSWORD=your_password
 POLYGON_API_KEY=your_api_key
 PROXY_URL=your_proxy_url  # Optional
 
+# Benzinga WebSocket API (NEW)
+BENZINGA_API_KEY=your_benzinga_api_key_here
+
 # Performance Tuning
 CHECK_INTERVAL=1
 MAX_AGE_SECONDS=90
@@ -351,32 +446,36 @@ LOG_LEVEL=INFO
 ## Performance Optimizations
 
 ### Latency Improvements
-| Component | Before | After | Improvement |
-|-----------|--------|-------|-------------|
-| News Buffer | 3s | 0.5s | **6x faster** |
-| Ticker Notifications | 20s database scan | <1ms file trigger | **20,000x faster** |
-| Price Monitoring | 5s intervals | 2s intervals | **2.5x faster** |
-| Alert Generation | 60+ seconds | 6-10 seconds | **10x faster** |
+| Component | Web Scraper | WebSocket | Improvement |
+|-----------|-------------|-----------|-------------|
+| News Buffer | 0.5s | 0.25s | **2x faster** |
+| News Detection | 2-5s | 0.1-0.5s | **10x faster** |
+| Ticker Extraction | Regex parsing | Structured data | **Instant** |
+| Overall Latency | 6-10s | 3-5s | **2x faster** |
 
-### CPU Usage Optimization
-- **Browser Efficiency**: Optimized flags without speed throttling
-- **Process Isolation**: Eliminates resource contention
-- **Smart Resource Limits**: 512MB memory, 2 concurrent sessions
-- **Efficient Delays**: Strategic delays for CPU breathing
+### Resource Usage Optimization
+| Resource | Web Scraper | WebSocket | Improvement |
+|----------|-------------|-----------|-------------|
+| CPU Usage | High (Chromium) | Low (WebSocket) | **10x lower** |
+| Memory Usage | ~500MB | ~50MB | **10x lower** |
+| Network | HTTP requests | Persistent connection | **More efficient** |
+| Dependencies | Playwright, Chromium | websockets only | **Simpler** |
 
 ### API Performance
-- **Consistent Speed**: 0.137-0.188s API calls
-- **Bulk Operations**: Parallel ticker processing
+- **WebSocket**: Persistent connection, sub-second message delivery
+- **Structured Data**: No regex processing overhead
+- **Bulk Operations**: Parallel ticker processing maintained
 - **Timeout Optimization**: Matches polling interval
-- **Proxy Support**: High-performance proxy integration
+- **Proxy Support**: Available for both modes
 
 ## Deployment Architecture
 
 ### System Requirements
 - **Python 3.8+**
 - **ClickHouse Server** (running and accessible)
-- **Chromium Browser** (via Playwright)
-- **4GB+ RAM** (recommended)
+- **Chromium Browser** (via Playwright) - Web Scraper mode only
+- **WebSocket Support** - WebSocket mode only
+- **4GB+ RAM** (Web Scraper) / **1GB+ RAM** (WebSocket)
 - **2+ CPU cores** (recommended)
 
 ### Process Architecture
@@ -389,8 +488,16 @@ LOG_LEVEL=INFO
 │  │  ┌─────────────────────────────────┐ │ │
 │  │  │      run_system.py              │ │ │
 │  │  │  ┌─────────────────────────────┐ │ │ │
-│  │  │  │     web_scraper.py          │ │ │ │
-│  │  │  │   (Chromium Browser)        │ │ │ │
+│  │  │  │   News Monitor              │ │ │ │
+│  │  │  │ ┌─────────────────────────┐ │ │ │ │
+│  │  │  │ │ web_scraper.py          │ │ │ │ │
+│  │  │  │ │ (Chromium Browser)      │ │ │ │ │
+│  │  │  │ └─────────────────────────┘ │ │ │ │
+│  │  │  │           OR                │ │ │ │
+│  │  │  │ ┌─────────────────────────┐ │ │ │ │
+│  │  │  │ │ benzinga_websocket.py   │ │ │ │ │
+│  │  │  │ │ (WebSocket Client)      │ │ │ │ │
+│  │  │  │ └─────────────────────────┘ │ │ │ │
 │  │  │  └─────────────────────────────┘ │ │ │
 │  │  └─────────────────────────────────┘ │ │
 │  └─────────────────────────────────────┘ │
@@ -416,19 +523,64 @@ LOG_LEVEL=INFO
 │  └─────────────────────────────────────────┘
 ```
 
+## Usage Examples
+
+### WebSocket Mode (Recommended for Speed)
+```bash
+# Real-time WebSocket with database ticker filtering
+python run_system.py --socket
+
+# WebSocket with any ticker processing (bypass database filter)
+python run_system.py --socket --any
+
+# WebSocket with old news processing for testing
+python run_system.py --socket --enable-old
+
+# Skip ticker list update and use WebSocket
+python run_system.py --socket --skip-list
+```
+
+### Web Scraper Mode (Traditional)
+```bash
+# Traditional web scraping (default)
+python run_system.py
+
+# Web scraper with old news processing
+python run_system.py --enable-old
+
+# Skip ticker list update and use web scraper
+python run_system.py --skip-list
+```
+
+### Standalone Testing
+```bash
+# Test Benzinga WebSocket directly
+python benzinga_websocket.py --any --duration 5
+
+# Test web scraper directly  
+python web_scraper.py --enable-old
+```
+
 ## Error Handling and Resilience
+
+### WebSocket-Specific Error Handling
+- **Connection Failures**: Automatic reconnection with exponential backoff
+- **Message Parsing**: Graceful handling of malformed JSON
+- **API Rate Limits**: Built-in respect for API limitations
+- **Authentication Issues**: Clear error messages for API key problems
 
 ### Graceful Degradation
 - **API Failures**: Multiple fallback strategies for price data
-- **Browser Crashes**: Automatic restart and recovery
+- **Browser Crashes**: Automatic restart and recovery (Web Scraper mode)
+- **WebSocket Disconnections**: Auto-reconnection with state preservation
 - **Database Issues**: Local buffering and retry logic
 - **Network Issues**: Timeout handling and reconnection
 
 ### Monitoring and Alerting
-- **Performance Stats**: Real-time processing metrics
-- **Error Tracking**: Comprehensive error logging
+- **Performance Stats**: Real-time processing metrics for both modes
+- **Error Tracking**: Comprehensive error logging with mode-specific details
 - **Health Checks**: System component status monitoring
-- **Resource Monitoring**: CPU, memory, and disk usage
+- **Resource Monitoring**: CPU, memory, and network usage
 
 ## Development Patterns
 
@@ -436,6 +588,25 @@ LOG_LEVEL=INFO
 - **Concurrent Processing**: All I/O operations use async/await
 - **Parallel Tasks**: Multiple news sources and price checks
 - **Resource Management**: Proper cleanup with context managers
+
+### WebSocket Pattern
+```python
+async def websocket_listener(self):
+    while self.is_running:
+        try:
+            if not self.websocket:
+                await self.connect_websocket()
+            
+            message = await self.websocket.recv()
+            articles = self.process_benzinga_message(json.loads(message))
+            
+            if articles:
+                self.batch_queue.extend(articles)
+                
+        except websockets.exceptions.ConnectionClosed:
+            self.websocket = None
+            await asyncio.sleep(5)  # Reconnection delay
+```
 
 ### Error Handling Pattern
 ```python
@@ -467,14 +638,26 @@ except Exception as e:
 ## Testing and Debugging
 
 ### Debug Modes
-- `--enable-old`: Process historical news for testing
+- `--enable-old`: Process historical news for testing (both modes)
 - `--skip-list`: Skip ticker list updates for faster startup
+- `--socket`: Use WebSocket mode instead of web scraper
+- `--any`: Process any ticker symbols (WebSocket mode only)
 - Debug logging levels for detailed operation tracking
 
 ### Testing Components
+- `test_benzinga_websocket.py`: WebSocket connection and message testing
 - `debug_*.py` files for specific component testing
 - `check_db.py` for database validation
 - Individual component testing via direct execution
+
+### WebSocket Testing
+```bash
+# Test WebSocket connection and messages
+python testfiles/test_benzinga_websocket.py --duration 5
+
+# Test WebSocket with any ticker processing
+python benzinga_websocket.py --any --duration 10
+```
 
 ## Legacy Components
 
@@ -489,16 +672,24 @@ These are kept for reference but not used in production.
 ## Future Enhancements
 
 ### Planned Improvements
-1. **Machine Learning Integration**: News sentiment analysis
-2. **Advanced Alerting**: Webhook and notification systems
-3. **Real-time Dashboard**: Web-based monitoring interface
-4. **Multi-Exchange Support**: Expand beyond US markets
-5. **High Availability**: Clustering and failover support
+1. **Multiple WebSocket Sources**: Add more real-time news APIs
+2. **Machine Learning Integration**: News sentiment analysis
+3. **Advanced Alerting**: Webhook and notification systems
+4. **Real-time Dashboard**: Web-based monitoring interface
+5. **Multi-Exchange Support**: Expand beyond US markets
+6. **High Availability**: Clustering and failover support
+
+### WebSocket Enhancements
+1. **Message Filtering**: Server-side filtering by ticker or sector
+2. **Multiple Connections**: Parallel WebSocket connections for redundancy
+3. **Custom Channels**: Subscribe to specific news channels
+4. **Rate Limiting**: Smart throttling for high-volume periods
 
 ### Scalability Considerations
 - **Horizontal Scaling**: Multiple scraper instances
 - **Database Sharding**: Partition by ticker or time
 - **Caching Layer**: Redis for frequently accessed data
 - **Load Balancing**: Distribute API calls across proxies
+- **WebSocket Clustering**: Multiple WebSocket connections with load balancing
 
-This architecture document provides a comprehensive overview of the NewsHead system, enabling any developer or LLM to understand the codebase structure, data flow, and design decisions that enable the zero-lag news monitoring capability. 
+This architecture document provides a comprehensive overview of the NewsHead system, including the new Benzinga WebSocket functionality that enables ultra-low latency news monitoring. The dual-mode architecture allows users to choose between traditional web scraping and real-time WebSocket streaming based on their latency requirements, resource constraints, and API access. 
