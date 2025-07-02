@@ -6,6 +6,7 @@ Uses random tickers from float_list table to create test alerts
 
 import logging
 import random
+import time
 from datetime import datetime, timedelta
 from clickhouse_setup import setup_clickhouse_database
 
@@ -60,34 +61,37 @@ class NewsAlertTestGenerator:
     def generate_test_alerts(self, num_alerts: int = 3):
         """Generate test entries in the news_alert table"""
         try:
-            # Get random tickers with their actual prices
-            ticker_data = self.get_random_tickers(num_alerts)
+            # Get one random ticker with its actual price
+            ticker_data = self.get_random_tickers(1)
+            ticker, price = ticker_data[0]
             
-            # Prepare alert data
-            alert_data = []
-            for ticker, price in ticker_data:
-                # Generate slightly random timestamps (within last 5 minutes)
-                random_offset = random.randint(0, 300)  # 0-5 minutes ago
-                timestamp = datetime.now() - timedelta(seconds=random_offset)
+            logger.info(f"🎯 Creating {num_alerts} alerts for ticker: {ticker} (price: ${price})")
+            
+            # Create alerts one by one with 2-second intervals
+            for i in range(num_alerts):
+                # Use the current time as the timestamp
+                timestamp = datetime.now()
                 
-                alert_data.append((ticker, timestamp, 1, price))
-                logger.info(f"🚨 Preparing test alert: {ticker} at {timestamp} (price: ${price})")
-            
-            # Batch insert all alerts into news_alert table
-            if alert_data:
+                # Insert single alert
+                alert_data = [(ticker, timestamp, 1, price)]
+                
                 self.ch_manager.client.insert(
                     'News.news_alert',
                     alert_data,
                     column_names=['ticker', 'timestamp', 'alert', 'price']
                 )
                 
-                logger.info(f"✅ Successfully inserted {len(alert_data)} test alerts into News.news_alert table")
+                logger.info(f"🚨 Inserted alert {i+1}/{num_alerts}: {ticker} at {timestamp} (price: ${price})")
                 
-                # Show what was inserted
-                self.show_recent_alerts()
-                
-            else:
-                logger.warning("⚠️ No alert data to insert")
+                # Wait 2 seconds before next insertion (except for the last one)
+                if i < num_alerts - 1:
+                    logger.info("⏱️ Waiting 2 seconds before next insertion...")
+                    time.sleep(2)
+            
+            logger.info(f"✅ Successfully inserted {num_alerts} test alerts for {ticker}")
+            
+            # Show what was inserted
+            self.show_recent_alerts()
                 
         except Exception as e:
             logger.error(f"❌ Error generating test alerts: {e}")

@@ -29,8 +29,11 @@ class FinvizScraper:
         self.email = os.getenv('FINVIZ_EMAIL', '')
         self.password = os.getenv('FINVIZ_PASSWORD', '')
         
-        # Screener URL for low float stocks
-        self.screener_url = "https://elite.finviz.com/screener.ashx?v=111&f=geo_usa,sec_healthcare|technology|industrials|consumerdefensive|communicationservices|energy|consumercyclical|basicmaterials,sh_float_u50,sh_price_u10&ft=4"
+        # Screener URLs for low float stocks - split into two URLs to capture all tickers
+        # First URL: price under $4
+        self.screener_url_1 = "https://elite.finviz.com/screener.ashx?v=111&f=sec_healthcare|technology|industrials|consumerdefensive|communicationservices|energy|consumercyclical|basicmaterials,sh_float_u50,sh_price_u4&ft=4"
+        # Second URL: price $4 to $10  
+        self.screener_url_2 = "https://elite.finviz.com/screener.ashx?v=111&f=sec_healthcare|technology|industrials|consumerdefensive|communicationservices|energy|consumercyclical|basicmaterials,sh_float_u50,sh_price_4to10&ft=4"
         
         # Browser headers to avoid detection
         self.headers = {
@@ -260,41 +263,54 @@ class FinvizScraper:
         return tickers
 
     async def scrape_all_pages(self) -> List[Dict[str, Any]]:
-        """Scrape all pages of screener results with better error handling"""
+        """Scrape all pages of screener results from both URLs with better error handling"""
         all_tickers = []
         
         # Skip the test access since we're not logging in
         logger.info("Starting direct scraping without authentication")
         
-        page_num = 1
+        # URLs to scrape
+        screener_urls = [
+            ("price under $4", self.screener_url_1),
+            ("price $4 to $10", self.screener_url_2)
+        ]
         
-        while True:
-            # Construct URL for current page
-            if page_num == 1:
-                page_url = self.screener_url
-            else:
-                page_url = f"{self.screener_url}&r={(page_num-1)*20+1}"
+        # Scrape both URLs sequentially
+        for url_desc, base_url in screener_urls:
+            logger.info(f"Starting to scrape {url_desc} stocks...")
+            page_num = 1
+            url_tickers = 0
             
-            logger.info(f"Scraping page {page_num}: {page_url}")
-            
-            page_tickers = await self.scrape_screener_page(page_url)
-            
-            if not page_tickers:
-                logger.info(f"No more data found on page {page_num}, stopping")
-                break
+            while True:
+                # Construct URL for current page
+                if page_num == 1:
+                    page_url = base_url
+                else:
+                    page_url = f"{base_url}&r={(page_num-1)*20+1}"
                 
-            all_tickers.extend(page_tickers)
-            page_num += 1
-            
-            # Safety limit
-            if page_num > 50:  # Reduced from 100 to be more conservative
-                logger.warning("Reached page limit of 50, stopping")
-                break
+                logger.info(f"Scraping {url_desc} page {page_num}: {page_url}")
                 
-            # Longer delay between requests to avoid rate limiting
-            await asyncio.sleep(2)
+                page_tickers = await self.scrape_screener_page(page_url)
+                
+                if not page_tickers:
+                    logger.info(f"No more data found on {url_desc} page {page_num}, stopping")
+                    break
+                    
+                all_tickers.extend(page_tickers)
+                url_tickers += len(page_tickers)
+                page_num += 1
+                
+                # Safety limit per URL
+                if page_num > 50:  # Reduced from 100 to be more conservative
+                    logger.warning(f"Reached page limit of 50 for {url_desc}, stopping")
+                    break
+                    
+                # Longer delay between requests to avoid rate limiting
+                await asyncio.sleep(2)
+            
+            logger.info(f"Completed scraping {url_desc}: {url_tickers} tickers found")
         
-        logger.info(f"Total tickers scraped: {len(all_tickers)}")
+        logger.info(f"Total tickers scraped from both URLs: {len(all_tickers)}")
         return all_tickers
 
     async def update_ticker_database(self):
