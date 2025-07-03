@@ -294,7 +294,7 @@ class ContinuousPriceMonitor:
                 await asyncio.sleep(2)
 
     async def check_price_alerts_optimized(self):
-        """Check for 5%+ price increases - IMMEDIATE trigger within 2 minutes of first price"""
+        """Check for 5%+ price increases - IMMEDIATE trigger within 2 minutes of first price - LIMITED to 5 signals per ticker"""
         try:
             if not self.active_tickers:
                 return
@@ -305,6 +305,7 @@ class ContinuousPriceMonitor:
             
             # OPTIMIZED: Compare current price to FIRST price recorded, but ONLY within 2 minutes
             # This captures immediate breaking news moves and ignores delayed reactions
+            # LIMITED: Only process tickers with fewer than 5 existing alerts
             query = f"""
             SELECT 
                 ticker,
@@ -314,23 +315,32 @@ class ContinuousPriceMonitor:
                 price_count,
                 first_timestamp,
                 current_timestamp,
-                dateDiff('second', first_timestamp, current_timestamp) as seconds_elapsed
+                dateDiff('second', first_timestamp, current_timestamp) as seconds_elapsed,
+                existing_alerts
             FROM (
                 SELECT 
-                    ticker,
-                    argMax(price, timestamp) as current_price,
-                    argMin(price, timestamp) as first_price,
-                    argMax(timestamp, timestamp) as current_timestamp,
-                    argMin(timestamp, timestamp) as first_timestamp,
-                    count() as price_count
-                FROM News.price_tracking 
-                WHERE timestamp >= now() - INTERVAL 15 MINUTE
-                AND ticker IN ({ticker_placeholders})
-                GROUP BY ticker
+                    p.ticker,
+                    argMax(p.price, p.timestamp) as current_price,
+                    argMin(p.price, p.timestamp) as first_price,
+                    argMax(p.timestamp, p.timestamp) as current_timestamp,
+                    argMin(p.timestamp, p.timestamp) as first_timestamp,
+                    count() as price_count,
+                    COALESCE(a.alert_count, 0) as existing_alerts
+                FROM News.price_tracking p
+                LEFT JOIN (
+                    SELECT ticker, count() as alert_count
+                    FROM News.news_alert
+                    WHERE timestamp >= now() - INTERVAL 2 MINUTE
+                    GROUP BY ticker
+                ) a ON p.ticker = a.ticker
+                WHERE p.timestamp >= now() - INTERVAL 15 MINUTE
+                AND p.ticker IN ({ticker_placeholders})
+                AND COALESCE(a.alert_count, 0) < 5
+                GROUP BY p.ticker, a.alert_count
                 HAVING first_price > 0 AND price_count >= 2
             )
             WHERE change_pct >= 5.0 
-            AND seconds_elapsed <= 120
+            AND seconds_elapsed <= 30
             ORDER BY change_pct DESC
             """
             
@@ -341,9 +351,9 @@ class ContinuousPriceMonitor:
                 alert_data = []
                 
                 for row in result.result_rows:
-                    ticker, current_price, first_price, change_pct, price_count, first_timestamp, current_timestamp, seconds_elapsed = row
+                    ticker, current_price, first_price, change_pct, price_count, first_timestamp, current_timestamp, seconds_elapsed, existing_alerts = row
                     
-                    logger.info(f"🚨 IMMEDIATE ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from first price ${first_price:.4f}) in {seconds_elapsed}s [{price_count} price points]")
+                    logger.info(f"🚨 IMMEDIATE ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from first price ${first_price:.4f}) in {seconds_elapsed}s [{price_count} price points] [Alert #{existing_alerts + 1}/5]")
                     
                     # Add to alert data for batch insert
                     alert_data.append((ticker, datetime.now(), 1, current_price))
@@ -360,7 +370,22 @@ class ContinuousPriceMonitor:
                         alert_data,
                         column_names=['ticker', 'timestamp', 'alert', 'price']
                     )
-                    logger.info(f"✅ BREAKING NEWS ALERTS: Inserted {len(alert_data)} immediate alerts (within 2min window)")
+                    logger.info(f"✅ BREAKING NEWS ALERTS: Inserted {len(alert_data)} immediate alerts (within 2min window, max 5 per ticker)")
+            else:
+                # Check if we're skipping tickers due to alert limit
+                limit_check_query = f"""
+                SELECT ticker, count() as alert_count
+                FROM News.news_alert
+                WHERE timestamp >= now() - INTERVAL 2 MINUTE
+                AND ticker IN ({ticker_placeholders})
+                GROUP BY ticker
+                HAVING alert_count >= 5
+                """
+                
+                limit_result = self.ch_manager.client.query(limit_check_query)
+                if limit_result.result_rows:
+                    limited_tickers = [row[0] for row in limit_result.result_rows]
+                    logger.debug(f"🔒 ALERT LIMIT: Skipping {len(limited_tickers)} tickers that already have 5+ alerts: {limited_tickers}")
                 
         except Exception as e:
             logger.error(f"Error checking price alerts: {e}")

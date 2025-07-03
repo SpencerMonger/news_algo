@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test script to generate dummy entries in News.news_alert table
-Uses random tickers from float_list table to create test alerts
+Uses the ticker 'APPL' to create test alerts
 """
 
 import logging
@@ -61,9 +61,9 @@ class NewsAlertTestGenerator:
     def generate_test_alerts(self, num_alerts: int = 3):
         """Generate test entries in the news_alert table with same filtering logic as price_checker"""
         try:
-            # Get one random ticker with its actual price
-            ticker_data = self.get_random_tickers(1)
-            ticker, price = ticker_data[0]
+            # Use 'NVDA' as the ticker with a default price
+            ticker = 'NVDA'
+            price = 150.0
             
             # CHECK EXISTING ALERTS - Same logic as price_checker
             existing_alerts_query = """
