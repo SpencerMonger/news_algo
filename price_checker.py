@@ -182,10 +182,69 @@ class ContinuousPriceMonitor:
             logger.error(f"Error getting active tickers: {e}")
             return set()
 
+    async def get_price_with_double_call(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Make double API call for new tickers - discard first (garbage), use second (correct)"""
+        url = f"{self.base_url}/v2/last/trade/{ticker}"
+        params = {'apikey': self.polygon_api_key}
+        start_time = time.time()
+        
+        try:
+            # First call - expect garbage data, discard it
+            async with self.session.get(url, params=params) as response1:
+                if response1.status == 200:
+                    garbage_data = await response1.json()
+                    if 'results' in garbage_data and garbage_data['results']:
+                        garbage_price = garbage_data['results'].get('p', 0.0)
+                        logger.debug(f"🗑️ {ticker}: Discarding first call garbage price: ${garbage_price:.4f}")
+            
+            # Small delay between calls to avoid rate limiting
+            await asyncio.sleep(0.1)
+            
+            # Second call - expect correct data, use this one
+            async with self.session.get(url, params=params) as response2:
+                api_time = time.time() - start_time
+                
+                if response2.status == 200:
+                    data = await response2.json()
+                    
+                    if 'results' in data and data['results']:
+                        result = data['results']
+                        price = result.get('p', 0.0)
+                        
+                        if price > 0:
+                            logger.info(f"✅ {ticker}: ${price:.4f} (DOUBLE-CALL VERIFIED) in {api_time:.3f}s")
+                            return {
+                                'price': price,
+                                'timestamp': datetime.now(pytz.UTC),
+                                'source': 'trade_verified'
+                            }
+                elif response2.status == 429:
+                    logger.debug(f"⚠️ Rate limited for {ticker} on second call - skipping this cycle")
+                else:
+                    logger.debug(f"Second API call returned status {response2.status} for {ticker} - skipping")
+                    
+        except asyncio.TimeoutError:
+            logger.debug(f"⏱️ TIMEOUT for {ticker} double call - skipping this cycle")
+        except Exception as e:
+            logger.debug(f"Double call error for {ticker}: {e} - skipping")
+        
+        return None
+
     async def get_current_price(self, ticker: str) -> Optional[Dict[str, Any]]:
         """Get current price for ticker using ONLY last trade endpoint - no unreliable fallbacks"""
         try:
-            # Use Last Trade endpoint only - most accurate actual price
+            # Check if this is a newly added ticker (within 10 seconds)
+            is_new_ticker = False
+            if ticker in self.ticker_timestamps:
+                time_since_added = datetime.now() - self.ticker_timestamps[ticker]
+                is_new_ticker = time_since_added.total_seconds() <= 10
+            
+            if is_new_ticker:
+                # NEW TICKER: Use double call to avoid garbage data
+                logger.debug(f"🔄 NEW TICKER: Making double API call for {ticker} to avoid garbage data")
+                return await self.get_price_with_double_call(ticker)
+            
+            # EXISTING TICKER: Use single API call (normal flow)
             url = f"{self.base_url}/v2/last/trade/{ticker}"
             params = {'apikey': self.polygon_api_key}
             

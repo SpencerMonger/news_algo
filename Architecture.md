@@ -198,9 +198,50 @@ patterns = [
 
 **Price Data Strategy**:
 - **Single Endpoint**: `/v2/last/trade/{ticker}` - Uses only actual executed trade prices
+- **Double-Call Fix**: NEW - For newly added tickers (≤10 seconds old), makes two API calls and discards the first (often garbage) response
+- **Garbage Data Protection**: Polygon API sometimes returns stale/incorrect prices on first call for new tickers, causing false alerts
+- **Smart Source Marking**: New tickers use `trade_verified` source to indicate double-call verification
 - **No Fallbacks**: Unreliable NBBO calculations removed entirely
 - **Skip on Failure**: Failed requests are skipped to maintain clean intervals
 - **Reliability Priority**: Only real trade prices prevent phantom price alerts (e.g., FEAM $4.05, CAPS $4.06 issues)
+
+**Double-Call Implementation**:
+```python
+# NEW: Double API call logic for new tickers
+async def get_price_with_double_call(self, ticker: str):
+    """Make double API call for new tickers - discard first (garbage), use second (correct)"""
+    
+    # First call - expect garbage data, discard it
+    async with self.session.get(url, params=params) as response1:
+        if response1.status == 200:
+            garbage_data = await response1.json()
+            garbage_price = garbage_data['results'].get('p', 0.0)
+            logger.info(f"🗑️ {ticker}: Discarding first call garbage price: ${garbage_price:.4f}")
+    
+    # Small delay between calls
+    await asyncio.sleep(0.1)
+    
+    # Second call - expect correct data, use this one
+    async with self.session.get(url, params=params) as response2:
+        if response2.status == 200:
+            data = await response2.json()
+            if 'results' in data and data['results']:
+                correct_price = data['results'].get('p', 0.0)
+                logger.info(f"✅ {ticker}: Using second call verified price: ${correct_price:.4f}")
+                return {
+                    'ticker': ticker,
+                    'price': correct_price,
+                    'source': 'trade_verified',  # Mark as double-call verified
+                    'timestamp': datetime.now()
+                }
+```
+
+**Garbage Data Issue Analysis**:
+- **Problem**: Polygon API returns incorrect prices (e.g., $0.28 for BCTX, $0.35 for TTEC) on first API call for newly tracked tickers
+- **Impact**: Caused massive false alerts (e.g., +1391% for TTEC, +984% for BCTX) when second call returned correct price
+- **Root Cause**: API cache issues, stale data, or uninitialized values in Polygon's system
+- **Solution**: Double-call pattern discards first response, uses second verified response
+- **Performance**: Minimal impact (~0.1s delay) only for new tickers, existing tickers use single calls
 
 **Price Alert Logic**:
 ```python
@@ -775,8 +816,8 @@ LOG_LEVEL=INFO
 │  │  │  │ │ benzinga_websocket.py   │ │ │ │ │
 │  │  │  │ │ (WebSocket Client)      │ │ │ │ │
 │  │  │  │ └─────────────────────────┘ │ │ │ │
-│  │  │  └─────────────────────────────┘ │ │ │
-│  │  └─────────────────────────────────┘ │ │
+│  │  │  └─────────────────────────────┘ │ │
+│  │  └─────────────────────────────────┘ │
 │  └─────────────────────────────────────┘ │
 │                                         │
 │  ┌─────────────────────────────────────┐ │
