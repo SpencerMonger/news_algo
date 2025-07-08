@@ -1,5 +1,70 @@
-# Normal operation (freshness filter enabled)
+# NewsHead System - All Command Variations
+# =====================================
+
+# BASIC OPERATIONS
+# ----------------
+
+# Normal operation (freshness filter enabled, web scraper, with sentiment analysis)
 python3 run_system.py --skip-list
 
-# Testing mode (freshness filter disabled)
+# Testing mode (freshness filter disabled, processes old articles)
 python3 run_system.py --skip-list --enable-old
+
+# WEBSOCKET OPERATIONS
+# -------------------
+
+# Use Benzinga WebSocket instead of web scraper (normal filtering)
+python3 run_system.py --skip-list --socket
+
+# WebSocket with old articles processing
+python3 run_system.py --skip-list --socket --enable-old
+
+# WebSocket with ANY ticker processing (bypasses ticker list filtering)
+python3 run_system.py --skip-list --socket --any
+
+# WebSocket with ANY ticker + old articles
+python3 run_system.py --skip-list --socket --any --enable-old
+
+# SENTIMENT ANALYSIS VARIATIONS
+# -----------------------------
+
+# Skip sentiment analysis initialization (for testing)
+python3 run_system.py --skip-list --no-sentiment
+
+# WebSocket without sentiment analysis
+python3 run_system.py --skip-list --socket --no-sentiment
+
+# Any ticker processing without sentiment analysis
+python3 run_system.py --skip-list --socket --any --no-sentiment
+
+# FULL SYSTEM OPERATIONS (with Finviz ticker list update)
+# -------------------------------------------------------
+
+# Full system with ticker list update (web scraper)
+python3 run_system.py
+
+# Full system with ticker list update (websocket)
+python3 run_system.py --socket
+
+# Full system with ticker list update (websocket + any ticker)
+python3 run_system.py --socket --any
+
+# ARGUMENT REFERENCE
+# ==================
+# --skip-list     : Skip Finviz ticker list update
+# --enable-old    : Process old news articles (disable freshness filter)
+# --socket        : Use Benzinga WebSocket instead of web scraper
+# --any           : Process any ticker symbols found (only works with --socket)
+# --no-sentiment  : Skip sentiment analysis initialization (for testing)
+
+# RECOMMENDED CONFIGURATIONS
+# ==========================
+
+# Production (most common): Web scraper with sentiment analysis
+python3 run_system.py --skip-list
+
+# High-volume testing: WebSocket with any ticker processing
+python3 run_system.py --skip-list --socket --any
+
+# Debugging: WebSocket without sentiment analysis
+python3 run_system.py --skip-list --socket --no-sentiment

@@ -15,6 +15,9 @@ from clickhouse_setup import ClickHouseManager
 from log_manager import setup_comprehensive_logging
 from finviz_scraper import FinvizScraper
 
+# SENTIMENT ANALYSIS SERVICE INITIALIZATION
+from sentiment_service import get_sentiment_service
+
 # Global log manager for cleanup
 log_manager = None
 
@@ -116,6 +119,31 @@ def terminate_process_group(process):
     except Exception as e:
         logging.error(f"Error terminating price checker process: {e}")
 
+async def initialize_sentiment_service():
+    """Initialize the sentiment analysis service"""
+    logging.info("🧠 Initializing sentiment analysis service...")
+    
+    try:
+        # Get sentiment service instance
+        sentiment_service = await get_sentiment_service()
+        
+        # Initialize the service
+        is_initialized = await sentiment_service.initialize()
+        
+        if is_initialized:
+            logging.info("✅ Sentiment analysis service initialized successfully")
+            logging.info("🤖 LM Studio connection established - AI analysis ready")
+            return True
+        else:
+            logging.warning("⚠️ Sentiment analysis service failed to initialize")
+            logging.warning("🤖 LM Studio connection failed - sentiment analysis will be disabled")
+            return False
+    
+    except Exception as e:
+        logging.error(f"❌ Error initializing sentiment service: {e}")
+        logging.warning("🤖 Sentiment analysis will be disabled - system will continue with price-only alerts")
+        return False
+
 async def main():
     """Main function"""
     global log_manager
@@ -128,6 +156,7 @@ async def main():
     parser.add_argument('--enable-old', action='store_true', help='Process old news articles (disable freshness filter)')
     parser.add_argument('--socket', action='store_true', help='Use Benzinga WebSocket instead of web scraper (default: web scraper)')
     parser.add_argument('--any', action='store_true', help='Process any ticker symbols found (only works with --socket, bypasses ticker list filtering)')
+    parser.add_argument('--no-sentiment', action='store_true', help='Skip sentiment analysis initialization (for testing)')
     
     args = parser.parse_args()
     
@@ -146,17 +175,33 @@ async def main():
         if args.any:
             logging.warning("⚠️ --any flag ignored: Only works with --socket mode")
     
+    # Log sentiment analysis mode
+    if args.no_sentiment:
+        logging.info("🔇 SENTIMENT ANALYSIS DISABLED: Running in price-only mode")
+    else:
+        logging.info("🧠 SENTIMENT ANALYSIS ENABLED: AI-enhanced price alerts")
+    
     price_process = None
     
     try:
         # Step 1: Setup database
         await setup_database()
         
+        # Step 1.5: Initialize sentiment service (unless explicitly disabled)
+        if not args.no_sentiment:
+            sentiment_initialized = await initialize_sentiment_service()
+            if sentiment_initialized:
+                logging.info("✅ Sentiment analysis ready - alerts will use AI analysis")
+            else:
+                logging.warning("⚠️ Sentiment analysis failed - falling back to price-only alerts")
+        else:
+            logging.info("🔇 Sentiment analysis skipped - price-only alerts enabled")
+        
         # Step 2: Skip ticker list update if requested
         if args.skip_list:
-            logging.info("Step 1: Skipping Finviz ticker list update (--skip-list flag used)")
+            logging.info("Step 2: Skipping Finviz ticker list update (--skip-list flag used)")
         else:
-            logging.info("Step 1: Updating Finviz ticker list...")
+            logging.info("Step 2: Updating Finviz ticker list...")
             # Import and run the Finviz scraper
             
             # Create ClickHouse manager for the scraper
@@ -180,12 +225,12 @@ async def main():
             finally:
                 ch_manager.close()
         
-        logging.info("Step 2: Starting monitoring systems with PROCESS ISOLATION...")
+        logging.info("Step 3: Starting monitoring systems with PROCESS ISOLATION...")
         
         if args.enable_old:
             logging.info("🔓 FRESHNESS FILTER DISABLED - Processing old news for testing")
         
-        # Step 3: Start price checker in separate process for COMPLETE isolation
+        # Step 4: Start price checker in separate process for COMPLETE isolation
         logging.info("🚀 Phase 1: Starting ZERO-LAG price checker in separate process...")
         price_process = start_price_checker_process()
         
@@ -193,7 +238,7 @@ async def main():
         logging.info("⏳ Waiting 10 seconds for price checker process to fully initialize...")
         await asyncio.sleep(10)
         
-        # Step 4: Start news monitor in current process
+        # Step 5: Start news monitor in current process
         if args.socket:
             logging.info("🚀 Phase 2: Starting Benzinga WebSocket news monitor...")
             logging.info("⚡ REAL-TIME MODE: WebSocket provides sub-second news detection")
@@ -202,6 +247,7 @@ async def main():
             logging.info("🌐 TRADITIONAL MODE: Web scraping with browser automation")
             
         logging.info("✅ PROCESS ISOLATION: Price checker runs separately → Zero resource contention")
+        logging.info("🧠 SENTIMENT INTEGRATION: AI analysis enhances price alerts")
         
         # Start news monitoring
         await start_news_monitor(enable_old=args.enable_old, use_websocket=args.socket, process_any_ticker=args.any)

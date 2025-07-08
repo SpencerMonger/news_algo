@@ -141,10 +141,20 @@ class ClickHouseManager:
             news_type String DEFAULT 'other',
             urgency_score UInt8 DEFAULT 0,
             
+            -- Sentiment analysis fields
+            sentiment String DEFAULT 'neutral',
+            recommendation String DEFAULT 'HOLD',
+            confidence String DEFAULT 'low',
+            explanation String DEFAULT '',
+            analysis_time_ms UInt32 DEFAULT 0,
+            analyzed_at DateTime64(3) DEFAULT now64(),
+            
             INDEX idx_ticker (ticker) TYPE bloom_filter GRANULARITY 1,
             INDEX idx_timestamp (timestamp) TYPE minmax GRANULARITY 3,
             INDEX idx_source (source) TYPE set(100) GRANULARITY 1,
-            INDEX idx_content_hash (content_hash) TYPE bloom_filter GRANULARITY 1
+            INDEX idx_content_hash (content_hash) TYPE bloom_filter GRANULARITY 1,
+            INDEX idx_sentiment (sentiment) TYPE set(10) GRANULARITY 1,
+            INDEX idx_recommendation (recommendation) TYPE set(10) GRANULARITY 1
         ) 
         ENGINE = ReplacingMergeTree(detected_at)
         PARTITION BY toYYYYMM(timestamp)
@@ -154,7 +164,7 @@ class ClickHouseManager:
         
         try:
             self.client.command(create_table_sql)
-            logger.info("breaking_news table created/verified with timestamp preservation")
+            logger.info("breaking_news table created/verified with sentiment analysis columns")
         except Exception as e:
             logger.error(f"Error creating table: {e}")
             raise
@@ -255,7 +265,13 @@ class ClickHouseManager:
                     article.get('source_check_time', datetime.now()),
                     article.get('content_hash', ''),
                     article.get('news_type', 'other'),
-                    article.get('urgency_score', 0)
+                    article.get('urgency_score', 0),
+                    article.get('sentiment', 'neutral'),
+                    article.get('recommendation', 'HOLD'),
+                    article.get('confidence', 'low'),
+                    article.get('explanation', ''),
+                    article.get('analysis_time_ms', 0),
+                    article.get('analyzed_at', datetime.now())
                 ])
             
             # Skip if no new articles to insert
@@ -268,7 +284,8 @@ class ClickHouseManager:
                 'timestamp', 'source', 'ticker', 'headline', 'published_utc',
                 'article_url', 'summary', 'full_content', 'detected_at',
                 'processing_latency_ms', 'market_relevant', 'source_check_time',
-                'content_hash', 'news_type', 'urgency_score'
+                'content_hash', 'news_type', 'urgency_score', 'sentiment',
+                'recommendation', 'confidence', 'explanation', 'analysis_time_ms', 'analyzed_at'
             ]
             
             # Log insertion attempt
@@ -723,14 +740,19 @@ class ClickHouseManager:
                 ticker String,
                 price Float64,
                 volume UInt64,
-                source String DEFAULT 'polygon'
+                source String DEFAULT 'polygon',
+                
+                -- Sentiment analysis fields (from associated news)
+                sentiment String DEFAULT 'neutral',
+                recommendation String DEFAULT 'HOLD',
+                confidence String DEFAULT 'low'
             ) ENGINE = MergeTree()
             ORDER BY (ticker, timestamp)
             PARTITION BY toYYYYMM(timestamp)
             TTL timestamp + INTERVAL 7 DAY
             """
             self.client.command(price_tracking_sql)
-            logger.info("price_tracking table created/verified")
+            logger.info("price_tracking table created/verified with sentiment analysis columns")
 
             # News alert table
             news_alert_sql = """

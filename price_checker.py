@@ -272,15 +272,86 @@ class ContinuousPriceMonitor:
         
         # Batch insert price data
         if price_data:
+            # ENHANCED: Get sentiment data for each ticker before inserting
+            sentiment_data = {}
+            if self.active_tickers:
+                try:
+                    # Get latest sentiment analysis for all active tickers
+                    ticker_list = list(self.active_tickers)
+                    ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
+                    
+                    sentiment_query = f"""
+                    SELECT 
+                        ticker,
+                        sentiment,
+                        recommendation,
+                        confidence
+                    FROM (
+                        SELECT 
+                            ticker,
+                            sentiment,
+                            recommendation,
+                            confidence,
+                            ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY analyzed_at DESC) as rn
+                        FROM News.breaking_news
+                        WHERE ticker IN ({ticker_placeholders})
+                        AND analyzed_at >= now() - INTERVAL 1 HOUR
+                        AND sentiment != ''
+                        AND recommendation != ''
+                    ) ranked
+                    WHERE rn = 1
+                    """
+                    
+                    sentiment_result = self.ch_manager.client.query(sentiment_query)
+                    for row in sentiment_result.result_rows:
+                        ticker, sentiment, recommendation, confidence = row
+                        sentiment_data[ticker] = {
+                            'sentiment': sentiment,
+                            'recommendation': recommendation,
+                            'confidence': confidence
+                        }
+                except Exception as e:
+                    logger.debug(f"Error getting sentiment data: {e}")
+            
+            # Prepare enriched price data with sentiment
+            enriched_price_data = []
+            for price_row in price_data:
+                timestamp, ticker, price, volume, source = price_row
+                
+                # Get sentiment for this ticker (or use defaults)
+                ticker_sentiment = sentiment_data.get(ticker, {
+                    'sentiment': 'neutral',
+                    'recommendation': 'HOLD',
+                    'confidence': 'low'
+                })
+                
+                # Add sentiment fields to price data
+                enriched_price_data.append((
+                    timestamp,
+                    ticker,
+                    price,
+                    volume,
+                    source,
+                    ticker_sentiment['sentiment'],
+                    ticker_sentiment['recommendation'],
+                    ticker_sentiment['confidence']
+                ))
+            
+            # Insert enriched price data with sentiment
             self.ch_manager.client.insert(
                 'News.price_tracking',
-                price_data,
-                column_names=['timestamp', 'ticker', 'price', 'volume', 'source']
+                enriched_price_data,
+                column_names=['timestamp', 'ticker', 'price', 'volume', 'source', 'sentiment', 'recommendation', 'confidence']
             )
             
             total_time = time.time() - start_time
             self.stats['price_checks'] += len(price_data)
+            
+            # Enhanced logging with sentiment info
+            sentiment_count = len([t for t in sentiment_data.values() if t['recommendation'] != 'HOLD'])
             logger.info(f"⚡ PARALLEL: Tracked {successful_prices}/{len(self.active_tickers)} ticker prices in {total_time:.3f}s")
+            if sentiment_count > 0:
+                logger.info(f"🧠 SENTIMENT: {sentiment_count} tickers have non-neutral sentiment analysis")
             
             if failed_tickers:
                 logger.debug(f"⚠️ Failed to get prices for: {failed_tickers}")
@@ -294,7 +365,7 @@ class ContinuousPriceMonitor:
                 await asyncio.sleep(2)
 
     async def check_price_alerts_optimized(self):
-        """Check for 5%+ price increases - IMMEDIATE trigger within 2 minutes of first price - LIMITED to 5 signals per ticker"""
+        """Check for 5%+ price increases WITH sentiment analysis - ONLY trigger alerts when price moves 5% AND sentiment is 'BUY' with high confidence"""
         try:
             if not self.active_tickers:
                 return
@@ -303,44 +374,58 @@ class ContinuousPriceMonitor:
             ticker_list = list(self.active_tickers)
             ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
             
-            # OPTIMIZED: Compare current price to FIRST price recorded, but ONLY within 2 minutes
-            # This captures immediate breaking news moves and ignores delayed reactions
-            # LIMITED: Only process tickers with fewer than 5 existing alerts
+            # ENHANCED: Include sentiment analysis in price alert logic
+            # Only trigger alerts when:
+            # 1. Price moves 5%+ within 2 minutes (existing logic)
+            # 2. AND sentiment is 'BUY' with 'high' confidence (from price_tracking table)
             query = f"""
             SELECT 
-                ticker,
-                current_price,
-                first_price,
-                ((current_price - first_price) / first_price) * 100 as change_pct,
-                price_count,
-                first_timestamp,
-                current_timestamp,
-                dateDiff('second', first_timestamp, current_timestamp) as seconds_elapsed,
-                existing_alerts
+                p.ticker,
+                p.current_price,
+                p.first_price,
+                ((p.current_price - p.first_price) / p.first_price) * 100 as change_pct,
+                p.price_count,
+                p.first_timestamp,
+                p.current_timestamp,
+                dateDiff('second', p.first_timestamp, p.current_timestamp) as seconds_elapsed,
+                p.existing_alerts,
+                -- Sentiment analysis data from price_tracking table
+                p.sentiment,
+                p.recommendation,
+                p.confidence
             FROM (
                 SELECT 
-                    p.ticker,
-                    argMax(p.price, p.timestamp) as current_price,
-                    argMin(p.price, p.timestamp) as first_price,
-                    argMax(p.timestamp, p.timestamp) as current_timestamp,
-                    argMin(p.timestamp, p.timestamp) as first_timestamp,
+                    pt.ticker,
+                    argMax(pt.price, pt.timestamp) as current_price,
+                    argMin(pt.price, pt.timestamp) as first_price,
+                    argMax(pt.timestamp, pt.timestamp) as current_timestamp,
+                    argMin(pt.timestamp, pt.timestamp) as first_timestamp,
                     count() as price_count,
-                    COALESCE(a.alert_count, 0) as existing_alerts
-                FROM News.price_tracking p
+                    COALESCE(a.alert_count, 0) as existing_alerts,
+                    -- Get the most recent sentiment from price_tracking (no need to query breaking_news)
+                    argMax(pt.sentiment, pt.timestamp) as sentiment,
+                    argMax(pt.recommendation, pt.timestamp) as recommendation,
+                    argMax(pt.confidence, pt.timestamp) as confidence
+                FROM News.price_tracking pt
                 LEFT JOIN (
                     SELECT ticker, count() as alert_count
                     FROM News.news_alert
                     WHERE timestamp >= now() - INTERVAL 2 MINUTE
                     GROUP BY ticker
-                ) a ON p.ticker = a.ticker
-                WHERE p.timestamp >= now() - INTERVAL 15 MINUTE
-                AND p.ticker IN ({ticker_placeholders})
+                ) a ON pt.ticker = a.ticker
+                WHERE pt.timestamp >= now() - INTERVAL 15 MINUTE
+                AND pt.ticker IN ({ticker_placeholders})
                 AND COALESCE(a.alert_count, 0) < 5
-                GROUP BY p.ticker, a.alert_count
+                GROUP BY pt.ticker, a.alert_count
                 HAVING first_price > 0 AND price_count >= 2
+            ) p
+            WHERE ((p.current_price - p.first_price) / p.first_price) * 100 >= 5.0 
+            AND dateDiff('second', p.first_timestamp, p.current_timestamp) <= 30
+            -- SENTIMENT CONDITIONS: Only trigger if sentiment supports the price movement (from price_tracking)
+            AND (
+                -- ONLY High confidence BUY recommendation
+                (p.recommendation = 'BUY' AND p.confidence = 'high')
             )
-            WHERE change_pct >= 5.0 
-            AND seconds_elapsed <= 30
             ORDER BY change_pct DESC
             """
             
@@ -351,9 +436,20 @@ class ContinuousPriceMonitor:
                 alert_data = []
                 
                 for row in result.result_rows:
-                    ticker, current_price, first_price, change_pct, price_count, first_timestamp, current_timestamp, seconds_elapsed, existing_alerts = row
+                    ticker, current_price, first_price, change_pct, price_count, first_timestamp, current_timestamp, seconds_elapsed, existing_alerts, sentiment, recommendation, confidence = row
                     
-                    logger.info(f"🚨 IMMEDIATE ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from first price ${first_price:.4f}) in {seconds_elapsed}s [{price_count} price points] [Alert #{existing_alerts + 1}/5]")
+                    # Enhanced logging with sentiment information
+                    if sentiment and recommendation:
+                        sentiment_info = f"Sentiment: {sentiment}, Recommendation: {recommendation} ({confidence} confidence)"
+                        logger.info(f"🚨 SENTIMENT-ENHANCED ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
+                        logger.info(f"   📊 {sentiment_info}")
+                        logger.info(f"   📰 News: No headline available")
+                        logger.info(f"   🤖 AI Analysis: No explanation available")
+                        logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/5]")
+                    else:
+                        logger.info(f"🚨 PRICE-ONLY ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
+                        logger.info(f"   ⚠️ No sentiment data available - using price-only logic")
+                        logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/5]")
                     
                     # Add to alert data for batch insert
                     alert_data.append((ticker, datetime.now(), 1, current_price))
@@ -370,8 +466,50 @@ class ContinuousPriceMonitor:
                         alert_data,
                         column_names=['ticker', 'timestamp', 'alert', 'price']
                     )
-                    logger.info(f"✅ BREAKING NEWS ALERTS: Inserted {len(alert_data)} immediate alerts (within 2min window, max 5 per ticker)")
+                    logger.info(f"✅ SENTIMENT-ENHANCED ALERTS: Inserted {len(alert_data)} alerts with sentiment analysis")
             else:
+                # Enhanced debug logging to show why no alerts were triggered
+                # First check if there are any price movements that would qualify
+                debug_query = f"""
+                SELECT 
+                    ticker,
+                    ((argMax(price, timestamp) - argMin(price, timestamp)) / argMin(price, timestamp)) * 100 as change_pct,
+                    count() as price_count,
+                    dateDiff('second', argMin(timestamp, timestamp), argMax(timestamp, timestamp)) as seconds_elapsed
+                FROM News.price_tracking
+                WHERE timestamp >= now() - INTERVAL 15 MINUTE
+                AND ticker IN ({ticker_placeholders})
+                GROUP BY ticker
+                HAVING change_pct >= 5.0 AND price_count >= 2
+                """
+                
+                debug_result = self.ch_manager.client.query(debug_query)
+                if debug_result.result_rows:
+                    logger.info(f"💡 SENTIMENT FILTER: Found {len(debug_result.result_rows)} tickers with price moves but no favorable sentiment")
+                    for row in debug_result.result_rows:
+                        ticker, change_pct, price_count, seconds_elapsed = row
+                        logger.info(f"   📊 {ticker}: +{change_pct:.2f}% in {seconds_elapsed}s - blocked by sentiment filter")
+                        
+                        # Check what sentiment data exists for this ticker in price_tracking
+                        sentiment_debug_query = f"""
+                        SELECT 
+                            argMax(sentiment, timestamp) as latest_sentiment,
+                            argMax(recommendation, timestamp) as latest_recommendation,
+                            argMax(confidence, timestamp) as latest_confidence,
+                            argMax(timestamp, timestamp) as latest_timestamp
+                        FROM News.price_tracking
+                        WHERE ticker = '{ticker}'
+                        AND timestamp >= now() - INTERVAL 1 HOUR
+                        GROUP BY ticker
+                        """
+                        
+                        sentiment_debug_result = self.ch_manager.client.query(sentiment_debug_query)
+                        if sentiment_debug_result.result_rows:
+                            sentiment, recommendation, confidence, timestamp = sentiment_debug_result.result_rows[0]
+                            logger.info(f"      🧠 Available sentiment: {sentiment}, {recommendation} ({confidence} confidence) at {timestamp}")
+                        else:
+                            logger.info(f"      ❌ No sentiment data found for {ticker} in price_tracking")
+                
                 # Check if we're skipping tickers due to alert limit
                 limit_check_query = f"""
                 SELECT ticker, count() as alert_count
@@ -388,7 +526,7 @@ class ContinuousPriceMonitor:
                     logger.debug(f"🔒 ALERT LIMIT: Skipping {len(limited_tickers)} tickers that already have 5+ alerts: {limited_tickers}")
                 
         except Exception as e:
-            logger.error(f"Error checking price alerts: {e}")
+            logger.error(f"Error checking sentiment-enhanced price alerts: {e}")
 
     async def log_price_alert(self, ticker: str, current_price: float, prev_price: float, change_pct: float):
         """Log price alert to database"""

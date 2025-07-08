@@ -18,6 +18,9 @@ import websockets
 from dotenv import load_dotenv
 from clickhouse_setup import ClickHouseManager
 
+# SENTIMENT ANALYSIS INTEGRATION
+from sentiment_service import analyze_articles_with_sentiment
+
 # Load environment variables
 load_dotenv()
 
@@ -495,20 +498,36 @@ class BenzingaWebSocketScraper:
                 await asyncio.sleep(10)  # Error recovery delay
 
     async def flush_buffer_to_clickhouse(self):
-        """Flush article buffer to ClickHouse (same as web_scraper.py)"""
+        """Flush article buffer to ClickHouse WITH sentiment analysis (same as web_scraper.py)"""
         if not self.batch_queue:
             return
             
         try:
-            inserted_count = self.clickhouse_manager.insert_articles(self.batch_queue)
+            # STEP 1: Analyze articles with sentiment BEFORE inserting into database
+            logger.info(f"🧠 Starting sentiment analysis for {len(self.batch_queue)} articles...")
+            enriched_articles = await analyze_articles_with_sentiment(self.batch_queue)
+            
+            # STEP 2: Insert articles WITH sentiment data into database
+            inserted_count = self.clickhouse_manager.insert_articles(enriched_articles)
             self.stats['articles_inserted'] += inserted_count
             
-            logger.info(f"Flushed {inserted_count} articles to ClickHouse")
+            logger.info(f"✅ Flushed {inserted_count} articles with sentiment analysis to ClickHouse")
             self.batch_queue.clear()
             
         except Exception as e:
-            logger.error(f"Error flushing buffer to ClickHouse: {e}")
+            logger.error(f"Error flushing buffer to ClickHouse with sentiment analysis: {e}")
             self.stats['errors'] = self.stats.get('errors', 0) + 1
+            
+            # Fallback: Try to insert without sentiment analysis
+            try:
+                logger.warning("🔄 Attempting fallback insertion without sentiment analysis...")
+                inserted_count = self.clickhouse_manager.insert_articles(self.batch_queue)
+                self.stats['articles_inserted'] += inserted_count
+                logger.info(f"✅ Fallback insertion successful: {inserted_count} articles")
+                self.batch_queue.clear()
+            except Exception as fallback_error:
+                logger.error(f"❌ Fallback insertion also failed: {fallback_error}")
+                self.stats['errors'] = self.stats.get('errors', 0) + 1
 
     async def buffer_flusher(self):
         """Periodically flush buffer to ClickHouse (same as web_scraper.py)"""
