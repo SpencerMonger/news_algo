@@ -474,12 +474,12 @@ class ContinuousPriceMonitor:
                 ) a ON pt.ticker = a.ticker
                 WHERE pt.timestamp >= now() - INTERVAL 15 MINUTE
                 AND pt.ticker IN ({ticker_placeholders})
-                AND COALESCE(a.alert_count, 0) < 5
+                AND COALESCE(a.alert_count, 0) < 8
                 GROUP BY pt.ticker, a.alert_count
                 HAVING first_price > 0 AND price_count >= 2
             ) p
             WHERE ((p.current_price - p.first_price) / p.first_price) * 100 >= 5.0 
-            AND dateDiff('second', p.first_timestamp, p.current_timestamp) <= 30
+            AND dateDiff('second', p.first_timestamp, p.current_timestamp) <= 40
             -- SENTIMENT CONDITIONS: Only trigger if sentiment supports the price movement (from price_tracking)
             AND (
                 -- ONLY High confidence BUY recommendation
@@ -504,11 +504,11 @@ class ContinuousPriceMonitor:
                         logger.info(f"   📊 {sentiment_info}")
                         logger.info(f"   📰 News: No headline available")
                         logger.info(f"   🤖 AI Analysis: No explanation available")
-                        logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/5]")
+                        logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
                     else:
                         logger.info(f"🚨 PRICE-ONLY ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   ⚠️ No sentiment data available - using price-only logic")
-                        logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/5]")
+                        logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
                     
                     # Add to alert data for batch insert
                     alert_data.append((ticker, datetime.now(), 1, current_price))
@@ -576,13 +576,13 @@ class ContinuousPriceMonitor:
                 WHERE timestamp >= now() - INTERVAL 2 MINUTE
                 AND ticker IN ({ticker_placeholders})
                 GROUP BY ticker
-                HAVING alert_count >= 5
+                HAVING alert_count >= 8
                 """
                 
                 limit_result = self.ch_manager.client.query(limit_check_query)
                 if limit_result.result_rows:
                     limited_tickers = [row[0] for row in limit_result.result_rows]
-                    logger.debug(f"🔒 ALERT LIMIT: Skipping {len(limited_tickers)} tickers that already have 5+ alerts: {limited_tickers}")
+                    logger.debug(f"🔒 ALERT LIMIT: Skipping {len(limited_tickers)} tickers that already have 8+ alerts: {limited_tickers}")
                 
         except Exception as e:
             logger.error(f"Error checking sentiment-enhanced price alerts: {e}")

@@ -47,7 +47,7 @@ class SentimentService:
             'start_time': time.time()
         }
     
-    def scrape_article_content(self, url: str, max_chars: int = 10000) -> str:
+    def scrape_article_content(self, url: str, max_chars: int = 8000) -> str:
         """Scrape article content from URL, limited to max_chars"""
         try:
             headers = {
@@ -57,26 +57,74 @@ class SentimentService:
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             
-            # Extract content using BeautifulSoup for better parsing
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # Remove script and style elements
             for script in soup(["script", "style"]):
                 script.decompose()
             
-            # Get text content
-            text = soup.get_text()
+            # Try to extract article content specifically for Benzinga
+            article_content = ""
             
-            # Clean up text
-            lines = (line.strip() for line in text.splitlines())
+            if 'benzinga.com' in url:
+                # Target Benzinga's article paragraph structure
+                article_paragraphs = soup.find_all('p')
+                content_paragraphs = []
+                
+                for p in article_paragraphs:
+                    # Check if paragraph is in article content container
+                    if p.parent and p.parent.get('class'):
+                        parent_classes = p.parent.get('class', [])
+                        # Look for the specific classes that contain article content
+                        if any('cAazyy' in str(cls) or 'dIYChw' in str(cls) for cls in parent_classes):
+                            text = p.get_text().strip()
+                            if len(text) > 20:  # Only substantial paragraphs
+                                content_paragraphs.append(text)
+                
+                article_content = ' '.join(content_paragraphs)
+            
+            # Fallback to general content extraction if specific method fails
+            if not article_content or len(article_content) < 100:
+                # Try common article selectors
+                selectors_to_try = [
+                    'article',
+                    '.article-content',
+                    '.story-body',
+                    '.post-content',
+                    '.content',
+                    '.article-body',
+                    '[data-module="ArticleBody"]',
+                    '.article-wrap',
+                    '.entry-content'
+                ]
+                
+                for selector in selectors_to_try:
+                    elements = soup.select(selector)
+                    if elements:
+                        article_content = elements[0].get_text()
+                        break
+                
+                # Final fallback to full page text (original method)
+                if not article_content:
+                    text = soup.get_text()
+                    lines = (line.strip() for line in text.splitlines())
+                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                    article_content = ' '.join(chunk for chunk in chunks if chunk)
+            
+            # Clean up the content
+            lines = (line.strip() for line in article_content.splitlines())
             chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = ' '.join(chunk for chunk in chunks if chunk)
+            clean_content = ' '.join(chunk for chunk in chunks if chunk)
             
-            # Return first max_chars characters
-            return text[:max_chars] if text else ""
+            # Limit to max_chars
+            if len(clean_content) > max_chars:
+                clean_content = clean_content[:max_chars]
+                
+            logger.info(f"Scraped content: {len(clean_content)} characters")
+            return clean_content
             
         except Exception as e:
-            logger.error(f"Error scraping URL {url}: {e}")
+            logger.error(f"Error scraping content from {url}: {e}")
             return ""
 
     async def initialize(self):
@@ -150,7 +198,7 @@ class SentimentService:
         # Always scrape full content from URL if available
         if article_url:
             logger.info(f"Scraping full content from URL: {article_url}")
-            scraped_content = self.scrape_article_content(article_url, max_chars=10000)
+            scraped_content = self.scrape_article_content(article_url, max_chars=8000)
             if scraped_content:
                 content_to_analyze = scraped_content
                 logger.info(f"Using scraped content: {len(content_to_analyze)} characters")
@@ -159,8 +207,8 @@ class SentimentService:
         else:
             content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
         
-        # Apply 10K character limit to prevent token overflow
-        content_to_analyze = content_to_analyze[:10000] if content_to_analyze else f"{headline}\n\n{summary}"
+        # Apply 8K character limit to prevent token overflow
+        content_to_analyze = content_to_analyze[:8000] if content_to_analyze else f"{headline}\n\n{summary}"
 
         prompt = f"""
 Analyze the following news article about {ticker} and determine if it suggests a BUY, SELL, or HOLD signal based on the sentiment and potential market impact.
@@ -277,7 +325,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                         "content": prompt
                     }
                 ],
-                "temperature": 0.3,
+                "temperature": 0.0,
                 "max_tokens": 300,
                 "stream": False
             }

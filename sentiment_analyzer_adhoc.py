@@ -207,7 +207,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                         "content": prompt
                     }
                 ],
-                "temperature": 0.3,
+                "temperature": 0.0,
                 "max_tokens": 300,
                 "stream": False
             }

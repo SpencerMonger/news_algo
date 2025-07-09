@@ -13,10 +13,11 @@ import re
 import hashlib
 import time
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 import websockets
 from dotenv import load_dotenv
 from clickhouse_setup import ClickHouseManager
+from bs4 import BeautifulSoup
 
 # SENTIMENT ANALYSIS INTEGRATION
 from sentiment_service import analyze_articles_with_sentiment
@@ -260,6 +261,37 @@ class BenzingaWebSocketScraper:
                 logger.warning(f"⚠️ Invalid ticker format: '{ticker_string}'")
                 return None
 
+    def clean_html_content(self, html_content: str) -> str:
+        """Clean HTML content to plain text, similar to sentiment_analyzer scraping logic"""
+        if not html_content:
+            return ""
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.decompose()
+            
+            # Get text content
+            text = soup.get_text()
+            
+            # Clean up the content
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            clean_content = ' '.join(chunk for chunk in chunks if chunk)
+            
+            # Limit to 8000 characters to match sentiment service
+            if len(clean_content) > 8000:
+                clean_content = clean_content[:8000]
+            
+            return clean_content
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning HTML content: {e}")
+            # Fallback to basic text extraction
+            return re.sub(r'<[^>]+>', ' ', html_content).strip()[:8000]
+
     def process_benzinga_message(self, message_data: dict) -> List[Dict[str, Any]]:
         """Process a single Benzinga WebSocket message into article format (returns list of articles, one per ticker)"""
         try:
@@ -351,7 +383,7 @@ class BenzingaWebSocketScraper:
                     'published_utc': created_at,  # Store raw string as per schema
                     'article_url': url,
                     'summary': title,
-                    'full_content': body if body else title,  # Read entire article content
+                    'full_content': self.clean_html_content(body) if body else self.clean_html_content(title),  # Read entire article content
                     'detected_at': datetime.now(),
                     'processing_latency_ms': 0,
                     'market_relevant': 1,
