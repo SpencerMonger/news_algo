@@ -5,6 +5,9 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from clickhouse_setup import ClickHouseManager, setup_logging
+import re
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 
 # Initialize logging
 logger = setup_logging()
@@ -15,15 +18,60 @@ class SentimentAnalyzer:
         self.ch_manager = ClickHouseManager()
         self.ch_manager.connect()
         
+    def scrape_article_content(self, url: str, max_chars: int = 10000) -> str:
+        """Scrape article content from URL, limited to max_chars"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            # Extract content using BeautifulSoup for better parsing
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.decompose()
+            
+            # Get text content
+            text = soup.get_text()
+            
+            # Clean up text
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = ' '.join(chunk for chunk in chunks if chunk)
+            
+            # Return first max_chars characters
+            return text[:max_chars] if text else ""
+            
+        except Exception as e:
+            logger.error(f"Error scraping URL {url}: {e}")
+            return ""
+    
     def create_sentiment_prompt(self, article: Dict[str, Any]) -> str:
         """Create a prompt for sentiment analysis"""
         ticker = article.get('ticker', 'UNKNOWN')
         headline = article.get('headline', '')
         summary = article.get('summary', '')
         full_content = article.get('full_content', '')
+        article_url = article.get('article_url', '')
         
-        # Use full content if available, otherwise use summary and headline
-        content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
+        # Always scrape full content from URL if available
+        if article_url:
+            logger.info(f"Scraping full content from URL: {article_url}")
+            scraped_content = self.scrape_article_content(article_url, max_chars=10000)
+            if scraped_content:
+                content_to_analyze = scraped_content
+                logger.info(f"Using scraped content: {len(content_to_analyze)} characters")
+            else:
+                content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
+        else:
+            content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
+        
+        # Apply 10K character limit to prevent token overflow
+        content_to_analyze = content_to_analyze[:10000] if content_to_analyze else f"{headline}\n\n{summary}"
         
         prompt = f"""
 Analyze the following news article about {ticker} and determine if it suggests a BUY or SELL signal based on the sentiment and potential market impact.

@@ -451,7 +451,7 @@ class BenzingaProTester:
             
             return {
                 'title': title,
-                'content': content[:500],  # Limit content length
+                'content': content,  # Read entire article content
                 'url': url,
                 'tickers': tickers,
                 'extraction_method': 'beautifulsoup'

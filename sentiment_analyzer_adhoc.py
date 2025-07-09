@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from clickhouse_setup import ClickHouseManager, setup_logging
 import re
 from urllib.parse import urlparse
+from bs4 import BeautifulSoup # Added missing import for BeautifulSoup
 
 # Initialize logging
 logger = setup_logging()
@@ -37,17 +38,20 @@ class AdHocSentimentAnalyzer:
         try:
             # Common patterns in news URLs
             ticker_patterns = [
-                r'/([A-Z]{1,5})[-_]',  # Ticker followed by dash or underscore
-                r'/([A-Z]{1,5})\.',    # Ticker followed by dot
-                r'/([A-Z]{1,5})/',     # Ticker in path segment
-                r'ticker[=:]([A-Z]{1,5})',  # ticker=AAPL or ticker:AAPL
-                r'symbol[=:]([A-Z]{1,5})',  # symbol=AAPL
+                r'/([A-Z]{2,5})[-_]',  # Ticker followed by dash or underscore
+                r'/([A-Z]{2,5})\.',    # Ticker followed by dot
+                r'/([A-Z]{2,5})/',     # Ticker in path segment
+                r'ticker[=:]([A-Z]{2,5})',  # ticker=AAPL or ticker:AAPL
+                r'symbol[=:]([A-Z]{2,5})',  # symbol=AAPL
+                r'stock/([A-Z]{2,5})',  # stock/AAPL pattern
+                r'nasdaq[:/]([A-Z]{2,5})',  # nasdaq:EVOK or nasdaq/EVOK
+                r'nyse[:/]([A-Z]{2,5})',  # nyse:MSFT or nyse/MSFT
             ]
             
             for pattern in ticker_patterns:
-                match = re.search(pattern, url)
+                match = re.search(pattern, url, re.IGNORECASE)
                 if match:
-                    potential_ticker = match.group(1)
+                    potential_ticker = match.group(1).upper()
                     # Validate ticker (2-5 characters, all caps)
                     if 2 <= len(potential_ticker) <= 5:
                         return potential_ticker
@@ -69,11 +73,23 @@ class AdHocSentimentAnalyzer:
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             
-            # Basic content extraction (this could be enhanced with more sophisticated parsing)
-            html = response.text
+            # Extract content using BeautifulSoup for better parsing
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extract title
-            title_match = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.decompose()
+            
+            # Get text content
+            text = soup.get_text()
+            
+            # Clean up text
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = ' '.join(chunk for chunk in chunks if chunk)
+            
+            # Extract title for headline
+            title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
             headline = title_match.group(1).strip() if title_match else 'No title found'
             
             # Clean up headline
@@ -81,21 +97,40 @@ class AdHocSentimentAnalyzer:
             headline = headline.replace(' | GlobeNewswire', '')  # Remove common suffixes
             headline = headline.replace(' | Business Wire', '')
             headline = headline.replace(' | PR Newswire', '')
+            headline = headline.replace(' | Benzinga', '')
             
             # Extract meta description for summary
-            desc_match = re.search(r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            desc_match = re.search(r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']', response.text, re.IGNORECASE)
             summary = desc_match.group(1).strip() if desc_match else ''
             
-            # Try to extract main content (basic approach)
-            # Remove HTML tags for content analysis
-            content_clean = re.sub(r'<[^>]+>', ' ', html)
-            content_clean = re.sub(r'\s+', ' ', content_clean).strip()
+            # Try to extract ticker from HTML content first (more reliable than URL)
+            ticker = 'UNKNOWN'
             
-            # Take first 2000 characters as content sample
-            content_sample = content_clean[:2000] if content_clean else headline
+            # Look for ticker in HTML content (common patterns)
+            ticker_patterns = [
+                r'NASDAQ[:\s]*<[^>]*>([A-Z]{2,5})<',  # NASDAQ:<a>EVOK</a>
+                r'NYSE[:\s]*<[^>]*>([A-Z]{2,5})<',    # NYSE:<a>MSFT</a>
+                r'ticker["\s]*[>:]([A-Z]{2,5})[<"\s]',  # ticker">EVOK< or ticker:EVOK
+                r'symbol["\s]*[>:]([A-Z]{2,5})[<"\s]',  # symbol">EVOK< or symbol:EVOK
+                r'stock/([A-Z]{2,5})[#"\s]',          # stock/EVOK# or stock/EVOK"
+                r'\(([A-Z]{2,5}):\s*[A-Z]{2,5}\)',    # (NASDAQ: EVOK)
+                r'\(([A-Z]{2,5})\)',                  # (EVOK)
+            ]
             
-            # Extract ticker from URL
-            ticker = self.extract_ticker_from_url(url)
+            for pattern in ticker_patterns:
+                match = re.search(pattern, response.text, re.IGNORECASE)
+                if match:
+                    potential_ticker = match.group(1).upper()
+                    if 2 <= len(potential_ticker) <= 5:
+                        ticker = potential_ticker
+                        break
+            
+            # If no ticker found in HTML, try URL extraction
+            if ticker == 'UNKNOWN':
+                ticker = self.extract_ticker_from_url(url)
+            
+            # Simple 10K character limit - same as live system
+            content_sample = text[:10000] if text else headline
             
             article = {
                 'ticker': ticker,
@@ -125,29 +160,35 @@ class AdHocSentimentAnalyzer:
         summary = article.get('summary', '')
         full_content = article.get('full_content', '')
         
-        # Use full content if available, otherwise use summary and headline
+        # Use scraped content directly - same as live system
         content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
         
         prompt = f"""
-Analyze the following news article about {ticker} and determine if it suggests a BUY or SELL signal based on the sentiment and potential market impact.
+Analyze the following news article about {ticker} and determine if it suggests a BUY, SELL, or HOLD signal based on the sentiment and potential market impact.
 
 Article Content:
 {content_to_analyze}
 
 Instructions:
 1. Analyze the sentiment (positive, negative, neutral)
-2. Consider the potential market impact
-3. Provide a clear BUY or SELL recommendation
-4. Give a brief explanation (1-2 sentences)
+2. Consider the potential market impact on stock price
+3. Provide a clear recommendation:
+   - BUY: For positive sentiment with strong bullish indicators
+   - SELL: For negative sentiment with strong bearish indicators  
+   - HOLD: For neutral sentiment or unclear market impact
+4. Rate confidence as high, medium, or low
+5. Give a brief explanation (1-2 sentences)
 
-Respond in the following JSON format:
+Respond in this exact JSON format:
 {{
     "ticker": "{ticker}",
     "sentiment": "positive/negative/neutral",
-    "recommendation": "BUY/SELL",
+    "recommendation": "BUY/SELL/HOLD",
     "confidence": "high/medium/low",
     "explanation": "Brief explanation of your reasoning"
 }}
+
+Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL").
 """
         return prompt
         
@@ -252,7 +293,7 @@ Respond in the following JSON format:
             print(f"   Ticker: {ticker}")
             print(f"   Headline: {headline}")
             print(f"   Source: {article.get('source', 'Unknown')}")
-            print(f"   Content Length: {len(article.get('full_content', ''))} chars")
+            print(f"   Original Content: {len(article.get('full_content', ''))} chars")
             
             # Create prompt and analyze
             prompt = self.create_sentiment_prompt(article)

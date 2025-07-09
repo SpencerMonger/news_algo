@@ -351,7 +351,7 @@ class BenzingaWebSocketScraper:
                     'published_utc': created_at,  # Store raw string as per schema
                     'article_url': url,
                     'summary': title,
-                    'full_content': body[:500] if body else title,  # Limit body size
+                    'full_content': body if body else title,  # Read entire article content
                     'detected_at': datetime.now(),
                     'processing_latency_ms': 0,
                     'market_relevant': 1,
