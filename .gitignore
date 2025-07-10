@@ -97,3 +97,6 @@ backend/tests/data/
 data/
 temp/
 tmp/
+
+# LocalAI models and configuration files
+models/
