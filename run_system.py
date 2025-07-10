@@ -132,11 +132,11 @@ async def initialize_sentiment_service():
         
         if is_initialized:
             logging.info("✅ Sentiment analysis service initialized successfully")
-            logging.info("🤖 LM Studio connection established - AI analysis ready")
+            logging.info("🤖 Claude API connection established - AI analysis ready")
             return True
         else:
             logging.warning("⚠️ Sentiment analysis service failed to initialize")
-            logging.warning("🤖 LM Studio connection failed - sentiment analysis will be disabled")
+            logging.warning("🤖 Claude API connection failed - sentiment analysis will be disabled")
             return False
     
     except Exception as e:

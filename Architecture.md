@@ -4,6 +4,9 @@
 
 NewsHead is a high-performance real-time stock market news monitoring and price tracking system designed to achieve **sub-10-second** news-to-alert latency. The system implements a zero-lag architecture through process isolation, file-based triggers, and aggressive optimization techniques. The system now supports **dual news collection modes**: traditional web scraping and real-time WebSocket streaming via Benzinga's API.
 
+### Overview
+The NewsHead system includes a comprehensive sentiment analysis engine that analyzes news articles using Claude API before database insertion. This enables intelligent price alerts that only trigger when both price movements AND favorable sentiment conditions are met.
+
 ## Core Architecture Principles
 
 ### 1. Process Isolation Design
@@ -334,20 +337,21 @@ TTL timestamp + INTERVAL 30 DAY
 ## Sentiment Analysis Integration
 
 ### Overview
-The NewsHead system includes a comprehensive sentiment analysis engine that analyzes news articles using LM Studio's local AI models before database insertion. This enables intelligent price alerts that only trigger when both price movements AND favorable sentiment conditions are met.
+The NewsHead system includes a comprehensive sentiment analysis engine that analyzes news articles using Claude API before database insertion. This enables intelligent price alerts that only trigger when both price movements AND favorable sentiment conditions are met.
 
 ### Architecture Components
 
 #### `sentiment_service.py` - AI-Powered Sentiment Analysis Service
-**Purpose**: Real-time sentiment analysis of news articles using local LM Studio API
-**Technology**: LM Studio local AI models with async processing
+**Purpose**: Real-time sentiment analysis of news articles using Claude API
+**Technology**: Anthropic Claude 3.5 Sonnet API with async processing
 
 **Key Features**:
-- **Local AI Processing**: Uses LM Studio API for privacy and speed
-- **Batch Processing**: Analyzes multiple articles simultaneously
+- **Cloud AI Processing**: Uses Claude API for high-quality sentiment analysis
+- **Batch Processing**: Analyzes multiple articles simultaneously (up to 7 concurrent)
 - **Intelligent Caching**: Avoids re-analyzing identical content
-- **Fallback Handling**: Graceful degradation when AI analysis fails
+- **Fallback Handling**: Graceful degradation when API analysis fails
 - **Performance Tracking**: Detailed statistics and timing metrics
+- **Rate Limit Management**: Automatic retry with exponential backoff
 
 **Sentiment Analysis Workflow**:
 ```python
@@ -356,10 +360,12 @@ Article → Content Hash Check → AI Analysis → Response Parsing → Database
 ```
 
 **AI Model Integration**:
-- **API Endpoint**: `http://localhost:1234/v1/chat/completions`
-- **Model Type**: Local LM Studio model (configurable)
+- **API Endpoint**: `https://api.anthropic.com/v1/messages`
+- **Model Type**: Claude 3.5 Sonnet (claude-3-5-sonnet-20240620)
 - **Analysis Prompt**: Financial news sentiment analysis with BUY/SELL recommendations
 - **Response Format**: Structured JSON with sentiment, recommendation, confidence, and explanation
+- **Rate Limits**: 40,000 tokens/minute for high-throughput processing
+- **Concurrent Requests**: Up to 7 simultaneous API calls for optimal performance
 
 **Analysis Results Structure**:
 ```json
@@ -461,7 +467,7 @@ async def initialize_sentiment_service():
         # Get sentiment service instance
         service = await get_sentiment_service()
         
-        # Test connection to LM Studio
+        # Test connection to Claude API
         is_connected = await service.test_connection()
         
         if is_connected:
@@ -480,11 +486,13 @@ async def initialize_sentiment_service():
 ### Performance Characteristics
 
 #### Sentiment Analysis Performance
-- **Analysis Time**: ~1-3 seconds per article (depends on model size)
-- **Batch Processing**: Multiple articles analyzed in parallel
+- **Analysis Time**: ~2-5 seconds per article (depends on API latency)
+- **Batch Processing**: Multiple articles analyzed in parallel (up to 7 concurrent requests)
 - **Cache Hit Rate**: ~30-50% for similar content
 - **Fallback Time**: <100ms when analysis fails
-- **Memory Usage**: ~100MB additional for AI service
+- **Memory Usage**: ~50MB additional for API service (vs ~100MB for local AI)
+- **Rate Limits**: 40,000 tokens/minute (Claude 3.5 Sonnet)
+- **Concurrent Requests**: Up to 7 simultaneous API calls
 
 #### Database Impact
 - **Schema Enhancement**: Added 6 sentiment fields to `breaking_news` table
@@ -523,11 +531,12 @@ File Trigger → Price Check → Sentiment Lookup → Alert Decision → Databas
 
 #### Sentiment Service Configuration
 ```python
-# LM Studio API Configuration
-SENTIMENT_SERVICE_URL = "http://localhost:1234/v1/chat/completions"
-SENTIMENT_TIMEOUT = 30  # seconds
-SENTIMENT_BATCH_SIZE = 5  # articles per batch
-SENTIMENT_CACHE_SIZE = 1000  # cached analyses
+# Claude API Configuration
+CLAUDE_API_ENDPOINT = "https://api.anthropic.com/v1/messages"
+CLAUDE_MODEL = "claude-3-5-sonnet-20240620"
+CLAUDE_TIMEOUT = 180  # seconds
+CLAUDE_MAX_WORKERS = 7  # concurrent requests
+CLAUDE_CACHE_SIZE = 1000  # cached analyses
 ```
 
 #### Alert Threshold Configuration
@@ -546,7 +555,9 @@ SENTIMENT_LOOKBACK = 1  # hour (how far back to look for sentiment)
 - **Analysis Success Rate**: Percentage of successful analyses
 - **Average Analysis Time**: Time per article analysis
 - **Cache Hit Rate**: Percentage of cache hits vs new analyses
-- **AI Service Uptime**: Availability of LM Studio API
+- **Claude API Uptime**: Availability of Claude API service
+- **Rate Limit Hits**: Number of rate limit encounters
+- **API Response Time**: Average Claude API response latency
 
 #### Enhanced Alert Metrics
 - **Sentiment-Filtered Alerts**: Alerts triggered with sentiment conditions
@@ -668,346 +679,3 @@ File Trigger → Price Checker → API Call → Price Analysis → Alert Generat
 News Published → WebSocket Receive → Ticker Extract → Trigger Create → Price Check → Alert Generate
      0s               ~0.1s              ~0.2s          ~0.3s         ~2.5s        ~3-5s
 ```
-**Total WebSocket Latency**: 3-5 seconds
-
-**Web Scraper Mode**:
-```
-News Published → News Detected → Ticker Matched → Trigger Created → Price Checked → Alert Generated
-     0s              ~2s            ~2.5s          ~3s            ~5s           ~6-10s
-```
-**Total Web Scraper Latency**: 6-10 seconds
-
-## News Source Comparison
-
-| Feature | Web Scraper | Benzinga WebSocket |
-|---------|-------------|-------------------|
-| **Latency** | 6-10 seconds | 3-5 seconds |
-| **Data Quality** | Text parsing | Structured API data |
-| **Reliability** | Browser dependent | WebSocket connection |
-| **Resource Usage** | High (Chromium) | Low (WebSocket) |
-| **News Sources** | 4 newswire sites | Benzinga feed |
-| **Ticker Detection** | Regex patterns | API securities field |
-| **Cost** | Free | API key required |
-| **Freshness Filter** | 2-minute window | 2-minute window |
-| **Any Ticker Mode** | No | Yes (--any flag) |
-
-## File System Architecture
-
-### Trigger System
-```
-triggers/
-├── {TICKER}_{TIMESTAMP}.json     # Individual ticker triggers
-└── immediate_triggers/           # High-priority triggers
-```
-
-**Trigger File Format**:
-```json
-{
-  "ticker": "AAPL",
-  "timestamp": "2025-01-15T10:30:00",
-  "source": "Benzinga_WebSocket",  // or source website
-  "headline": "Apple Announces...",
-  "article_url": "https://..."
-}
-```
-
-### Data Files
-```
-data_files/
-└── FV_master_u50float_u10price.csv  # Ticker universe from Finviz
-```
-
-### Log Files
-```
-logs/
-├── run_system.log.{date}         # Main system logs
-├── articles/                     # Article tracking
-├── clickhouse_operations.log     # Database logs
-└── price_checker.log            # Price monitoring logs
-```
-
-## Configuration Management
-
-### Environment Variables (.env)
-```bash
-# ClickHouse Database
-CLICKHOUSE_HOST=localhost
-CLICKHOUSE_PORT=8123
-CLICKHOUSE_USER=default
-CLICKHOUSE_PASSWORD=your_password
-
-# Finviz Elite (optional)
-FINVIZ_EMAIL=your_email@example.com
-FINVIZ_PASSWORD=your_password
-
-# Polygon API
-POLYGON_API_KEY=your_api_key
-PROXY_URL=your_proxy_url  # Optional
-
-# Benzinga WebSocket API (NEW)
-BENZINGA_API_KEY=your_benzinga_api_key_here
-
-# LM Studio API for Sentiment Analysis (NEW)
-LM_STUDIO_URL=http://localhost:1234/v1/chat/completions
-LM_STUDIO_TIMEOUT=30  # seconds
-LM_STUDIO_BATCH_SIZE=5  # articles per batch
-LM_STUDIO_CACHE_SIZE=1000  # cached analyses
-
-# Performance Tuning
-CHECK_INTERVAL=1
-MAX_AGE_SECONDS=90
-BATCH_SIZE=50
-LOG_LEVEL=INFO
-```
-
-## Performance Optimizations
-
-### Latency Improvements
-| Component | Web Scraper | WebSocket | Improvement |
-|-----------|-------------|-----------|-------------|
-| News Buffer | 0.5s | 0.25s | **2x faster** |
-| News Detection | 2-5s | 0.1-0.5s | **10x faster** |
-| Ticker Extraction | Regex parsing | Structured data | **Instant** |
-| Overall Latency | 6-10s | 3-5s | **2x faster** |
-
-### Resource Usage Optimization
-| Resource | Web Scraper | WebSocket | Improvement |
-|----------|-------------|-----------|-------------|
-| CPU Usage | High (Chromium) | Low (WebSocket) | **10x lower** |
-| Memory Usage | ~500MB | ~50MB | **10x lower** |
-| Network | HTTP requests | Persistent connection | **More efficient** |
-| Dependencies | Playwright, Chromium | websockets only | **Simpler** |
-
-### API Performance
-- **WebSocket**: Persistent connection, sub-second message delivery
-- **Structured Data**: No regex processing overhead
-- **Bulk Operations**: Parallel ticker processing maintained
-- **Timeout Optimization**: Matches polling interval
-- **Proxy Support**: Available for both modes
-
-## Deployment Architecture
-
-### System Requirements
-- **Python 3.8+**
-- **ClickHouse Server** (running and accessible)
-- **LM Studio** (for sentiment analysis) - Local AI model server
-- **Chromium Browser** (via Playwright) - Web Scraper mode only
-- **WebSocket Support** - WebSocket mode only
-- **4GB+ RAM** (Web Scraper) / **1GB+ RAM** (WebSocket) / **8GB+ RAM** (with sentiment analysis)
-- **2+ CPU cores** (recommended) / **4+ CPU cores** (with AI sentiment analysis)
-
-### Process Architecture
-```
-┌─────────────────────────────────────────┐
-│              Host System                │
-│                                         │
-│  ┌─────────────────────────────────────┐ │
-│  │         Main Process                │ │
-│  │  ┌─────────────────────────────────┐ │ │
-│  │  │      run_system.py              │ │ │
-│  │  │  ┌─────────────────────────────┐ │ │ │
-│  │  │  │   News Monitor              │ │ │ │
-│  │  │  │ ┌─────────────────────────┐ │ │ │ │
-│  │  │  │ │ web_scraper.py          │ │ │ │ │
-│  │  │  │ │ (Chromium Browser)      │ │ │ │ │
-│  │  │  │ └─────────────────────────┘ │ │ │ │
-│  │  │  │           OR                │ │ │ │
-│  │  │  │ ┌─────────────────────────┐ │ │ │ │
-│  │  │  │ │ benzinga_websocket.py   │ │ │ │ │
-│  │  │  │ │ (WebSocket Client)      │ │ │ │ │
-│  │  │  │ └─────────────────────────┘ │ │ │ │
-│  │  │  └─────────────────────────────┘ │ │
-│  │  └─────────────────────────────────┘ │
-│  └─────────────────────────────────────┘ │
-│                                         │
-│  ┌─────────────────────────────────────┐ │
-│  │       Isolated Process              │ │
-│  │  ┌─────────────────────────────────┐ │ │
-│  │  │     price_checker.py            │ │ │
-│  │  │   (Polygon API Client)          │ │ │
-│  │  └─────────────────────────────────┘ │ │
-│  └─────────────────────────────────────┘ │
-│                                         │
-│  ┌─────────────────────────────────────┐ │
-│  │       ClickHouse Database           │ │
-│  │  ┌─────────────────────────────────┐ │ │
-│  │  │     News Schema                 │ │ │
-│  │  │  • breaking_news               │ │ │
-│  │  │  • price_tracking              │ │ │
-│  │  │  • news_alert                  │ │ │
-│  │  │  • float_list                  │ │ │
-│  │  │  └─────────────────────────────────┘ │ │
-│  │  └─────────────────────────────────────┘ │
-│  └─────────────────────────────────────────┘
-```
-
-## Usage Examples
-
-### WebSocket Mode (Recommended for Speed)
-```bash
-# Real-time WebSocket with database ticker filtering
-python run_system.py --socket
-
-# WebSocket with any ticker processing (bypass database filter)
-python run_system.py --socket --any
-
-# WebSocket with old news processing for testing
-python run_system.py --socket --enable-old
-
-# Skip ticker list update and use WebSocket
-python run_system.py --socket --skip-list
-```
-
-### Web Scraper Mode (Traditional)
-```bash
-# Traditional web scraping (default)
-python run_system.py
-
-# Web scraper with old news processing
-python run_system.py --enable-old
-
-# Skip ticker list update and use web scraper
-python run_system.py --skip-list
-```
-
-### Standalone Testing
-```bash
-# Test Benzinga WebSocket directly
-python benzinga_websocket.py --any --duration 5
-
-# Test web scraper directly  
-python web_scraper.py --enable-old
-```
-
-## Error Handling and Resilience
-
-### WebSocket-Specific Error Handling
-- **Connection Failures**: Automatic reconnection with exponential backoff
-- **Message Parsing**: Graceful handling of malformed JSON
-- **API Rate Limits**: Built-in respect for API limitations
-- **Authentication Issues**: Clear error messages for API key problems
-
-### Graceful Degradation
-- **API Failures**: Multiple fallback strategies for price data
-- **Browser Crashes**: Automatic restart and recovery (Web Scraper mode)
-- **WebSocket Disconnections**: Auto-reconnection with state preservation
-- **Database Issues**: Local buffering and retry logic
-- **Network Issues**: Timeout handling and reconnection
-
-### Monitoring and Alerting
-- **Performance Stats**: Real-time processing metrics for both modes
-- **Error Tracking**: Comprehensive error logging with mode-specific details
-- **Health Checks**: System component status monitoring
-- **Resource Monitoring**: CPU, memory, and network usage
-
-## Development Patterns
-
-### Async/Await Pattern
-- **Concurrent Processing**: All I/O operations use async/await
-- **Parallel Tasks**: Multiple news sources and price checks
-- **Resource Management**: Proper cleanup with context managers
-
-### WebSocket Pattern
-```python
-async def websocket_listener(self):
-    while self.is_running:
-        try:
-            if not self.websocket:
-                await self.connect_websocket()
-            
-            message = await self.websocket.recv()
-            articles = self.process_benzinga_message(json.loads(message))
-            
-            if articles:
-                self.batch_queue.extend(articles)
-                
-        except websockets.exceptions.ConnectionClosed:
-            self.websocket = None
-            await asyncio.sleep(5)  # Reconnection delay
-```
-
-### Error Handling Pattern
-```python
-try:
-    # Operation
-    result = await operation()
-except SpecificException as e:
-    logger.error(f"Specific error: {e}")
-    # Specific handling
-except Exception as e:
-    logger.error(f"General error: {e}")
-    # General handling
-finally:
-    # Cleanup
-    await cleanup()
-```
-
-### Logging Pattern
-```python
-logger.info(f"Operation started: {context}")
-try:
-    result = await operation()
-    logger.info(f"Operation completed: {result}")
-except Exception as e:
-    logger.error(f"Operation failed: {e}")
-    raise
-```
-
-## Testing and Debugging
-
-### Debug Modes
-- `--enable-old`: Process historical news for testing (both modes)
-- `--skip-list`: Skip ticker list updates for faster startup
-- `--socket`: Use WebSocket mode instead of web scraper
-- `--any`: Process any ticker symbols (WebSocket mode only)
-- Debug logging levels for detailed operation tracking
-
-### Testing Components
-- `test_benzinga_websocket.py`: WebSocket connection and message testing
-- `debug_*.py` files for specific component testing
-- `check_db.py` for database validation
-- Individual component testing via direct execution
-
-### WebSocket Testing
-```bash
-# Test WebSocket connection and messages
-python testfiles/test_benzinga_websocket.py --duration 5
-
-# Test WebSocket with any ticker processing
-python benzinga_websocket.py --any --duration 10
-```
-
-## Legacy Components
-
-### `old_code/` Directory
-Contains previous implementations and experimental code:
-- `news_sources_scraper.py`: Original scraping implementation
-- `price_check.py`: Legacy price checking logic
-- `main_trigger.py`: Original trigger system
-
-These are kept for reference but not used in production.
-
-## Future Enhancements
-
-### Planned Improvements
-1. **Multiple WebSocket Sources**: Add more real-time news APIs
-2. **Machine Learning Integration**: News sentiment analysis
-3. **Advanced Alerting**: Webhook and notification systems
-4. **Real-time Dashboard**: Web-based monitoring interface
-5. **Multi-Exchange Support**: Expand beyond US markets
-6. **High Availability**: Clustering and failover support
-
-### WebSocket Enhancements
-1. **Message Filtering**: Server-side filtering by ticker or sector
-2. **Multiple Connections**: Parallel WebSocket connections for redundancy
-3. **Custom Channels**: Subscribe to specific news channels
-4. **Rate Limiting**: Smart throttling for high-volume periods
-
-### Scalability Considerations
-- **Horizontal Scaling**: Multiple scraper instances
-- **Database Sharding**: Partition by ticker or time
-- **Caching Layer**: Redis for frequently accessed data
-- **Load Balancing**: Distribute API calls across proxies
-- **WebSocket Clustering**: Multiple WebSocket connections with load balancing
-
-This architecture document provides a comprehensive overview of the NewsHead system, including the new Benzinga WebSocket functionality that enables ultra-low latency news monitoring. The dual-mode architecture allows users to choose between traditional web scraping and real-time WebSocket streaming based on their latency requirements, resource constraints, and API access. 

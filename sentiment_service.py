@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Sentiment Analysis Service - Integrated into NewsHead Pipeline
-Analyzes articles before database insertion using LM Studio
+Analyzes articles before database insertion using Claude API
 """
 
 import asyncio
@@ -9,6 +9,7 @@ import logging
 import requests
 import json
 import time
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 import aiohttp
@@ -16,6 +17,10 @@ from concurrent.futures import ThreadPoolExecutor
 import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -28,12 +33,17 @@ class SentimentService:
     """
     Sentiment analysis service for real-time article analysis
     Designed to be integrated into the news pipeline
+    Uses Claude API for sentiment analysis
     """
     
-    def __init__(self, lm_studio_url: str = "http://localhost:1234/v1/chat/completions"):
-        self.lm_studio_url = lm_studio_url
+    def __init__(self, claude_api_key: str = None):
+        # Claude API configuration
+        self.claude_endpoint = "https://api.anthropic.com/v1/messages"
+        self.api_key = claude_api_key or os.getenv('ANTHROPIC_API_KEY')
+        self.model = "claude-3-5-sonnet-20240620"  # Updated model with higher rate limits
+        
         self.session = None
-        self.executor = ThreadPoolExecutor(max_workers=5)  # Limit concurrent requests
+        self.executor = ThreadPoolExecutor(max_workers=7)  # Optimized for Claude API
         
         # Sentiment cache to avoid re-analyzing identical content
         self.sentiment_cache: Dict[str, Dict[str, Any]] = {}
@@ -130,24 +140,36 @@ class SentimentService:
     async def initialize(self):
         """Initialize the sentiment service"""
         try:
-            # Create aiohttp session for async requests
-            timeout = aiohttp.ClientTimeout(total=30, connect=5)
+            # Check API key
+            if not self.api_key:
+                logger.error("❌ ANTHROPIC_API_KEY not found in environment variables")
+                logger.error("❌ Please add ANTHROPIC_API_KEY=your_key_here to your .env file")
+                return False
+            
+            # Create aiohttp session for async requests with generous timeouts for Claude API
+            timeout = aiohttp.ClientTimeout(total=180, connect=30)
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=aiohttp.TCPConnector(
                     limit=10,
-                    limit_per_host=5,
+                    limit_per_host=7,  # Match max_workers
                     ttl_dns_cache=300
-                )
+                ),
+                headers={
+                    'anthropic-version': '2023-06-01',
+                    'x-api-key': self.api_key,
+                    'content-type': 'application/json'
+                }
             )
             
             # Test connection
             is_connected = await self.test_connection()
             if not is_connected:
-                logger.error("❌ Failed to connect to LM Studio - sentiment analysis will be disabled")
+                logger.error("❌ Failed to connect to Claude API - sentiment analysis will be disabled")
                 return False
             
-            logger.info("✅ Sentiment Analysis Service initialized successfully")
+            logger.info("✅ Claude API Sentiment Analysis Service initialized successfully")
+            logger.info(f"🤖 Using model: {self.model}")
             return True
             
         except Exception as e:
@@ -155,36 +177,38 @@ class SentimentService:
             return False
     
     async def test_connection(self) -> bool:
-        """Test connection to LM Studio API"""
+        """Test connection to Claude API"""
         try:
+            logger.info("🔍 Testing Claude API connection...")
+            
             test_payload = {
-                "model": "local-model",
+                "model": self.model,
+                "max_tokens": 20,
                 "messages": [
                     {
                         "role": "user",
                         "content": "Respond with just: {'status': 'connected'}"
                     }
-                ],
-                "temperature": 0.1,
-                "max_tokens": 20,
-                "stream": False
+                ]
             }
             
             async with self.session.post(
-                self.lm_studio_url,
-                json=test_payload,
-                headers={"Content-Type": "application/json"}
+                self.claude_endpoint,
+                json=test_payload
             ) as response:
                 
                 if response.status == 200:
-                    logger.info("✅ LM Studio connection successful")
+                    response_data = await response.json()
+                    content = response_data.get('content', [{}])[0].get('text', '')
+                    logger.info(f"✅ Claude API connection successful - Response: {content}")
                     return True
                 else:
-                    logger.error(f"❌ LM Studio connection failed: {response.status}")
+                    response_text = await response.text()
+                    logger.error(f"❌ Claude API connection failed: {response.status} - {response_text}")
                     return False
                     
         except Exception as e:
-            logger.error(f"❌ LM Studio connection test failed: {e}")
+            logger.error(f"❌ Claude API connection test failed: {e}")
             return False
     
     def create_sentiment_prompt(self, article: Dict[str, Any]) -> str:
@@ -257,9 +281,9 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             # Create prompt
             prompt = self.create_sentiment_prompt(article)
             
-            # Analyze with LM Studio
+            # Analyze with Claude API
             start_time = time.time()
-            analysis_result = await self.query_lm_studio_async(prompt)
+            analysis_result = await self.query_claude_api_async(prompt)
             analysis_time = time.time() - start_time
             
             if analysis_result and 'error' not in analysis_result:
@@ -310,55 +334,97 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 'error': str(e)
             }
     
-    async def query_lm_studio_async(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """Send async request to LM Studio API"""
-        try:
-            payload = {
-                "model": "local-model",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a financial analyst expert at analyzing news sentiment and its impact on stock prices. Always respond with valid JSON."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                "temperature": 0.0,
-                "max_tokens": 300,
-                "stream": False
-            }
-            
-            async with self.session.post(
-                self.lm_studio_url,
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            ) as response:
+    async def query_claude_api_async(self, prompt: str, max_retries: int = 2) -> Optional[Dict[str, Any]]:
+        """Send async request to Claude API with rate limit handling"""
+        for attempt in range(max_retries + 1):
+            try:
+                payload = {
+                    "model": self.model,
+                    "max_tokens": 300,
+                    "temperature": 0.0,  # Consistent results
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"You are a financial analyst expert at analyzing news sentiment and its impact on stock prices. Always respond with valid JSON.\n\n{prompt}"
+                        }
+                    ]
+                }
                 
-                if response.status == 200:
-                    response_data = await response.json()
-                    content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                async with self.session.post(self.claude_endpoint, json=payload) as response:
                     
-                    # Try to parse JSON from the response
-                    try:
-                        # Clean up the response if it has markdown code blocks
-                        if '```json' in content:
-                            content = content.split('```json')[1].split('```')[0].strip()
-                        elif '```' in content:
-                            content = content.split('```')[1].strip()
+                    if response.status == 200:
+                        response_data = await response.json()
                         
-                        return json.loads(content)
-                    except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse JSON response: {content}")
-                        return {"error": "Invalid JSON response", "raw_response": content}
-                else:
-                    logger.error(f"LM Studio API error: {response.status}")
-                    return {"error": f"API error: {response.status}"}
+                        # Extract content from Claude response
+                        if response_data.get("content") and len(response_data["content"]) > 0:
+                            content = response_data["content"][0]["text"]
+                            
+                            # Check for empty content
+                            if not content or content.strip() == "":
+                                logger.warning(f"⚠️ Claude API returned empty content!")
+                                return {"error": "Empty response from Claude API"}
+                            
+                            # Clean up JSON if wrapped in markdown
+                            content = self.clean_json_from_markdown(content)
+                            
+                            # Parse JSON
+                            try:
+                                parsed_result = json.loads(content)
+                                return parsed_result
+                            except json.JSONDecodeError as e:
+                                logger.error(f"❌ JSON parsing failed: {e}")
+                                logger.error(f"❌ Raw content: {repr(content)}")
+                                return {"error": f"JSON parsing failed: {str(e)}", "raw_response": content}
+                        else:
+                            logger.error(f"❌ No content in Claude response!")
+                            return {"error": "No content in response"}
                     
-        except Exception as e:
-            logger.error(f"Request to LM Studio failed: {e}")
-            return {"error": f"Request failed: {str(e)}"}
+                    elif response.status == 429:
+                        # Rate limit error - retry with exponential backoff
+                        if attempt < max_retries:
+                            wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
+                            logger.warning(f"⚠️ Rate limit hit (attempt {attempt + 1}/{max_retries + 1}), waiting {wait_time}s before retry...")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            response_text = await response.text()
+                            logger.error(f"❌ Rate limit exceeded after {max_retries + 1} attempts")
+                            return {"error": f"Rate limit exceeded: {response_text}"}
+                    
+                    else:
+                        response_text = await response.text()
+                        logger.error(f"❌ Claude API HTTP {response.status} error: {response_text}")
+                        return {"error": f"HTTP {response.status}: {response_text}"}
+                        
+            except Exception as e:
+                if attempt < max_retries:
+                    wait_time = (2 ** attempt) * 1  # 1s, 2s, 4s
+                    logger.warning(f"⚠️ Request failed (attempt {attempt + 1}/{max_retries + 1}): {e}, waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"❌ Request failed after {max_retries + 1} attempts: {e}")
+                    return {"error": str(e)}
+        
+        return {"error": "Max retries exceeded"}
+    
+    def clean_json_from_markdown(self, content: str) -> str:
+        """Extract JSON from markdown code blocks"""
+        # Remove markdown code blocks
+        if '```json' in content:
+            # Extract content between ```json and ```
+            start = content.find('```json') + 7
+            end = content.find('```', start)
+            if end != -1:
+                return content[start:end].strip()
+        elif '```' in content:
+            # Extract content between ``` and ```
+            start = content.find('```') + 3
+            end = content.find('```', start)
+            if end != -1:
+                return content[start:end].strip()
+        
+        return content.strip()
     
     async def analyze_batch_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -368,7 +434,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         if not articles:
             return articles
         
-        logger.info(f"🧠 SENTIMENT ANALYSIS: Processing batch of {len(articles)} articles")
+        logger.info(f"🧠 SENTIMENT ANALYSIS (CLAUDE API): Processing batch of {len(articles)} articles")
         
         # Process articles in parallel (limited by ThreadPoolExecutor)
         analysis_tasks = [self.analyze_article_sentiment(article) for article in articles]
