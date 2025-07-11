@@ -30,10 +30,10 @@ class FinvizScraper:
         self.password = os.getenv('FINVIZ_PASSWORD', '')
         
         # Screener URLs for low float stocks - split into two URLs to capture all tickers
-        # First URL: price under $4
-        self.screener_url_1 = "https://elite.finviz.com/screener.ashx?v=111&f=sec_healthcare|technology|industrials|consumerdefensive|communicationservices|energy|consumercyclical|basicmaterials,sh_float_u50,sh_price_u4&ft=4"
-        # Second URL: price $4 to $10  
-        self.screener_url_2 = "https://elite.finviz.com/screener.ashx?v=111&f=sec_healthcare|technology|industrials|consumerdefensive|communicationservices|energy|consumercyclical|basicmaterials,sh_float_u50,sh_price_4to10&ft=4"
+        # First URL: price under $3
+        self.screener_url_1 = "https://elite.finviz.com/screener.ashx?v=111&f=geo_usa|asia|latinamerica|argentina|china|denmark|france|greece|hungary|india|ireland|italy|jordan|philippines|russia|spain|switzerland|thailand|unitedarabemirates|europe|bric|australia|belgium|bermuda|canada|chile|chinahongkong|cyprus|brazil|benelux|colombia|luxembourg|malta|monaco|newzealand|panama|southafrica|uruguay|vietnam|unitedkingdom|turkey|taiwan|sweden|southkorea|singapore|portugal|peru|norway|netherlands|mexico|malaysia|kazakhstan|japan|israel|indonesia|iceland|hongkong|germany|finland,sec_healthcare|technology|industrials|consumerdefensive|communicationservices|energy|consumercyclical|basicmaterials,sh_float_u100,sh_price_u3&ft=4"
+        # Second URL: price $3 to $10  
+        self.screener_url_2 = "https://elite.finviz.com/screener.ashx?v=111&f=geo_usa|asia|latinamerica|argentina|china|denmark|france|greece|hungary|india|ireland|italy|jordan|philippines|russia|spain|switzerland|thailand|unitedarabemirates|europe|bric|australia|belgium|bermuda|canada|chile|chinahongkong|cyprus|brazil|benelux|colombia|luxembourg|malta|monaco|newzealand|panama|southafrica|uruguay|vietnam|unitedkingdom|turkey|taiwan|sweden|southkorea|singapore|portugal|peru|norway|netherlands|mexico|malaysia|kazakhstan|japan|israel|indonesia|iceland|hongkong|germany|finland,sec_healthcare|technology|industrials|consumerdefensive|communicationservices|energy|consumercyclical|basicmaterials,sh_float_u100,sh_price_3to10&ft=4"
         
         # Browser headers to avoid detection
         self.headers = {
@@ -271,8 +271,8 @@ class FinvizScraper:
         
         # URLs to scrape
         screener_urls = [
-            ("price under $4", self.screener_url_1),
-            ("price $4 to $10", self.screener_url_2)
+            ("price under $3", self.screener_url_1),
+            ("price $3 to $10", self.screener_url_2)
         ]
         
         # Scrape both URLs sequentially

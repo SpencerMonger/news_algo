@@ -603,9 +603,9 @@ This sentiment analysis integration transforms NewsHead from a simple news monit
 **Technology**: aiohttp with BeautifulSoup parsing
 
 **Screening Criteria**:
-- **Geographic**: USA only
+- **Geographic**: Global (USA, Asia, Latin America, Europe, BRIC countries, and many other regions)
 - **Sectors**: Healthcare, Technology, Industrials, Consumer, Communications, Energy, Basic Materials
-- **Float**: Under 50M shares
+- **Float**: Under 100M shares
 - **Price**: Under $10
 
 **Features**:
