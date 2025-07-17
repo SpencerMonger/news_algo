@@ -105,7 +105,7 @@ fi
 
 # NEW: Also check for any other newshead-related Python processes
 echo "$(date) [UTC]: Checking for any other newshead-related processes" >> "$LOG_FILE"
-other_newshead_pids=$(pgrep -f "python.*" | xargs -I {} sh -c 'ps -p {} -o pid,cmd --no-headers' | grep -E "(web_scraper|news|newshead)" | grep -v "kill_newshead" | awk '{print $1}')
+other_newshead_pids=$(pgrep -f "python.*" | xargs -I {} sh -c 'ps -p {} -o pid,cmd --no-headers' | grep -E "(web_scraper|newshead)" | grep -v "kill_newshead" | awk '{print $1}')
 if [ ! -z "$other_newshead_pids" ]; then
     echo "$(date) [UTC]: Found other newshead-related processes: $other_newshead_pids" >> "$LOG_FILE"
     echo "$(date) [UTC]: Attempting to terminate other newshead processes" >> "$LOG_FILE"
