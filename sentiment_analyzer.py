@@ -8,25 +8,92 @@ from clickhouse_setup import ClickHouseManager, setup_logging
 import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+import aiohttp
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Initialize logging
 logger = setup_logging()
 
 class SentimentAnalyzer:
-    def __init__(self, lm_studio_url: str = "http://localhost:1234/v1/chat/completions"):
-        self.lm_studio_url = lm_studio_url
+    def __init__(self):
+        # Claude API configuration
+        self.claude_endpoint = "https://api.anthropic.com/v1/messages"
+        self.api_key = os.getenv('ANTHROPIC_API_KEY')
+        self.model = "claude-3-5-sonnet-20240620"
+        
         self.ch_manager = ClickHouseManager()
         self.ch_manager.connect()
-        
-    def scrape_article_content(self, url: str, max_chars: int = 8000) -> str:
+        self.session = None
+    
+    async def _ensure_session(self):
+        """Ensure aiohttp session is initialized"""
+        if not self.session:
+            timeout = aiohttp.ClientTimeout(total=180, connect=30)
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(
+                    limit=10,
+                    limit_per_host=7,
+                    ttl_dns_cache=300
+                ),
+                headers={
+                    'anthropic-version': '2023-06-01',
+                    'x-api-key': self.api_key,
+                    'content-type': 'application/json'
+                }
+            )
+    
+    def scrape_article_content(self, url: str, max_chars: int = 6000) -> str:
         """Scrape article content from URL, limited to max_chars"""
         try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
+            # Multiple User-Agent headers to try
+            user_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0'
+            ]
             
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
+            response = None
+            for i, user_agent in enumerate(user_agents):
+                try:
+                    headers = {
+                        'User-Agent': user_agent,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1'
+                    }
+                    
+                    response = requests.get(url, headers=headers, timeout=15)
+                    response.raise_for_status()
+                    logger.info(f"✅ Successfully fetched with User-Agent #{i+1}")
+                    break
+                    
+                except requests.exceptions.HTTPError as e:
+                    if i == len(user_agents) - 1:  # Last attempt
+                        logger.error(f"❌ All User-Agent attempts failed. Last error: {e}")
+                        raise
+                    else:
+                        logger.warning(f"⚠️ User-Agent #{i+1} failed ({e.response.status_code}), trying next...")
+                        continue
+                except Exception as e:
+                    if i == len(user_agents) - 1:  # Last attempt
+                        logger.error(f"❌ All User-Agent attempts failed. Last error: {e}")
+                        raise
+                    else:
+                        logger.warning(f"⚠️ User-Agent #{i+1} failed ({e}), trying next...")
+                        continue
+            
+            if not response:
+                logger.error("❌ Failed to fetch URL with any User-Agent")
+                return ""
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -34,53 +101,33 @@ class SentimentAnalyzer:
             for script in soup(["script", "style"]):
                 script.decompose()
             
-            # Try to extract article content specifically for Benzinga
+            # Site-specific extraction methods
             article_content = ""
+            domain = urlparse(url).netloc.lower()
             
-            if 'benzinga.com' in url:
-                # Target Benzinga's article paragraph structure
-                article_paragraphs = soup.find_all('p')
-                content_paragraphs = []
+            # Benzinga-specific extraction
+            if 'benzinga.com' in domain:
+                article_content = self._extract_benzinga_content(soup)
                 
-                for p in article_paragraphs:
-                    # Check if paragraph is in article content container
-                    if p.parent and p.parent.get('class'):
-                        parent_classes = p.parent.get('class', [])
-                        # Look for the specific classes that contain article content
-                        if any('cAazyy' in str(cls) or 'dIYChw' in str(cls) for cls in parent_classes):
-                            text = p.get_text().strip()
-                            if len(text) > 20:  # Only substantial paragraphs
-                                content_paragraphs.append(text)
+            # BusinessWire-specific extraction
+            elif 'businesswire.com' in domain:
+                article_content = self._extract_businesswire_content(soup)
                 
-                article_content = ' '.join(content_paragraphs)
-            
-            # Fallback to general content extraction if specific method fails
+            # PR Newswire-specific extraction
+            elif 'prnewswire.com' in domain:
+                article_content = self._extract_prnewswire_content(soup)
+                
+            # Yahoo Finance-specific extraction
+            elif 'finance.yahoo.com' in domain:
+                article_content = self._extract_yahoo_finance_content(soup)
+                
+            # MarketWatch-specific extraction
+            elif 'marketwatch.com' in domain:
+                article_content = self._extract_marketwatch_content(soup)
+                
+            # Generic fallback for other sites
             if not article_content or len(article_content) < 100:
-                # Try common article selectors
-                selectors_to_try = [
-                    'article',
-                    '.article-content',
-                    '.story-body',
-                    '.post-content',
-                    '.content',
-                    '.article-body',
-                    '[data-module="ArticleBody"]',
-                    '.article-wrap',
-                    '.entry-content'
-                ]
-                
-                for selector in selectors_to_try:
-                    elements = soup.select(selector)
-                    if elements:
-                        article_content = elements[0].get_text()
-                        break
-                
-                # Final fallback to full page text (original method)
-                if not article_content:
-                    text = soup.get_text()
-                    lines = (line.strip() for line in text.splitlines())
-                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                    article_content = ' '.join(chunk for chunk in chunks if chunk)
+                article_content = self._extract_generic_content(soup)
             
             # Clean up the content
             lines = (line.strip() for line in article_content.splitlines())
@@ -91,12 +138,128 @@ class SentimentAnalyzer:
             if len(clean_content) > max_chars:
                 clean_content = clean_content[:max_chars]
                 
-            logger.info(f"Scraped content: {len(clean_content)} characters")
+            logger.info(f"Scraped content: {len(clean_content)} characters from {domain}")
             return clean_content
             
         except Exception as e:
             logger.error(f"Error scraping content from {url}: {e}")
             return ""
+    
+    def _extract_benzinga_content(self, soup) -> str:
+        """Extract content specifically from Benzinga articles"""
+        article_paragraphs = soup.find_all('p')
+        content_paragraphs = []
+        
+        for p in article_paragraphs:
+            if p.parent and p.parent.get('class'):
+                parent_classes = p.parent.get('class', [])
+                if any('cAazyy' in str(cls) or 'dIYChw' in str(cls) for cls in parent_classes):
+                    text = p.get_text().strip()
+                    if len(text) > 20:
+                        content_paragraphs.append(text)
+        
+        return ' '.join(content_paragraphs)
+    
+    def _extract_businesswire_content(self, soup) -> str:
+        """Extract content specifically from BusinessWire articles"""
+        # Try multiple BusinessWire-specific selectors
+        selectors = [
+            'div[data-module="ArticleBody"]',
+            '.bw-release-main',
+            '.bw-release-body',
+            'div.bw-release-story',
+            'div[id="releaseText"]',
+            'div.release-body'
+        ]
+        
+        for selector in selectors:
+            elements = soup.select(selector)
+            if elements:
+                return elements[0].get_text()
+        
+        return ""
+    
+    def _extract_prnewswire_content(self, soup) -> str:
+        """Extract content specifically from PR Newswire articles"""
+        selectors = [
+            'div[data-module="ArticleBody"]',
+            '.release-body',
+            'div.col-lg-10.col-md-10.col-sm-12.col-xs-12',
+            'section.release-body',
+            'div.row.release-body'
+        ]
+        
+        for selector in selectors:
+            elements = soup.select(selector)
+            if elements:
+                return elements[0].get_text()
+        
+        return ""
+    
+    def _extract_yahoo_finance_content(self, soup) -> str:
+        """Extract content specifically from Yahoo Finance articles"""
+        selectors = [
+            'div[data-module="ArticleBody"]',
+            '.caas-body',
+            'div.caas-body',
+            'div[data-module="FinanceArticleBody"]',
+            '.finance-article-body'
+        ]
+        
+        for selector in selectors:
+            elements = soup.select(selector)
+            if elements:
+                return elements[0].get_text()
+        
+        return ""
+    
+    def _extract_marketwatch_content(self, soup) -> str:
+        """Extract content specifically from MarketWatch articles"""
+        selectors = [
+            'div[data-module="ArticleBody"]',
+            '.article__body',
+            'div.article-body',
+            'div.entry-content',
+            'div.article-wrap'
+        ]
+        
+        for selector in selectors:
+            elements = soup.select(selector)
+            if elements:
+                return elements[0].get_text()
+        
+        return ""
+    
+    def _extract_generic_content(self, soup) -> str:
+        """Generic content extraction for unknown sites"""
+        # Try common article selectors
+        selectors_to_try = [
+            'article',
+            'div[data-module="ArticleBody"]',
+            '.article-content',
+            '.story-body',
+            '.post-content',
+            '.content',
+            '.article-body',
+            '.article-wrap',
+            '.entry-content',
+            'main',
+            '.main-content',
+            '.content-body'
+        ]
+        
+        for selector in selectors_to_try:
+            elements = soup.select(selector)
+            if elements:
+                content = elements[0].get_text()
+                if len(content) > 200:  # Only use if substantial content
+                    return content
+        
+        # Final fallback to full page text
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        return ' '.join(chunk for chunk in chunks if chunk)
     
     def create_sentiment_prompt(self, article: Dict[str, Any]) -> str:
         """Create a prompt for sentiment analysis"""
@@ -109,7 +272,7 @@ class SentimentAnalyzer:
         # Always scrape full content from URL if available
         if article_url:
             logger.info(f"Scraping full content from URL: {article_url}")
-            scraped_content = self.scrape_article_content(article_url, max_chars=8000)
+            scraped_content = self.scrape_article_content(article_url, max_chars=6000)
             if scraped_content:
                 content_to_analyze = scraped_content
                 logger.info(f"Using scraped content: {len(content_to_analyze)} characters")
@@ -118,8 +281,8 @@ class SentimentAnalyzer:
         else:
             content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
         
-        # Apply 8K character limit to prevent token overflow
-        content_to_analyze = content_to_analyze[:8000] if content_to_analyze else f"{headline}\n\n{summary}"
+        # Apply 6K character limit to prevent token overflow
+        content_to_analyze = content_to_analyze[:6000] if content_to_analyze else f"{headline}\n\n{summary}"
         
         prompt = f"""
 Analyze the following news article about {ticker} and determine if it suggests a BUY, SELL, or HOLD signal based on the sentiment and potential market impact.
@@ -150,59 +313,61 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
 """
         return prompt
         
-    def query_lm_studio(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """Send prompt to LM Studio and get response"""
+    async def query_claude(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Send prompt to Claude API and get response"""
+        # Ensure session is initialized
+        await self._ensure_session()
+        
+        if not self.session:
+            logger.error("Claude session not initialized. Cannot query API.")
+            return {"error": "Claude session not initialized"}
+
         try:
             payload = {
-                "model": "local-model",
+                "model": self.model,
+                "max_tokens": 300,
+                "temperature": 0.0,
                 "messages": [
                     {
-                        "role": "system",
-                        "content": "You are a financial analyst expert at analyzing news sentiment and its impact on stock prices. Always respond with valid JSON."
-                    },
-                    {
                         "role": "user",
-                        "content": prompt
+                        "content": f"You are a financial analyst expert at analyzing news sentiment and its impact on stock prices. Always respond with valid JSON.\n\n{prompt}"
                     }
-                ],
-                "temperature": 0.0,
-                "max_tokens": 300,
-                "stream": False
+                ]
             }
             
-            response = requests.post(
-                self.lm_studio_url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
-                
-                # Try to parse JSON from the response
-                try:
-                    # Clean up the response if it has markdown code blocks
-                    if '```json' in content:
-                        content = content.split('```json')[1].split('```')[0].strip()
-                    elif '```' in content:
-                        content = content.split('```')[1].strip()
+            async with self.session.post(self.claude_endpoint, json=payload) as response:
+                if response.status == 200:
+                    response_data = await response.json()
                     
-                    return json.loads(content)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse JSON response: {content}")
-                    return {"error": "Invalid JSON response", "raw_response": content}
-                    
-            else:
-                logger.error(f"LM Studio API error: {response.status_code} - {response.text}")
-                return {"error": f"API error: {response.status_code}"}
+                    # Extract content from Claude response
+                    if response_data.get("content") and len(response_data["content"]) > 0:
+                        content = response_data["content"][0]["text"]
+                        
+                        # Clean up JSON if wrapped in markdown
+                        if '```json' in content:
+                            content = content.split('```json')[1].split('```')[0].strip()
+                        elif '```' in content:
+                            content = content.split('```')[1].strip()
+                        
+                        # Try to parse JSON
+                        try:
+                            return json.loads(content)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse JSON response: {content}")
+                            return {"error": "Invalid JSON response", "raw_response": content}
+                    else:
+                        logger.error(f"No content in Claude response!")
+                        return {"error": "No content in response"}
+                else:
+                    response_text = await response.text()
+                    logger.error(f"Claude API error: {response.status} - {response_text}")
+                    return {"error": f"API error: {response.status}"}
                 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request to LM Studio failed: {e}")
+        except aiohttp.ClientError as e:
+            logger.error(f"Request to Claude failed: {e}")
             return {"error": f"Request failed: {str(e)}"}
         except Exception as e:
-            logger.error(f"Unexpected error querying LM Studio: {e}")
+            logger.error(f"Unexpected error querying Claude: {e}")
             return {"error": f"Unexpected error: {str(e)}"}
     
     def get_recent_articles(self, hours: int = 24, limit: int = 50) -> List[Dict[str, Any]]:
@@ -282,7 +447,12 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             
             # Create prompt and analyze
             prompt = self.create_sentiment_prompt(article)
-            analysis = self.query_lm_studio(prompt)
+            
+            # Run analysis in async context
+            async def run_analysis():
+                return await self.query_claude(prompt)
+            
+            analysis = asyncio.run(run_analysis())
             
             if analysis and 'error' not in analysis:
                 successful_analyses += 1
@@ -314,7 +484,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                     if 'raw_response' in analysis:
                         print(f"   Raw Response: {analysis['raw_response'][:200]}...")
                 else:
-                    print(f"   Error: No response from LM Studio")
+                    print(f"   Error: No response from Claude")
                 
                 # Store failed result for summary
                 ticker_results.append({
@@ -379,7 +549,12 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         for i in range(test_runs):
             print(f"Run {i+1}/{test_runs}...", end=" ")
             prompt = self.create_sentiment_prompt(test_article)
-            analysis = self.query_lm_studio(prompt)
+            
+            # Run analysis in async context
+            async def run_analysis():
+                return await self.query_claude(prompt)
+            
+            analysis = asyncio.run(run_analysis())
             
             if analysis and 'error' not in analysis:
                 result = {
@@ -414,53 +589,60 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         
         return results
     
-    def test_lm_studio_connection(self):
-        """Test connection to LM Studio"""
-        print("Testing LM Studio connection...")
+    def test_claude_connection(self):
+        """Test connection to Claude API"""
+        print("Testing Claude API connection...")
         
         test_prompt = "Hello, please respond with a simple JSON object containing 'status': 'connected'"
         
         try:
-            payload = {
-                "model": "local-model",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": test_prompt
-                    }
-                ],
-                "temperature": 0.1,
-                "max_tokens": 50,
-                "stream": False
-            }
+            # Run analysis in async context
+            async def run_test():
+                return await self.query_claude(test_prompt)
             
-            response = requests.post(
-                self.lm_studio_url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=10
-            )
+            response = asyncio.run(run_test())
             
-            if response.status_code == 200:
-                print("✅ LM Studio connection successful!")
-                response_data = response.json()
-                content = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
-                print(f"Response: {content}")
+            if response and 'error' not in response:
+                print("✅ Claude API connection successful!")
+                print(f"Response: {response}")
                 return True
             else:
-                print(f"❌ LM Studio connection failed: {response.status_code} - {response.text}")
+                print(f"❌ Claude API connection failed: {response.get('error', 'Unknown error') if response else 'No response'}")
                 return False
                 
         except Exception as e:
-            print(f"❌ LM Studio connection failed: {e}")
+            print(f"❌ Claude API connection failed: {e}")
             return False
     
     def close(self):
-        """Close ClickHouse connection"""
+        """Close ClickHouse connection and aiohttp session"""
         if self.ch_manager:
             self.ch_manager.close()
+        if self.session:
+            # Use asyncio.run to properly close the session
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If loop is running, schedule the close for later
+                    loop.create_task(self.session.close())
+                else:
+                    # If loop is not running, we can run it
+                    asyncio.run(self.session.close())
+            except RuntimeError:
+                # If we can't get the loop, try to close synchronously
+                try:
+                    # Create a new event loop just for cleanup
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self.session.close())
+                    loop.close()
+                except Exception:
+                    # If all else fails, just set to None
+                    pass
+            finally:
+                self.session = None
 
-    def debug_scraping(self, url: str):
+    async def debug_scraping(self, url: str):
         """Debug function to show exactly what content is being scraped"""
         print(f"\n{'='*80}")
         print(f"DEBUG: URL SCRAPING ANALYSIS")
@@ -469,158 +651,52 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         print(f"{'='*80}")
         
         try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
+            # Use the new scrape_article_content method
+            scraped_content = self.scrape_article_content(url, max_chars=6000)
             
-            print("🌐 Fetching URL...")
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            print(f"✅ Response Status: {response.status_code}")
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            print(f"✅ HTML Parsed Successfully")
-            
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
-            print("✅ Scripts and styles removed")
-            
-            # Show what we're targeting for Benzinga
-            if 'benzinga.com' in url:
-                print(f"\n🎯 BENZINGA-SPECIFIC EXTRACTION:")
-                print(f"{'='*50}")
+            if scraped_content:
+                print(f"✅ Scraped: {len(scraped_content)} characters")
                 
-                article_paragraphs = soup.find_all('p')
-                print(f"Total paragraphs found: {len(article_paragraphs)}")
+                # Create a test article with the scraped content
+                test_article = {
+                    'ticker': 'DEBUG',
+                    'headline': 'Debug Article',
+                    'summary': 'Debug summary',
+                    'full_content': scraped_content,
+                    'article_url': url
+                }
                 
-                content_paragraphs = []
-                relevant_paragraphs = []
+                # Create prompt and analyze
+                prompt = self.create_sentiment_prompt(test_article)
+                analysis = await self.query_claude(prompt)
                 
-                for i, p in enumerate(article_paragraphs):
-                    if p.parent and p.parent.get('class'):
-                        parent_classes = p.parent.get('class', [])
-                        text = p.get_text().strip()
-                        
-                        # Check if this is a target paragraph
-                        is_target = any('cAazyy' in str(cls) or 'dIYChw' in str(cls) for cls in parent_classes)
-                        
-                        if is_target and len(text) > 20:
-                            content_paragraphs.append(text)
-                            relevant_paragraphs.append({
-                                'index': i,
-                                'parent_classes': parent_classes,
-                                'text': text[:100] + "..." if len(text) > 100 else text
-                            })
-                
-                print(f"Relevant paragraphs found: {len(relevant_paragraphs)}")
-                
-                if relevant_paragraphs:
-                    print(f"\n📝 RELEVANT PARAGRAPHS:")
-                    for para in relevant_paragraphs[:5]:  # Show first 5
-                        print(f"  P{para['index']}: {para['text']}")
-                        print(f"    Classes: {para['parent_classes']}")
-                        print()
-                
-                article_content = ' '.join(content_paragraphs)
-                print(f"✅ Benzinga extraction successful: {len(article_content)} characters")
-                
-            else:
-                print(f"\n🎯 GENERIC EXTRACTION (Non-Benzinga):")
-                article_content = ""
-            
-            # Show fallback attempts
-            if not article_content or len(article_content) < 100:
-                print(f"\n🔄 FALLBACK EXTRACTION:")
-                print(f"Current content length: {len(article_content)}")
-                
-                selectors_to_try = [
-                    'article',
-                    '.article-content',
-                    '.story-body',
-                    '.post-content',
-                    '.content',
-                    '.article-body',
-                    '[data-module="ArticleBody"]',
-                    '.article-wrap',
-                    '.entry-content'
-                ]
-                
-                for selector in selectors_to_try:
-                    elements = soup.select(selector)
-                    if elements:
-                        fallback_content = elements[0].get_text()
-                        print(f"  ✅ {selector}: Found {len(fallback_content)} characters")
-                        article_content = fallback_content
-                        break
-                    else:
-                        print(f"  ❌ {selector}: Not found")
-                
-                if not article_content:
-                    print(f"  🔄 Using full page text extraction...")
-                    text = soup.get_text()
-                    lines = (line.strip() for line in text.splitlines())
-                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                    article_content = ' '.join(chunk for chunk in chunks if chunk)
-                    print(f"  ✅ Full page extraction: {len(article_content)} characters")
-            
-            # Clean up the content
-            lines = (line.strip() for line in article_content.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            clean_content = ' '.join(chunk for chunk in chunks if chunk)
-            
-            # Apply 8K limit
-            if len(clean_content) > 8000:
-                clean_content = clean_content[:8000]
-                print(f"✂️ Content truncated to 8,000 characters")
-            
-            print(f"\n{'='*80}")
-            print(f"FINAL SCRAPED CONTENT ({len(clean_content)} characters):")
-            print(f"{'='*80}")
-            print(clean_content)
-            print(f"{'='*80}")
-            
-            # NEW: Run sentiment analysis on the scraped content
-            print(f"\n🧠 SENTIMENT ANALYSIS:")
-            print(f"{'='*50}")
-            
-            # Create a test article with the scraped content
-            test_article = {
-                'ticker': 'DEBUG',
-                'headline': 'Debug Article',
-                'summary': 'Debug summary',
-                'full_content': clean_content,
-                'article_url': url
-            }
-            
-            # Create prompt and analyze
-            prompt = self.create_sentiment_prompt(test_article)
-            analysis = self.query_lm_studio(prompt)
-            
-            if analysis and 'error' not in analysis:
-                print(f"✅ SENTIMENT ANALYSIS SUCCESSFUL:")
-                print(f"   Sentiment: {analysis.get('sentiment', 'unknown')}")
-                print(f"   Recommendation: {analysis.get('recommendation', 'unknown')}")
-                print(f"   Confidence: {analysis.get('confidence', 'unknown')}")
-                print(f"   Explanation: {analysis.get('explanation', 'No explanation provided')}")
-            else:
-                print(f"❌ SENTIMENT ANALYSIS FAILED:")
-                if analysis:
-                    print(f"   Error: {analysis.get('error', 'Unknown error')}")
-                    if 'raw_response' in analysis:
-                        print(f"   Raw Response: {analysis['raw_response'][:200]}...")
+                if analysis and 'error' not in analysis:
+                    print(f"✅ SENTIMENT ANALYSIS SUCCESSFUL:")
+                    print(f"   Sentiment: {analysis.get('sentiment', 'unknown')}")
+                    print(f"   Recommendation: {analysis.get('recommendation', 'unknown')}")
+                    print(f"   Confidence: {analysis.get('confidence', 'unknown')}")
+                    print(f"   Explanation: {analysis.get('explanation', 'No explanation provided')}")
                 else:
-                    print(f"   Error: No response from LM Studio")
-            
-            print(f"{'='*80}")
-            
-            return clean_content
+                    print(f"❌ SENTIMENT ANALYSIS FAILED:")
+                    if analysis:
+                        print(f"   Error: {analysis.get('error', 'Unknown error')}")
+                        if 'raw_response' in analysis:
+                            print(f"   Raw Response: {analysis['raw_response'][:200]}...")
+                    else:
+                        print(f"   Error: No response from Claude")
+                
+                print(f"{'='*80}")
+                
+                return scraped_content
+            else:
+                print(f"❌ Scraping failed for {url}")
+                return ""
             
         except Exception as e:
             print(f"❌ Error during scraping: {e}")
             return ""
     
-    def debug_recent_article(self, ticker: str = None):
+    async def debug_recent_article(self, ticker: str = None):
         """Debug scraping for a recent article"""
         try:
             if ticker:
@@ -667,7 +743,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 
                 # Show scraped content
                 print(f"\n🌐 SCRAPED CONTENT:")
-                scraped_content = self.debug_scraping(article_url)
+                scraped_content = await self.debug_scraping(article_url)
                 
                 # Compare
                 print(f"\n🔍 COMPARISON:")
@@ -686,7 +762,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         except Exception as e:
             print(f"❌ Error in debug: {e}")
 
-    def test_url_consistency(self, url: str, test_runs: int = 3):
+    async def test_url_consistency(self, url: str, test_runs: int = 3):
         """Test if sentiment analysis is consistent for the same URL across multiple runs"""
         print(f"\n{'='*80}")
         print(f"TESTING URL CONSISTENCY ({test_runs} runs)")
@@ -701,7 +777,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             print(f"{'='*40}")
             
             # Scrape content
-            scraped_content = self.scrape_article_content(url, max_chars=8000)
+            scraped_content = self.scrape_article_content(url, max_chars=6000)
             
             if scraped_content:
                 print(f"✅ Scraped: {len(scraped_content)} characters")
@@ -717,7 +793,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 
                 # Analyze sentiment
                 prompt = self.create_sentiment_prompt(test_article)
-                analysis = self.query_lm_studio(prompt)
+                analysis = await self.query_claude(prompt)
                 
                 if analysis and 'error' not in analysis:
                     result = {
@@ -774,11 +850,11 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         return results
 
 
-def main():
-    """Main execution function"""
+async def main_async():
+    """Async main execution function"""
     import sys
     
-    print("Starting News Sentiment Analysis with LM Studio")
+    print("Starting News Sentiment Analysis with Claude API")
     print("=" * 50)
     
     # Initialize analyzer
@@ -792,18 +868,18 @@ def main():
                     # Debug specific URL
                     url = sys.argv[2]
                     print(f"\n🔍 Debugging URL scraping...")
-                    analyzer.debug_scraping(url)
+                    await analyzer.debug_scraping(url)
                 else:
                     # Debug recent article
                     print(f"\n🔍 Debugging recent article scraping...")
-                    analyzer.debug_recent_article()
+                    await analyzer.debug_recent_article()
                 return
             
             elif sys.argv[1] == '--debug-ticker':
                 if len(sys.argv) > 2:
                     ticker = sys.argv[2]
                     print(f"\n🔍 Debugging scraping for ticker: {ticker}")
-                    analyzer.debug_recent_article(ticker)
+                    await analyzer.debug_recent_article(ticker)
                 else:
                     print("❌ Please provide a ticker symbol: --debug-ticker AAPL")
                 return
@@ -823,7 +899,7 @@ def main():
                         except ValueError:
                             print(f"Invalid number of test runs: {sys.argv[3]}. Using default: {test_runs}")
                     print(f"\n🧪 Testing URL consistency for {test_runs} runs on {url}...")
-                    analyzer.test_url_consistency(url, test_runs=test_runs)
+                    await analyzer.test_url_consistency(url, test_runs=test_runs)
                 else:
                     print("❌ Please provide a URL: --test-url-consistency http://example.com")
                 return
@@ -839,12 +915,11 @@ def main():
                 print("  python3 sentiment_analyzer.py --help                   # Show this help")
                 return
         
-        # Test LM Studio connection first
-        if not analyzer.test_lm_studio_connection():
-            print("\n❌ Cannot connect to LM Studio. Please ensure:")
-            print("1. LM Studio is running")
-            print("2. A model is loaded")
-            print("3. The server is accessible at http://localhost:1234")
+        # Test Claude API connection first
+        if not analyzer.test_claude_connection():
+            print("\n❌ Cannot connect to Claude API. Please ensure:")
+            print("1. ANTHROPIC_API_KEY is set in .env")
+            print("2. The API endpoint is accessible at https://api.anthropic.com/v1/messages")
             return
         
         print("\n🚀 Starting sentiment analysis...")
@@ -859,8 +934,16 @@ def main():
         print(f"\n❌ Error during analysis: {e}")
         logger.error(f"Error during analysis: {e}")
     finally:
-        analyzer.close()
+        # Proper async cleanup
+        if analyzer.session:
+            await analyzer.session.close()
+        if analyzer.ch_manager:
+            analyzer.ch_manager.close()
         print("\n✅ Analysis completed")
+
+def main():
+    """Main execution function"""
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":

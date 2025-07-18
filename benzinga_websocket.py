@@ -46,6 +46,9 @@ class BenzingaWebSocketScraper:
         self.websocket_url = "wss://api.benzinga.com/api/v1/news/stream"
         self.is_running = False
         
+        # 🔧 FIX: Initialize lock as None, will be created in async initialize method
+        self.batch_queue_lock = None
+        
         # Debug logging to confirm enable_old flag
         if self.enable_old:
             logger.info("🔓 FRESHNESS FILTER DISABLED - Will process old news articles")
@@ -86,6 +89,9 @@ class BenzingaWebSocketScraper:
         
         # Compile ticker patterns for faster matching
         self.compile_ticker_patterns()
+        
+        # 🔧 FIX: Create asyncio.Lock for atomic batch queue operations
+        self.batch_queue_lock = asyncio.Lock()
         
         logger.info(f"🕥 Benzinga WebSocket scraper initialized - {len(self.ticker_list)} tickers")
 
@@ -494,9 +500,11 @@ class BenzingaWebSocketScraper:
                         articles = self.process_benzinga_message(message_data)
                         
                         if articles:
-                            self.batch_queue.extend(articles)
-                            self.stats['articles_processed'] += len(articles)
-                            logger.info(f"✅ Added {len(articles)} articles to batch queue (total queued: {len(self.batch_queue)})")
+                            # 🔧 FIX: Use asyncio.Lock to ensure atomic batch queue operations
+                            async with self.batch_queue_lock:
+                                self.batch_queue.extend(articles)
+                                self.stats['articles_processed'] += len(articles)
+                                logger.info(f"✅ Added {len(articles)} articles to batch queue (total queued: {len(self.batch_queue)})")
                         else:
                             logger.info(f"⏭️ Message processed but no ticker matches found - skipped")
                             
@@ -529,38 +537,6 @@ class BenzingaWebSocketScraper:
                 self.websocket = None
                 await asyncio.sleep(10)  # Error recovery delay
 
-    async def flush_buffer_to_clickhouse(self):
-        """Flush article buffer to ClickHouse WITH sentiment analysis (same as web_scraper.py)"""
-        if not self.batch_queue:
-            return
-            
-        try:
-            # STEP 1: Analyze articles with sentiment BEFORE inserting into database
-            logger.info(f"🧠 Starting sentiment analysis for {len(self.batch_queue)} articles...")
-            enriched_articles = await analyze_articles_with_sentiment(self.batch_queue)
-            
-            # STEP 2: Insert articles WITH sentiment data into database
-            inserted_count = self.clickhouse_manager.insert_articles(enriched_articles)
-            self.stats['articles_inserted'] += inserted_count
-            
-            logger.info(f"✅ Flushed {inserted_count} articles with sentiment analysis to ClickHouse")
-            self.batch_queue.clear()
-            
-        except Exception as e:
-            logger.error(f"Error flushing buffer to ClickHouse with sentiment analysis: {e}")
-            self.stats['errors'] = self.stats.get('errors', 0) + 1
-            
-            # Fallback: Try to insert without sentiment analysis
-            try:
-                logger.warning("🔄 Attempting fallback insertion without sentiment analysis...")
-                inserted_count = self.clickhouse_manager.insert_articles(self.batch_queue)
-                self.stats['articles_inserted'] += inserted_count
-                logger.info(f"✅ Fallback insertion successful: {inserted_count} articles")
-                self.batch_queue.clear()
-            except Exception as fallback_error:
-                logger.error(f"❌ Fallback insertion also failed: {fallback_error}")
-                self.stats['errors'] = self.stats.get('errors', 0) + 1
-
     async def buffer_flusher(self):
         """Periodically flush buffer to ClickHouse (same as web_scraper.py)"""
         logger.info("🔄 Starting buffer flusher - checking every 250ms")
@@ -570,14 +546,108 @@ class BenzingaWebSocketScraper:
             try:
                 await asyncio.sleep(0.25)  # Flush every 250ms for ULTRA-fast detection
                 
-                if self.batch_queue:
-                    flush_count += 1
-                    logger.info(f"🚀 Buffer flush #{flush_count} - {len(self.batch_queue)} articles ready")
-                    
-                await self.flush_buffer_to_clickhouse()
+                # 🔧 FIX: Use asyncio.Lock to ensure atomic batch queue operations
+                articles_to_flush = []
+                async with self.batch_queue_lock:
+                    if self.batch_queue:
+                        articles_to_flush = self.batch_queue.copy()
+                        self.batch_queue.clear()
+                        flush_count += 1
+                        logger.info(f"🚀 Buffer flush #{flush_count} - {len(articles_to_flush)} articles ready")
+                
+                # Process articles outside the lock to avoid blocking WebSocket processing
+                if articles_to_flush:
+                    await self.flush_articles_to_clickhouse(articles_to_flush)
                 
             except Exception as e:
                 logger.error(f"Error in buffer flusher: {e}")
+
+    async def flush_articles_to_clickhouse(self, articles):
+        """Flush specific articles to ClickHouse WITH sentiment analysis"""
+        if not articles:
+            return
+            
+        try:
+            # STEP 1: Analyze articles with sentiment BEFORE inserting into database
+            logger.info(f"🧠 Starting sentiment analysis for {len(articles)} articles...")
+            enriched_articles = await analyze_articles_with_sentiment(articles)
+            
+            # STEP 2: Check for failed analyses and retry them (3 attempts, 2s delays)
+            failed_articles = []
+            successful_count = 0
+            
+            for article in enriched_articles:
+                if hasattr(article, 'get') and article.get('sentiment') == 'neutral' and 'error' in str(article.get('explanation', '')):
+                    failed_articles.append(article)
+                else:
+                    successful_count += 1
+            
+            if failed_articles:
+                logger.info(f"🔄 RETRYING {len(failed_articles)} failed articles (3 attempts, 2s delays)...")
+                
+                # Retry failed articles with 3 attempts and 2-second delays
+                for i, failed_article in enumerate(failed_articles, 1):
+                    try:
+                        # Wait 2 seconds before each retry
+                        if i > 1:
+                            await asyncio.sleep(2.0)
+                        
+                        logger.info(f"🔄 Retry {i}/3: {failed_article.get('ticker', 'UNKNOWN')}")
+                        
+                        # Get sentiment service and retry single article
+                        from sentiment_service import get_sentiment_service
+                        sentiment_service = await get_sentiment_service()
+                        
+                        # Retry the analysis (3 attempts max)
+                        for attempt in range(3):
+                            sentiment_result = await sentiment_service.analyze_article_sentiment(failed_article)
+                            
+                            # Update article with retry result
+                            if isinstance(sentiment_result, dict) and 'error' not in sentiment_result:
+                                failed_article.update({
+                                    'sentiment': sentiment_result.get('sentiment', 'neutral'),
+                                    'recommendation': sentiment_result.get('recommendation', 'HOLD'),
+                                    'confidence': sentiment_result.get('confidence', 'low'),
+                                    'explanation': sentiment_result.get('explanation', 'No explanation'),
+                                    'analysis_time_ms': sentiment_result.get('analysis_time_ms', 0),
+                                    'analyzed_at': sentiment_result.get('analyzed_at', datetime.now())
+                                })
+                                successful_count += 1
+                                logger.info(f"✅ Retry successful: {failed_article.get('ticker', 'UNKNOWN')} - {sentiment_result.get('recommendation', 'HOLD')}")
+                                break
+                            else:
+                                if attempt < 2:  # Only wait if not the last attempt
+                                    await asyncio.sleep(2.0)
+                                else:
+                                    logger.warning(f"❌ All retries failed: {failed_article.get('ticker', 'UNKNOWN')} - {sentiment_result.get('error', 'Unknown error')}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error retrying article {i}: {e}")
+                        continue
+                
+                logger.info(f"🔄 RETRY COMPLETE: {successful_count}/{len(articles)} total successful analyses")
+            else:
+                logger.info(f"✅ SENTIMENT ANALYSIS COMPLETE: {successful_count}/{len(articles)} successful analyses (no retries needed)")
+            
+            # STEP 3: Insert articles WITH sentiment data into database
+            inserted_count = self.clickhouse_manager.insert_articles(enriched_articles)
+            self.stats['articles_inserted'] += inserted_count
+            
+            logger.info(f"✅ Flushed {inserted_count} articles with sentiment analysis to ClickHouse")
+            
+        except Exception as e:
+            logger.error(f"Error flushing articles to ClickHouse with sentiment analysis: {e}")
+            self.stats['errors'] = self.stats.get('errors', 0) + 1
+            
+            # Fallback: Try to insert without sentiment analysis
+            try:
+                logger.warning("🔄 Attempting fallback insertion without sentiment analysis...")
+                inserted_count = self.clickhouse_manager.insert_articles(articles)
+                self.stats['articles_inserted'] += inserted_count
+                logger.info(f"✅ Fallback insertion successful: {inserted_count} articles")
+            except Exception as fallback_error:
+                logger.error(f"❌ Fallback insertion also failed: {fallback_error}")
+                self.stats['errors'] = self.stats.get('errors', 0) + 1
 
     async def stats_reporter(self):
         """Report performance statistics (same as web_scraper.py)"""
@@ -642,8 +712,13 @@ class BenzingaWebSocketScraper:
             # Stop running flag
             self.is_running = False
             
-            # Final flush before shutdown
-            await self.flush_buffer_to_clickhouse()
+            # Final flush before shutdown - use the new method with proper locking
+            async with self.batch_queue_lock:
+                if self.batch_queue:
+                    articles_to_flush = self.batch_queue.copy()
+                    self.batch_queue.clear()
+                    if articles_to_flush:
+                        await self.flush_articles_to_clickhouse(articles_to_flush)
             
             # Close WebSocket connection
             if self.websocket:

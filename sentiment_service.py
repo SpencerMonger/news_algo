@@ -57,7 +57,7 @@ class SentimentService:
             'start_time': time.time()
         }
     
-    def scrape_article_content(self, url: str, max_chars: int = 8000) -> str:
+    def scrape_article_content(self, url: str, max_chars: int = 6000) -> str:
         """Scrape article content from URL, limited to max_chars"""
         try:
             headers = {
@@ -222,7 +222,7 @@ class SentimentService:
         # Always scrape full content from URL if available
         if article_url:
             logger.info(f"Scraping full content from URL: {article_url}")
-            scraped_content = self.scrape_article_content(article_url, max_chars=8000)
+            scraped_content = self.scrape_article_content(article_url, max_chars=6000)
             if scraped_content:
                 content_to_analyze = scraped_content
                 logger.info(f"Using scraped content: {len(content_to_analyze)} characters")
@@ -231,8 +231,8 @@ class SentimentService:
         else:
             content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
         
-        # Apply 8K character limit to prevent token overflow
-        content_to_analyze = content_to_analyze[:8000] if content_to_analyze else f"{headline}\n\n{summary}"
+        # Apply 6K character limit to prevent token overflow
+        content_to_analyze = content_to_analyze[:6000] if content_to_analyze else f"{headline}\n\n{summary}"
 
         prompt = f"""
 Analyze the following news article about {ticker} and determine if it suggests a BUY, SELL, or HOLD signal based on the sentiment and potential market impact.
@@ -249,6 +249,8 @@ Instructions:
    - HOLD: For neutral sentiment or unclear market impact
 4. Rate confidence as high, medium, or low
 5. Give a brief explanation (1-2 sentences)
+
+Special consideration: If the article discusses Bitcoin, cryptocurrency investments, or crypto-related business activities by the company, these should generally be viewed as high-confidence market movers. Bitcoin/crypto news often has significant immediate market impact on stock prices.
 
 Respond in this exact JSON format:
 {{
