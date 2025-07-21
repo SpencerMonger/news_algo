@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Continuous Price Monitor - OPTIMIZED for minimal latency
-Monitors breaking news tickers and tracks price changes in real-time
+Continuous Price Monitor - HYBRID WEBSOCKET APPROACH
+Monitors breaking news tickers and tracks price changes in real-time via WebSocket streaming
+Falls back to REST API if WebSocket fails
 """
 
 import logging
@@ -9,6 +10,8 @@ import aiohttp
 import os
 import asyncio
 import time
+import websockets
+import json
 from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
@@ -37,29 +40,43 @@ class ContinuousPriceMonitor:
         self.ticker_timestamps: Dict[str, datetime] = {}  # Track when tickers were added
         self.ready_event = asyncio.Event()  # Signal when monitor is ready for new tickers
         
+        # NEW: WebSocket components
+        self.websocket = None
+        self.websocket_authenticated = False
+        self.websocket_price_buffer = {}  # Buffer prices between database writes
+        self.websocket_url = "wss://socket.polygon.io/stocks"  # Real-time WebSocket URL
+        self.websocket_subscriptions = set()  # Track current subscriptions
+        self.websocket_enabled = False  # Track if WebSocket is operational
+        self.websocket_reconnect_delay = 1.0  # Reconnection delay (exponential backoff)
+        self.websocket_max_reconnect_delay = 60.0  # Maximum reconnection delay
+        self.use_websocket_data = False  # Flag to determine data source
+        
         if not self.polygon_api_key:
             logger.error("POLYGON_API_KEY environment variable not set")
             raise ValueError("Polygon API key is required")
         
-        # Use PROXY_URL if available
+        # Use PROXY_URL if available (for REST API fallback)
         proxy_url = os.getenv('PROXY_URL', '').strip()
         if proxy_url:
             self.base_url = proxy_url.rstrip('/')
-            logger.info(f"Using proxy URL: {self.base_url}")
+            logger.info(f"Using proxy URL for REST fallback: {self.base_url}")
         else:
             self.base_url = "https://api.polygon.io"
-            logger.info("Using official Polygon API")
+            logger.info("Using official Polygon API for REST fallback")
         
         # Stats
         self.stats = {
             'tickers_monitored': 0,
             'price_checks': 0,
             'alerts_triggered': 0,
+            'websocket_messages': 0,
+            'websocket_reconnections': 0,
+            'rest_api_fallbacks': 0,
             'start_time': time.time()
         }
 
     async def initialize(self):
-        """Initialize the price monitoring system"""
+        """Initialize the price monitoring system with WebSocket and REST fallback"""
         try:
             # Initialize ClickHouse connection
             self.ch_manager = ClickHouseManager()
@@ -70,21 +87,24 @@ class ContinuousPriceMonitor:
             
             # Load active tickers from breaking_news
             self.active_tickers = await self.get_active_tickers_from_breaking_news()
-            logger.info(f"✅ ZERO-LAG Price Monitor initialized with FILE TRIGGERS ONLY - {len(self.active_tickers)} active tickers!")
+            logger.info(f"✅ HYBRID Price Monitor initialized with WebSocket + REST fallback - {len(self.active_tickers)} active tickers!")
             
-            # OPTIMIZED: Aggressive timeouts for consistent 2-second polling cycles
-            # Individual requests must complete quickly to avoid blocking polling
+            # NEW: Initialize WebSocket connection
+            logger.info("🔌 Setting up WebSocket connection...")
+            await self.setup_websocket_connection()
+            
+            # Keep aiohttp session for REST API fallback
             timeout = aiohttp.ClientTimeout(
                 total=2.0,      # 2 second total timeout - matches polling interval
-                connect=0.5,    # 0.5 second connect timeout - proxy connection must be quick
-                sock_read=1.5   # 1.5 second read timeout - proxy processing must be fast
+                connect=0.5,    # 0.5 second connect timeout
+                sock_read=1.5   # 1.5 second read timeout
             )
             
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=aiohttp.TCPConnector(
-                    limit=50,           # INCREASED: More concurrent connections for multiple operations
-                    limit_per_host=20,  # INCREASED: More connections per host for parallel API calls
+                    limit=50,           # Concurrent connections for REST fallback
+                    limit_per_host=20,  # Connections per host for REST fallback
                     ttl_dns_cache=300,  # DNS cache for 5 minutes
                     use_dns_cache=True,
                     keepalive_timeout=30,
@@ -96,92 +116,377 @@ class ContinuousPriceMonitor:
             logger.error(f"Error initializing price monitor: {e}")
             raise
 
-    async def create_essential_tables(self):
-        """Create only essential tables for optimized flow"""
+    async def setup_websocket_connection(self):
+        """Setup WebSocket connection to Polygon"""
         try:
-            # Only need price_tracking and news_alert tables
-            price_tracking_sql = """
-            CREATE TABLE IF NOT EXISTS News.price_tracking (
-                timestamp DateTime DEFAULT now(),
-                ticker String,
-                price Float64,
-                volume UInt64,
-                source String DEFAULT 'polygon'
-            ) ENGINE = MergeTree()
-            ORDER BY (ticker, timestamp)
-            PARTITION BY toYYYYMM(timestamp)
-            TTL timestamp + INTERVAL 7 DAY
-            """
-            self.ch_manager.client.command(price_tracking_sql)
-            logger.info("Created price_tracking table")
-
-            news_alert_sql = """
-            CREATE TABLE IF NOT EXISTS News.news_alert (
-                ticker String,
-                timestamp DateTime DEFAULT now(),
-                alert UInt8 DEFAULT 1,
-                price Float64
-            ) ENGINE = MergeTree()
-            ORDER BY (ticker, timestamp)
-            PARTITION BY toYYYYMM(timestamp)
-            TTL timestamp + INTERVAL 30 DAY
-            """
-            self.ch_manager.client.command(news_alert_sql)
-            logger.info("Created news_alert table")
+            logger.info(f"🔌 Connecting to Polygon WebSocket: {self.websocket_url}")
+            self.websocket = await websockets.connect(self.websocket_url)
+            logger.info("✅ WebSocket connection established")
             
+            # Authenticate WebSocket
+            success = await self.authenticate_websocket()
+            if success:
+                self.websocket_enabled = True
+                self.use_websocket_data = True
+                self.websocket_reconnect_delay = 1.0  # Reset reconnection delay
+                logger.info("🚀 WebSocket authentication successful - REAL-TIME MODE ACTIVE")
+            else:
+                logger.error("❌ WebSocket authentication failed - falling back to REST API")
+                await self.close_websocket()
+                self.use_websocket_data = False
+                
         except Exception as e:
-            logger.error(f"Error creating essential tables: {e}")
-            raise
+            logger.error(f"❌ WebSocket connection failed: {e}")
+            logger.info("🔄 Falling back to REST API mode")
+            self.websocket = None
+            self.websocket_enabled = False
+            self.use_websocket_data = False
 
-    async def get_active_tickers_from_breaking_news(self) -> Set[str]:
-        """Get tickers directly from breaking_news table - OPTIMIZED to avoid API interference"""
+    async def authenticate_websocket(self):
+        """Authenticate WebSocket connection with API key"""
+        if not self.websocket:
+            return False
+        
         try:
-            query_start = time.time()
+            # Send authentication message
+            auth_message = {
+                "action": "auth",
+                "params": self.polygon_api_key
+            }
             
-            # OPTIMIZED: Use simpler query without FINAL to avoid slow table merges
-            # Only check for very recent tickers to minimize query time
-            query = """
-            SELECT DISTINCT ticker
-            FROM News.breaking_news
-            WHERE detected_at >= now() - INTERVAL 5 MINUTE
-            AND ticker != ''
-            LIMIT 100
-            """
+            logger.info("🔐 Sending WebSocket authentication...")
+            await self.websocket.send(json.dumps(auth_message))
             
-            result = self.ch_manager.client.query(query)
-            current_tickers = {row[0] for row in result.result_rows}
+            # Wait for authentication response
+            response = await asyncio.wait_for(self.websocket.recv(), timeout=10.0)
+            auth_response = json.loads(response)
             
-            query_time = time.time() - query_start
+            logger.info(f"📨 Auth response: {auth_response}")
             
-            # Only log if there are changes or query is slow
-            if current_tickers != self.active_tickers or query_time > 0.1:
-                logger.info(f"🔍 TICKER QUERY: Found {len(current_tickers)} tickers in {query_time:.3f}s")
-                if current_tickers != self.active_tickers:
-                    logger.info(f"🔍 CURRENT TICKERS: {sorted(current_tickers)}")
-                    logger.info(f"🔍 PREVIOUS TICKERS: {sorted(self.active_tickers)}")
+            # Handle both single message and array of messages
+            if isinstance(auth_response, list):
+                for msg in auth_response:
+                    if msg.get("status") == "auth_success":
+                        self.websocket_authenticated = True
+                        return True
+                    elif msg.get("status") == "connected":
+                        # Wait for auth_success message
+                        try:
+                            auth_confirm = await asyncio.wait_for(self.websocket.recv(), timeout=5.0)
+                            auth_confirm_data = json.loads(auth_confirm)
+                            if isinstance(auth_confirm_data, list):
+                                for confirm_msg in auth_confirm_data:
+                                    if confirm_msg.get("status") == "auth_success":
+                                        self.websocket_authenticated = True
+                                        return True
+                            elif auth_confirm_data.get("status") == "auth_success":
+                                self.websocket_authenticated = True
+                                return True
+                        except asyncio.TimeoutError:
+                            logger.error("❌ Timeout waiting for auth confirmation")
+            else:
+                if auth_response.get("status") == "auth_success":
+                    self.websocket_authenticated = True
+                    return True
+            
+            return False
+            
+        except asyncio.TimeoutError:
+            logger.error("❌ WebSocket authentication timeout")
+            return False
+        except Exception as e:
+            logger.error(f"❌ WebSocket authentication error: {e}")
+            return False
+
+    async def close_websocket(self):
+        """Close WebSocket connection safely"""
+        if self.websocket:
+            try:
+                await self.websocket.close()
+            except:
+                pass  # Ignore errors during close
+            finally:
+                self.websocket = None
+                self.websocket_authenticated = False
+                self.websocket_enabled = False
+
+    async def reconnect_websocket(self):
+        """Reconnect WebSocket with exponential backoff"""
+        logger.info(f"🔄 Attempting WebSocket reconnection in {self.websocket_reconnect_delay:.1f}s...")
+        await asyncio.sleep(self.websocket_reconnect_delay)
+        
+        # Exponential backoff
+        self.websocket_reconnect_delay = min(
+            self.websocket_reconnect_delay * 2,
+            self.websocket_max_reconnect_delay
+        )
+        self.stats['websocket_reconnections'] += 1
+        
+        # Close existing connection
+        await self.close_websocket()
+        
+        # Attempt to reconnect
+        await self.setup_websocket_connection()
+
+    async def update_websocket_subscriptions(self):
+        """Update WebSocket subscriptions based on active tickers"""
+        if not self.websocket_enabled or not self.websocket_authenticated:
+            return
+        
+        try:
+            # Calculate new subscriptions needed
+            current_subscriptions = set(self.websocket_subscriptions)
+            needed_subscriptions = set()
+            
+            # Create subscription strings for active tickers
+            for ticker in self.active_tickers:
+                needed_subscriptions.add(f"T.{ticker}")  # Trades - primary source
+                needed_subscriptions.add(f"Q.{ticker}")  # Quotes - fallback source
+            
+            # Subscribe to new tickers
+            new_subscriptions = needed_subscriptions - current_subscriptions
+            if new_subscriptions:
+                subscribe_message = {
+                    "action": "subscribe",
+                    "params": ",".join(new_subscriptions)
+                }
+                
+                logger.info(f"📡 Subscribing to {len(new_subscriptions)} new WebSocket streams: {new_subscriptions}")
+                await self.websocket.send(json.dumps(subscribe_message))
+                
+                # Wait for subscription confirmation
+                try:
+                    response = await asyncio.wait_for(self.websocket.recv(), timeout=5.0)
+                    response_data = json.loads(response)
+                    if response_data.get("status") == "success":
+                        self.websocket_subscriptions.update(new_subscriptions)
+                        logger.info(f"✅ Successfully subscribed to {len(new_subscriptions)} WebSocket streams")
+                    else:
+                        logger.warning(f"⚠️ WebSocket subscription response: {response_data}")
+                except asyncio.TimeoutError:
+                    logger.warning("⏱️ Timeout waiting for WebSocket subscription confirmation")
+            
+            # Unsubscribe from old tickers
+            old_subscriptions = current_subscriptions - needed_subscriptions
+            if old_subscriptions:
+                unsubscribe_message = {
+                    "action": "unsubscribe",
+                    "params": ",".join(old_subscriptions)
+                }
+                
+                logger.info(f"📡 Unsubscribing from {len(old_subscriptions)} WebSocket streams")
+                await self.websocket.send(json.dumps(unsubscribe_message))
+                self.websocket_subscriptions -= old_subscriptions
+                
+        except Exception as e:
+            logger.error(f"Error updating WebSocket subscriptions: {e}")
+
+    async def handle_websocket_message(self, message):
+        """Process incoming WebSocket messages"""
+        try:
+            data = json.loads(message)
+            self.stats['websocket_messages'] += 1
+            
+            # Handle arrays and single messages
+            if isinstance(data, list):
+                for msg in data:
+                    await self.process_single_websocket_message(msg)
+            else:
+                await self.process_single_websocket_message(data)
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing WebSocket JSON: {e}")
+        except Exception as e:
+            logger.error(f"Error processing WebSocket message: {e}")
+
+    async def process_single_websocket_message(self, msg):
+        """Process a single WebSocket message"""
+        try:
+            event_type = msg.get("ev")
+            symbol = msg.get("sym", msg.get("S", "UNKNOWN"))
+            timestamp = msg.get("t", msg.get("s", 0))
+            
+            # Only process messages for active tickers
+            if symbol not in self.active_tickers:
+                return
+            
+            current_time = datetime.now(pytz.UTC)
+            
+            if event_type == "T":  # Trade message
+                price = msg.get("p", 0.0)
+                size = msg.get("s", 0)
+                
+                if price > 0:
+                    # Add to price buffer
+                    if symbol not in self.websocket_price_buffer:
+                        self.websocket_price_buffer[symbol] = []
                     
-                    # Show recent records only if tickers changed
-                    debug_query = """
-                    SELECT ticker, detected_at, headline
-                    FROM News.breaking_news
-                    WHERE detected_at >= now() - INTERVAL 5 MINUTE
-                    AND ticker != ''
-                    ORDER BY detected_at DESC
-                    LIMIT 3
-                    """
-                    debug_result = self.ch_manager.client.query(debug_query)
-                    logger.info(f"🔍 RECENT DATABASE RECORDS:")
-                    for i, row in enumerate(debug_result.result_rows):
-                        ticker, detected_at, headline = row
-                        logger.info(f"   {i+1}. {ticker} - detected_at: {detected_at} - headline: {headline[:50]}...")
+                    self.websocket_price_buffer[symbol].append({
+                        'price': price,
+                        'volume': size,
+                        'timestamp': current_time,
+                        'source': 'websocket_trade',
+                        'websocket_timestamp': timestamp
+                    })
+                    
+                    logger.debug(f"📈 WEBSOCKET TRADE {symbol}: ${price:.4f} (size: {size})")
+                
+            elif event_type == "Q":  # Quote message (NBBO)
+                bid_price = msg.get("bp", msg.get("P", 0.0))
+                ask_price = msg.get("ap", msg.get("p", 0.0))
+                bid_size = msg.get("bs", msg.get("S", 0))
+                ask_size = msg.get("as", msg.get("s", 0))
+                
+                # Calculate mid-price from bid/ask
+                if bid_price > 0 and ask_price > 0:
+                    mid_price = (bid_price + ask_price) / 2.0
+                    
+                    # Add to price buffer as fallback if no trades available
+                    if symbol not in self.websocket_price_buffer:
+                        self.websocket_price_buffer[symbol] = []
+                    
+                    # Only use quotes if we don't have recent trades for this ticker
+                    recent_trades = any(
+                        p.get('source') == 'websocket_trade' and 
+                        (current_time - p['timestamp']).total_seconds() < 5
+                        for p in self.websocket_price_buffer[symbol][-5:]  # Check last 5 entries
+                    ) if self.websocket_price_buffer[symbol] else False
+                    
+                    if not recent_trades:
+                        self.websocket_price_buffer[symbol].append({
+                            'price': mid_price,
+                            'volume': 0,  # Quotes don't have volume
+                            'timestamp': current_time,
+                            'source': 'websocket_quote',
+                            'websocket_timestamp': timestamp,
+                            'bid_price': bid_price,
+                            'ask_price': ask_price
+                        })
+                        
+                        logger.debug(f"💬 WEBSOCKET QUOTE {symbol}: Mid=${mid_price:.4f} (Bid=${bid_price:.4f}, Ask=${ask_price:.4f})")
+                
+            elif event_type == "status":
+                logger.debug(f"📡 WebSocket status: {msg}")
+                
+        except Exception as e:
+            logger.error(f"Error processing single WebSocket message: {e}")
+
+    async def process_websocket_prices(self):
+        """Process buffered WebSocket prices and insert to database"""
+        if not self.websocket_price_buffer:
+            return
+        
+        try:
+            start_time = time.time()
             
-            self.active_tickers = current_tickers
-            return current_tickers
+            # Convert buffer to database format
+            price_data = []
+            processed_tickers = set()
+            
+            for ticker, prices in self.websocket_price_buffer.items():
+                if not prices:
+                    continue
+                
+                # Use the most recent price for each ticker
+                latest_price_info = prices[-1]  # Get latest price
+                
+                price_data.append((
+                    latest_price_info['timestamp'],
+                    ticker,
+                    latest_price_info['price'],
+                    latest_price_info['volume'],
+                    latest_price_info['source']
+                ))
+                processed_tickers.add(ticker)
+            
+            if price_data:
+                # Get sentiment data for enrichment (same as REST approach)
+                sentiment_data = {}
+                if processed_tickers:
+                    try:
+                        ticker_list = list(processed_tickers)
+                        ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
+                        
+                        sentiment_query = f"""
+                        SELECT 
+                            ticker,
+                            sentiment,
+                            recommendation,
+                            confidence
+                        FROM (
+                            SELECT 
+                                ticker,
+                                sentiment,
+                                recommendation,
+                                confidence,
+                                ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY analyzed_at DESC) as rn
+                            FROM News.breaking_news
+                            WHERE ticker IN ({ticker_placeholders})
+                            AND analyzed_at >= now() - INTERVAL 1 HOUR
+                            AND sentiment != ''
+                            AND recommendation != ''
+                        ) ranked
+                        WHERE rn = 1
+                        """
+                        
+                        sentiment_result = self.ch_manager.client.query(sentiment_query)
+                        for row in sentiment_result.result_rows:
+                            ticker, sentiment, recommendation, confidence = row
+                            sentiment_data[ticker] = {
+                                'sentiment': sentiment,
+                                'recommendation': recommendation,
+                                'confidence': confidence
+                            }
+                    except Exception as e:
+                        logger.debug(f"Error getting sentiment data: {e}")
+                
+                # Prepare enriched price data with sentiment
+                enriched_price_data = []
+                for price_row in price_data:
+                    timestamp, ticker, price, volume, source = price_row
+                    
+                    # Get sentiment for this ticker (or use defaults)
+                    ticker_sentiment = sentiment_data.get(ticker, {
+                        'sentiment': 'neutral',
+                        'recommendation': 'HOLD',
+                        'confidence': 'low'
+                    })
+                    
+                    # Add sentiment fields to price data
+                    enriched_price_data.append((
+                        timestamp,
+                        ticker,
+                        price,
+                        volume,
+                        source,
+                        ticker_sentiment['sentiment'],
+                        ticker_sentiment['recommendation'],
+                        ticker_sentiment['confidence']
+                    ))
+                
+                # Batch insert enriched price data with sentiment
+                self.ch_manager.client.insert(
+                    'News.price_tracking',
+                    enriched_price_data,
+                    column_names=['timestamp', 'ticker', 'price', 'volume', 'source', 'sentiment', 'recommendation', 'confidence']
+                )
+                
+                total_time = time.time() - start_time
+                self.stats['price_checks'] += len(enriched_price_data)
+                
+                # Enhanced logging with sentiment info
+                sentiment_count = len([t for t in sentiment_data.values() if t['recommendation'] != 'HOLD'])
+                logger.info(f"🌐 WEBSOCKET: Processed {len(enriched_price_data)} price updates in {total_time:.3f}s")
+                if sentiment_count > 0:
+                    logger.info(f"🧠 SENTIMENT: {sentiment_count} tickers have non-neutral sentiment analysis")
+            
+            # Clear processed data from buffer
+            self.websocket_price_buffer.clear()
             
         except Exception as e:
-            logger.error(f"Error getting active tickers: {e}")
-            return set()
+            logger.error(f"Error processing WebSocket prices: {e}")
 
+    # Keep existing REST API methods for fallback
     async def get_price_with_double_call(self, ticker: str) -> Optional[Dict[str, Any]]:
         """Make double API call for new tickers - discard first (garbage), use second (correct)"""
         url = f"{self.base_url}/v2/last/trade/{ticker}"
@@ -212,11 +517,12 @@ class ContinuousPriceMonitor:
                         price = result.get('p', 0.0)
                         
                         if price > 0:
-                            logger.info(f"✅ {ticker}: ${price:.4f} (DOUBLE-CALL VERIFIED) in {api_time:.3f}s")
+                            logger.info(f"✅ {ticker}: ${price:.4f} (REST DOUBLE-CALL VERIFIED) in {api_time:.3f}s")
+                            self.stats['rest_api_fallbacks'] += 1
                             return {
                                 'price': price,
                                 'timestamp': datetime.now(pytz.UTC),
-                                'source': 'trade_verified'
+                                'source': 'rest_fallback_verified'
                             }
                 elif response2.status == 429:
                     logger.debug(f"⚠️ Rate limited for {ticker} on second call - skipping this cycle")
@@ -230,8 +536,8 @@ class ContinuousPriceMonitor:
         
         return None
 
-    async def get_current_price(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Get current price for ticker using ONLY last trade endpoint - no unreliable fallbacks"""
+    async def get_current_price_rest_fallback(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Get current price for ticker using REST API as fallback when WebSocket fails"""
         try:
             # Check if this is a newly added ticker (within 10 seconds)
             is_new_ticker = False
@@ -241,7 +547,7 @@ class ContinuousPriceMonitor:
             
             if is_new_ticker:
                 # NEW TICKER: Use double call to avoid garbage data
-                logger.debug(f"🔄 NEW TICKER: Making double API call for {ticker} to avoid garbage data")
+                logger.debug(f"🔄 REST FALLBACK: Making double API call for {ticker} to avoid garbage data")
                 return await self.get_price_with_double_call(ticker)
             
             # EXISTING TICKER: Use single API call (normal flow)
@@ -261,11 +567,12 @@ class ContinuousPriceMonitor:
                             price = result.get('p', 0.0)  # trade price
                             
                             if price > 0:
-                                logger.debug(f"⚡ {ticker}: ${price:.4f} (TRADE) in {api_time:.3f}s")
+                                logger.debug(f"⚡ {ticker}: ${price:.4f} (REST FALLBACK) in {api_time:.3f}s")
+                                self.stats['rest_api_fallbacks'] += 1
                                 return {
                                     'price': price,
                                     'timestamp': datetime.now(pytz.UTC),
-                                    'source': 'trade'
+                                    'source': 'rest_fallback'
                                 }
                     elif response.status == 429:
                         logger.debug(f"⚠️ Rate limited for {ticker} - skipping this cycle")
@@ -285,16 +592,18 @@ class ContinuousPriceMonitor:
         
         return None
 
-    async def track_prices_parallel(self):
-        """Get current prices for all active tickers in PARALLEL with OPTIMIZED timeouts"""
+    async def track_prices_rest_fallback(self):
+        """Get current prices for all active tickers using REST API as fallback"""
         if not self.active_tickers:
             return
         
         # OPTIMIZED: Track timing for performance monitoring
         start_time = time.time()
         
+        logger.info(f"🔄 REST FALLBACK: Processing {len(self.active_tickers)} tickers via REST API")
+        
         # Create parallel price fetching tasks
-        price_tasks = [self.get_current_price(ticker) for ticker in self.active_tickers]
+        price_tasks = [self.get_current_price_rest_fallback(ticker) for ticker in self.active_tickers]
         
         # Execute all price requests in parallel with REDUCED timeout
         try:
@@ -303,10 +612,10 @@ class ContinuousPriceMonitor:
                 timeout=2.0  # 2 seconds max - matches polling interval
             )
         except asyncio.TimeoutError:
-            logger.warning(f"⏱️ BULK TIMEOUT: Price fetching took >2s for {len(self.active_tickers)} tickers - SKIPPING THIS CYCLE")
+            logger.warning(f"⏱️ REST FALLBACK TIMEOUT: Price fetching took >2s for {len(self.active_tickers)} tickers - SKIPPING THIS CYCLE")
             return
         
-        # Process results and prepare batch insert
+        # Process results and prepare batch insert (same logic as WebSocket)
         price_data = []
         successful_prices = 0
         failed_tickers = []
@@ -322,16 +631,16 @@ class ContinuousPriceMonitor:
                     datetime.now(),
                     ticker,
                     price_result['price'],
-                    0,  # Set volume to 0 since we're using quotes not trades
-                    price_result.get('source', 'polygon')
+                    0,  # Set volume to 0 since we're using trades not volume data
+                    price_result.get('source', 'rest_fallback')
                 ))
                 successful_prices += 1
             else:
                 failed_tickers.append(ticker)
         
-        # Batch insert price data
+        # Batch insert price data (same sentiment enrichment as WebSocket)
         if price_data:
-            # ENHANCED: Get sentiment data for each ticker before inserting
+            # Get sentiment data for each ticker before inserting
             sentiment_data = {}
             if self.active_tickers:
                 try:
@@ -408,7 +717,7 @@ class ContinuousPriceMonitor:
             
             # Enhanced logging with sentiment info
             sentiment_count = len([t for t in sentiment_data.values() if t['recommendation'] != 'HOLD'])
-            logger.info(f"⚡ PARALLEL: Tracked {successful_prices}/{len(self.active_tickers)} ticker prices in {total_time:.3f}s")
+            logger.info(f"🔄 REST FALLBACK: Tracked {successful_prices}/{len(self.active_tickers)} ticker prices in {total_time:.3f}s")
             if sentiment_count > 0:
                 logger.info(f"🧠 SENTIMENT: {sentiment_count} tickers have non-neutral sentiment analysis")
             
@@ -417,11 +726,133 @@ class ContinuousPriceMonitor:
         else:
             total_time = time.time() - start_time
             logger.warning(f"❌ No price data retrieved for any tickers in {total_time:.3f}s - API issues or rate limiting")
+
+    async def websocket_listener(self):
+        """Dedicated WebSocket listener that runs continuously"""
+        logger.info("👂 Starting WebSocket listener for real-time price streaming...")
+        
+        while True:
+            try:
+                if not self.websocket_enabled or not self.websocket:
+                    # Wait for WebSocket to be available or attempt reconnection
+                    await asyncio.sleep(5)
+                    if not self.websocket_enabled:
+                        logger.info("🔄 Attempting WebSocket reconnection...")
+                        await self.reconnect_websocket()
+                    continue
+                
+                try:
+                    # Listen for WebSocket messages with timeout
+                    message = await asyncio.wait_for(self.websocket.recv(), timeout=30.0)
+                    await self.handle_websocket_message(message)
+                    
+                except asyncio.TimeoutError:
+                    # No message received in 30 seconds - send ping to keep connection alive
+                    try:
+                        await self.websocket.ping()
+                        logger.debug("📡 WebSocket ping sent")
+                    except:
+                        logger.warning("❌ WebSocket ping failed - connection may be lost")
+                        self.websocket_enabled = False
+                        
+                except websockets.exceptions.ConnectionClosed:
+                    logger.warning("❌ WebSocket connection closed unexpectedly")
+                    self.websocket_enabled = False
+                    await self.reconnect_websocket()
+                    
+            except Exception as e:
+                logger.error(f"Error in WebSocket listener: {e}")
+                self.websocket_enabled = False
+                await asyncio.sleep(1)
+
+    async def create_essential_tables(self):
+        """Create only essential tables for optimized flow"""
+        try:
+            # Only need price_tracking and news_alert tables
+            price_tracking_sql = """
+            CREATE TABLE IF NOT EXISTS News.price_tracking (
+                timestamp DateTime DEFAULT now(),
+                ticker String,
+                price Float64,
+                volume UInt64,
+                source String DEFAULT 'polygon',
+                sentiment String DEFAULT 'neutral',
+                recommendation String DEFAULT 'HOLD',
+                confidence String DEFAULT 'low'
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 7 DAY
+            """
+            self.ch_manager.client.command(price_tracking_sql)
+            logger.info("Created price_tracking table")
+
+            news_alert_sql = """
+            CREATE TABLE IF NOT EXISTS News.news_alert (
+                ticker String,
+                timestamp DateTime DEFAULT now(),
+                alert UInt8 DEFAULT 1,
+                price Float64
+            ) ENGINE = MergeTree()
+            ORDER BY (ticker, timestamp)
+            PARTITION BY toYYYYMM(timestamp)
+            TTL timestamp + INTERVAL 30 DAY
+            """
+            self.ch_manager.client.command(news_alert_sql)
+            logger.info("Created news_alert table")
             
-            # If all tickers fail, add a brief delay to avoid hammering the API
-            if len(self.active_tickers) > 0:
-                logger.info("💤 Adding 2s delay due to API failures to avoid rate limiting")
-                await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"Error creating essential tables: {e}")
+            raise
+
+    async def get_active_tickers_from_breaking_news(self) -> Set[str]:
+        """Get tickers directly from breaking_news table - OPTIMIZED to avoid API interference"""
+        try:
+            query_start = time.time()
+            
+            # OPTIMIZED: Use simpler query without FINAL to avoid slow table merges
+            # Only check for very recent tickers to minimize query time
+            query = """
+            SELECT DISTINCT ticker
+            FROM News.breaking_news
+            WHERE detected_at >= now() - INTERVAL 5 MINUTE
+            AND ticker != ''
+            LIMIT 100
+            """
+            
+            result = self.ch_manager.client.query(query)
+            current_tickers = {row[0] for row in result.result_rows}
+            
+            query_time = time.time() - query_start
+            
+            # Only log if there are changes or query is slow
+            if current_tickers != self.active_tickers or query_time > 0.1:
+                logger.info(f"🔍 TICKER QUERY: Found {len(current_tickers)} tickers in {query_time:.3f}s")
+                if current_tickers != self.active_tickers:
+                    logger.info(f"🔍 CURRENT TICKERS: {sorted(current_tickers)}")
+                    logger.info(f"🔍 PREVIOUS TICKERS: {sorted(self.active_tickers)}")
+                    
+                    # Show recent records only if tickers changed
+                    debug_query = """
+                    SELECT ticker, detected_at, headline
+                    FROM News.breaking_news
+                    WHERE detected_at >= now() - INTERVAL 5 MINUTE
+                    AND ticker != ''
+                    ORDER BY detected_at DESC
+                    LIMIT 3
+                    """
+                    debug_result = self.ch_manager.client.query(debug_query)
+                    logger.info(f"🔍 RECENT DATABASE RECORDS:")
+                    for i, row in enumerate(debug_result.result_rows):
+                        ticker, detected_at, headline = row
+                        logger.info(f"   {i+1}. {ticker} - detected_at: {detected_at} - headline: {headline[:50]}...")
+            
+            self.active_tickers = current_tickers
+            return current_tickers
+            
+        except Exception as e:
+            logger.error(f"Error getting active tickers: {e}")
+            return set()
 
     async def check_price_alerts_optimized(self):
         """Check for 5%+ price increases WITH sentiment analysis - ONLY trigger alerts when price moves 5% AND sentiment is 'BUY' with high confidence"""
@@ -497,17 +928,20 @@ class ContinuousPriceMonitor:
                 for row in result.result_rows:
                     ticker, current_price, first_price, change_pct, price_count, first_timestamp, current_timestamp, seconds_elapsed, existing_alerts, sentiment, recommendation, confidence = row
                     
+                    # Determine data source for logging
+                    data_source_emoji = "🌐" if self.use_websocket_data else "🔄"
+                    
                     # Enhanced logging with sentiment information
                     if sentiment and recommendation:
                         sentiment_info = f"Sentiment: {sentiment}, Recommendation: {recommendation} ({confidence} confidence)"
                         logger.info(f"🚨 SENTIMENT-ENHANCED ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   📊 {sentiment_info}")
-                        logger.info(f"   📰 News: No headline available")
-                        logger.info(f"   🤖 AI Analysis: No explanation available")
+                        logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
                         logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
                     else:
                         logger.info(f"🚨 PRICE-ONLY ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   ⚠️ No sentiment data available - using price-only logic")
+                        logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
                         logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
                     
                     # Add to alert data for batch insert
@@ -633,67 +1067,78 @@ class ContinuousPriceMonitor:
         """Report monitoring statistics"""
         runtime = time.time() - self.stats['start_time']
         
-        logger.info(f"📊 OPTIMIZED MONITOR STATS:")
+        logger.info(f"📊 HYBRID MONITOR STATS:")
         logger.info(f"   Runtime: {runtime/60:.1f} minutes")
         logger.info(f"   Active Tickers: {len(self.active_tickers)}")
         logger.info(f"   Price Checks: {self.stats['price_checks']}")
         logger.info(f"   Alerts Triggered: {self.stats['alerts_triggered']}")
+        logger.info(f"   WebSocket Messages: {self.stats['websocket_messages']}")
+        logger.info(f"   WebSocket Reconnections: {self.stats['websocket_reconnections']}")
+        logger.info(f"   REST API Fallbacks: {self.stats['rest_api_fallbacks']}")
+        logger.info(f"   Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
 
     async def cleanup(self):
         """Clean up resources"""
+        if self.websocket:
+            await self.close_websocket()
         if self.session:
             await self.session.close()
         if self.ch_manager:
             self.ch_manager.close()
-        logger.info("Price monitor cleanup completed")
+        logger.info("Hybrid price monitor cleanup completed")
 
     async def start(self):
-        """Start the continuous price monitoring system"""
+        """Start the continuous price monitoring system with WebSocket hybrid approach"""
         try:
-            logger.info("🚀 Starting ZERO-LAG Price Monitor with FILE TRIGGERS + CONTINUOUS POLLING!")
+            logger.info("🚀 Starting HYBRID Price Monitor with WebSocket + REST fallback!")
             await self.initialize()
             
-            # Test API connectivity
-            logger.info("🔌 Testing API connectivity...")
-            await self.test_api_connectivity()
+            # Test connectivity based on available data source
+            if self.use_websocket_data:
+                logger.info("🌐 WebSocket mode active - testing subscription capability...")
+                # WebSocket is already tested in initialize()
+            else:
+                logger.info("🔄 REST API fallback mode - testing API connectivity...")
+                await self.test_api_connectivity()
             
-            # Start monitoring with file triggers for notifications and polling for price inserts
-            logger.info("⚡ Starting monitoring: FILE TRIGGERS for notifications + CONTINUOUS POLLING for price inserts...")
-            logger.info("✅ Price Monitor operational - Clean separation: notifications vs price tracking!")
+            logger.info("⚡ Starting hybrid monitoring: WebSocket real-time + REST fallback + File triggers...")
+            logger.info("✅ Hybrid Price Monitor operational!")
             
-            # Run BOTH file trigger monitor AND continuous polling in parallel
-            # File triggers = immediate ticker notifications (add to active_tickers)
-            # Continuous polling = ALL price database operations (every 2 seconds)
+            # Run ALL components in parallel:
+            # 1. WebSocket listener for real-time price streaming
+            # 2. File trigger monitor for immediate ticker notifications
+            # 3. Continuous polling loop for database operations and subscription management
             await asyncio.gather(
+                self.websocket_listener(),              # Real-time WebSocket price streaming
                 self.file_trigger_monitor_async(),      # Ticker notifications only
-                self.continuous_polling_loop()          # ALL price database operations
+                self.continuous_polling_loop()          # Database operations + subscription management
             )
             
         except KeyboardInterrupt:
             logger.info("🛑 Received interrupt signal")
         except Exception as e:
-            logger.error(f"Fatal error in price monitor: {e}")
+            logger.error(f"Fatal error in hybrid price monitor: {e}")
             raise
         finally:
             await self.cleanup()
 
     async def test_api_connectivity(self):
-        """Test API connectivity with a simple request"""
+        """Test REST API connectivity with a simple request (fallback mode)"""
         test_ticker = "AAPL"  # Use AAPL as a test ticker
-        logger.info(f"🔬 Testing API connectivity with {test_ticker}...")
+        logger.info(f"🔬 Testing REST API connectivity with {test_ticker}...")
         
         try:
             start_time = time.time()
-            result = await self.get_current_price(test_ticker)
+            result = await self.get_current_price_rest_fallback(test_ticker)
             test_time = time.time() - start_time
             
             if result:
-                logger.info(f"✅ API TEST SUCCESS: {test_ticker} = ${result['price']:.4f} in {test_time:.3f}s")
+                logger.info(f"✅ REST API TEST SUCCESS: {test_ticker} = ${result['price']:.4f} in {test_time:.3f}s")
             else:
-                logger.warning(f"⚠️ API TEST FAILED: No price data for {test_ticker} in {test_time:.3f}s")
+                logger.warning(f"⚠️ REST API TEST FAILED: No price data for {test_ticker} in {test_time:.3f}s")
                 logger.warning("🚨 API connectivity issues detected - price monitoring may be slow")
         except Exception as e:
-            logger.error(f"❌ API TEST ERROR: {e}")
+            logger.error(f"❌ REST API TEST ERROR: {e}")
             logger.warning("🚨 Severe API issues detected - price monitoring will likely fail")
 
     async def file_trigger_monitor_async(self):
@@ -727,11 +1172,10 @@ class ContinuousPriceMonitor:
                             ticker = trigger_data['ticker']
                             logger.info(f"⚡ ASYNC MONITOR: Processing trigger for {ticker}")
                             
-                            # FIXED: ONLY add to active tickers - NO direct price inserts
-                            # Let the continuous_polling_loop handle ALL price database operations
+                            # Add to active tickers for both WebSocket and REST tracking
                             self.active_tickers.add(ticker)
                             self.ticker_timestamps[ticker] = datetime.now()  # Track when ticker was added
-                            logger.info(f"🎯 ASYNC MONITOR: Added {ticker} to active tracking (polling will handle price inserts)")
+                            logger.info(f"🎯 ASYNC MONITOR: Added {ticker} to active tracking")
                             
                             # Remove trigger file after successful processing
                             os.remove(trigger_file)
@@ -772,8 +1216,8 @@ class ContinuousPriceMonitor:
             logger.info(f"🧹 CLEANUP: Removed {len(old_tickers)} old tickers from active tracking: {old_tickers}")
 
     async def continuous_polling_loop(self):
-        """Continuous polling loop for regular price updates every 2 seconds - ZERO DATABASE QUERIES"""
-        logger.info("🔄 Starting CONTINUOUS POLLING LOOP - 2 second intervals, FILE TRIGGERS ONLY (no database queries)")
+        """Continuous polling loop - WebSocket subscription management + database operations every 2 seconds"""
+        logger.info("🔄 Starting HYBRID POLLING LOOP - WebSocket subscription management + database operations")
         
         cycle = 0
         last_cleanup = time.time()
@@ -783,32 +1227,38 @@ class ContinuousPriceMonitor:
                 cycle += 1
                 cycle_start = time.time()
                 
-                # ELIMINATED: No more database queries - rely ONLY on file triggers
-                # File triggers will add tickers immediately to active_tickers
-                # This eliminates ALL database interference with API calls
-                
                 # Clean up old tickers every 5 minutes
                 if time.time() - last_cleanup > 300:  # 5 minutes
                     await self.cleanup_old_tickers()
                     last_cleanup = time.time()
                 
                 if self.active_tickers:
-                    logger.info(f"🔄 POLLING CYCLE {cycle}: Checking prices for {len(self.active_tickers)} active tickers")
+                    logger.info(f"🔄 HYBRID CYCLE {cycle}: Managing {len(self.active_tickers)} active tickers")
                     
-                    # Track prices for all active tickers
-                    await self.track_prices_parallel()
+                    if self.use_websocket_data and self.websocket_enabled:
+                        # WebSocket mode: Update subscriptions and process buffered prices
+                        await self.update_websocket_subscriptions()
+                        await self.process_websocket_prices()
+                        logger.debug(f"🌐 WebSocket cycle: Subscriptions updated, prices processed")
+                    else:
+                        # REST fallback mode: Track prices via API calls
+                        await self.track_prices_rest_fallback()
+                        logger.debug(f"🔄 REST fallback cycle: API prices tracked")
+                    
+                    # Always check for alerts (regardless of data source)
                     await self.check_price_alerts_optimized()
                     
                     cycle_time = time.time() - cycle_start
-                    logger.info(f"✅ POLLING CYCLE {cycle}: Completed in {cycle_time:.3f}s")
+                    data_source = "WebSocket" if self.use_websocket_data else "REST"
+                    logger.info(f"✅ HYBRID CYCLE {cycle}: Completed ({data_source}) in {cycle_time:.3f}s")
                 else:
-                    logger.debug(f"⏳ POLLING CYCLE {cycle}: No active tickers")
+                    logger.debug(f"⏳ HYBRID CYCLE {cycle}: No active tickers")
                 
                 # Wait 2 seconds before next cycle
                 await asyncio.sleep(2.0)
                 
             except Exception as e:
-                logger.error(f"Error in continuous polling loop: {e}")
+                logger.error(f"Error in hybrid polling loop: {e}")
                 await asyncio.sleep(2.0)  # Continue with 2-second intervals even on error
 
 
@@ -835,8 +1285,9 @@ async def notify_new_ticker(ticker: str, timestamp: datetime = None):
 
 async def main():
     """Main function"""
-    logger.info("🚀 Starting ZERO-LAG Continuous Price Monitor with IMMEDIATE NOTIFICATIONS")
-    logger.info("⚡ ZERO-LAG: Direct article insertion → immediate notification → instant price tracking")
+    logger.info("🚀 Starting HYBRID Continuous Price Monitor with WebSocket + REST fallback")
+    logger.info("⚡ HYBRID MODE: WebSocket real-time streaming → immediate price data → instant alerts")
+    logger.info("🔄 FALLBACK: REST API calls if WebSocket fails → reliable operation guaranteed")
     
     monitor = ContinuousPriceMonitor()
     await monitor.start()
