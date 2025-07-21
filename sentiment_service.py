@@ -43,7 +43,7 @@ class SentimentService:
         self.model = "claude-3-5-sonnet-20240620"  # Updated model with higher rate limits
         
         self.session = None
-        self.executor = ThreadPoolExecutor(max_workers=7)  # Optimized for Claude API
+        self.executor = ThreadPoolExecutor(max_workers=20)  # Increased from 7 to 20 for better concurrency
         
         # Sentiment cache to avoid re-analyzing identical content
         self.sentiment_cache: Dict[str, Dict[str, Any]] = {}
@@ -152,7 +152,7 @@ class SentimentService:
                 timeout=timeout,
                 connector=aiohttp.TCPConnector(
                     limit=10,
-                    limit_per_host=7,  # Match max_workers
+                    limit_per_host=20,  # Increased from 7 to match max_workers
                     ttl_dns_cache=300
                 ),
                 headers={

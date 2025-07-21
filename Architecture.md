@@ -64,22 +64,71 @@ The NewsHead system includes a comprehensive sentiment analysis engine that anal
 5. Start selected news monitor (Web Scraper or WebSocket)
 6. Handle shutdown signals and cleanup
 
-**Command Line Options**:
-- `--skip-list`: Skip Finviz ticker list update
-- `--enable-old`: Disable freshness filtering for testing
-- `--socket`: **NEW** - Use Benzinga WebSocket instead of web scraper
-- `--any`: **NEW** - Process any ticker symbols found (WebSocket only, bypasses database filtering)
+**Command Line Options and System Configurations**:
+
+For comprehensive command variations and detailed usage examples, see `commands.txt`. The main command line options are:
+
+**Core Arguments**:
+- `--skip-list`: Skip Finviz ticker list update (recommended for most operations)
+- `--enable-old`: Disable freshness filtering, process articles older than 2 minutes
+- `--socket`: **Use Benzinga WebSocket instead of web scraper** (recommended for production)
+- `--any`: Process any ticker symbols found (WebSocket only, bypasses database filtering)
+- `--no-sentiment`: Skip sentiment analysis initialization (for testing/debugging)
+
+**Recommended Production Configurations**:
+
+1. **High-Performance WebSocket Mode** (recommended):
+   ```bash
+   python3 run_system.py --skip-list --socket
+   ```
+   - Uses Benzinga WebSocket for sub-second news detection
+   - Database ticker filtering enabled
+   - Sentiment analysis enabled
+   - Freshness filtering enabled (2-minute window)
+
+2. **High-Volume Testing Mode**:
+   ```bash
+   python3 run_system.py --skip-list --socket --any
+   ```
+   - Processes any ticker symbols found (not just database tickers)
+   - Useful for discovering new tickers and testing system capacity
+
+3. **Debug/Testing Mode**:
+   ```bash
+   python3 run_system.py --skip-list --socket --no-sentiment
+   ```
+   - Disables sentiment analysis for faster processing
+   - Useful for debugging news detection pipeline
+
+4. **Legacy Web Scraper Mode** (slower, fallback only):
+   ```bash
+   python3 run_system.py --skip-list
+   ```
+   - Uses traditional web scraping instead of WebSocket
+   - 5-second polling intervals vs sub-second WebSocket detection
 
 **News Source Selection Logic**:
 ```python
 if args.socket:
-    # WebSocket Mode - Real-time streaming
+    # WebSocket Mode - Real-time streaming (RECOMMENDED)
     from benzinga_websocket import Crawl4AIScraper
     scraper = Crawl4AIScraper(enable_old=enable_old, process_any_ticker=process_any_ticker)
 else:
-    # Web Scraper Mode - Traditional scraping
+    # Web Scraper Mode - Traditional scraping (LEGACY)
     from web_scraper import Crawl4AIScraper  
     scraper = Crawl4AIScraper(enable_old=enable_old)
+```
+
+**System Initialization with Sentiment Analysis**:
+The system automatically initializes sentiment analysis unless `--no-sentiment` is specified:
+```python
+# Sentiment service initialization
+if not args.no_sentiment:
+    sentiment_initialized = await initialize_sentiment_service()
+    if sentiment_initialized:
+        logger.info("🤖 AI-powered sentiment analysis is ACTIVE")
+    else:
+        logger.warning("⚠️ Sentiment analysis initialization failed - continuing without sentiment")
 ```
 
 ### News Collection Layer

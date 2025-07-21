@@ -3,6 +3,7 @@ pandas>=2.0.3
 aiohttp>=3.8.5
 pytz>=2023.3
 python-dotenv>=1.0.0
+python-dateutil>=2.8.2
 # asyncio is part of the Python standard library, no need to install it separately
 # Only pandas is needed for the news sources script
 # Web requests and data processing
