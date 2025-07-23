@@ -231,15 +231,16 @@ class FinvizScraper:
                                 'company_name': cells[col_map.get('company', 2)].get_text().strip() if col_map.get('company', 2) < len(cells) else '',
                                 'sector': cells[col_map.get('sector', 3)].get_text().strip() if col_map.get('sector', 3) < len(cells) else '',
                                 'industry': cells[col_map.get('industry', 4)].get_text().strip() if col_map.get('industry', 4) < len(cells) else '',
-                                'market_cap': self.parse_table_value(cells[col_map.get('market cap', 5)].get_text().strip() if col_map.get('market cap', 5) < len(cells) else '0'),
-                                'price': self.parse_table_value(cells[col_map.get('price', 6)].get_text().strip() if col_map.get('price', 6) < len(cells) else '0'),
-                                'volume': int(self.parse_table_value(cells[col_map.get('volume', 7)].get_text().strip() if col_map.get('volume', 7) < len(cells) else '0')),
-                                'float_shares': self.parse_table_value(cells[col_map.get('float', 8)].get_text().strip() if col_map.get('float', 8) < len(cells) else '0'),
-                                'pe_ratio': self.parse_table_value(cells[col_map.get('p/e', 9)].get_text().strip() if col_map.get('p/e', 9) < len(cells) else '0'),
-                                'eps': self.parse_table_value(cells[col_map.get('eps (ttm)', 10)].get_text().strip() if col_map.get('eps (ttm)', 10) < len(cells) else '0'),
-                                'analyst_rating': cells[col_map.get('analyst recom', 11)].get_text().strip() if col_map.get('analyst recom', 11) and col_map.get('analyst recom', 11) < len(cells) else '',
-                                'insider_ownership': self.parse_table_value(cells[col_map.get('insider own', 12)].get_text().strip() if col_map.get('insider own', 12) and col_map.get('insider own', 12) < len(cells) else '0'),
-                                'institutional_ownership': self.parse_table_value(cells[col_map.get('inst own', 13)].get_text().strip() if col_map.get('inst own', 13) and col_map.get('inst own', 13) < len(cells) else '0')
+                                'country': cells[col_map.get('country', 5)].get_text().strip() if col_map.get('country', 5) < len(cells) else '',
+                                'market_cap': self.parse_table_value(cells[col_map.get('market cap', 6)].get_text().strip() if col_map.get('market cap', 6) < len(cells) else '0'),
+                                'price': self.parse_table_value(cells[col_map.get('price', 7)].get_text().strip() if col_map.get('price', 7) < len(cells) else '0'),
+                                'volume': int(self.parse_table_value(cells[col_map.get('volume', 8)].get_text().strip() if col_map.get('volume', 8) < len(cells) else '0')),
+                                'float_shares': self.parse_table_value(cells[col_map.get('float', 9)].get_text().strip() if col_map.get('float', 9) < len(cells) else '0'),
+                                'pe_ratio': self.parse_table_value(cells[col_map.get('p/e', 10)].get_text().strip() if col_map.get('p/e', 10) < len(cells) else '0'),
+                                'eps': self.parse_table_value(cells[col_map.get('eps (ttm)', 11)].get_text().strip() if col_map.get('eps (ttm)', 11) < len(cells) else '0'),
+                                'analyst_rating': cells[col_map.get('analyst recom', 12)].get_text().strip() if col_map.get('analyst recom', 12) and col_map.get('analyst recom', 12) < len(cells) else '',
+                                'insider_ownership': self.parse_table_value(cells[col_map.get('insider own', 13)].get_text().strip() if col_map.get('insider own', 13) and col_map.get('insider own', 13) < len(cells) else '0'),
+                                'institutional_ownership': self.parse_table_value(cells[col_map.get('inst own', 14)].get_text().strip() if col_map.get('inst own', 14) and col_map.get('inst own', 14) < len(cells) else '0')
                             }
                             
                             if ticker_data['ticker'] and ticker_data['ticker'] != '-':  # Only add valid tickers

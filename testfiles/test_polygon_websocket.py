@@ -167,18 +167,40 @@ class PolygonWebSocketTester:
             
             logger.info(f"📨 Subscription response: {sub_response}")
             
-            if sub_response.get("status") == "success":
-                self.subscribed_tickers.add(ticker)
-                self.price_data[ticker] = {
-                    'trades': [],
-                    'quotes': [],
-                    'aggregates': []
-                }
-                logger.info(f"✅ Successfully subscribed to {ticker}")
-                return True
+            # Handle both single response and list of responses
+            if isinstance(sub_response, list):
+                # Check if any message in the list indicates successful subscription
+                success_count = 0
+                for msg in sub_response:
+                    if msg.get("status") == "success":
+                        success_count += 1
+                
+                if success_count > 0:
+                    self.subscribed_tickers.add(ticker)
+                    self.price_data[ticker] = {
+                        'trades': [],
+                        'quotes': [],
+                        'aggregates': []
+                    }
+                    logger.info(f"✅ Successfully subscribed to {ticker} ({success_count} subscriptions)")
+                    return True
+                else:
+                    logger.error(f"❌ Subscription failed for {ticker}: {sub_response}")
+                    return False
             else:
-                logger.error(f"❌ Subscription failed for {ticker}: {sub_response}")
-                return False
+                # Handle single message response
+                if sub_response.get("status") == "success":
+                    self.subscribed_tickers.add(ticker)
+                    self.price_data[ticker] = {
+                        'trades': [],
+                        'quotes': [],
+                        'aggregates': []
+                    }
+                    logger.info(f"✅ Successfully subscribed to {ticker}")
+                    return True
+                else:
+                    logger.error(f"❌ Subscription failed for {ticker}: {sub_response}")
+                    return False
                 
         except asyncio.TimeoutError:
             logger.error(f"❌ Subscription timeout for {ticker}")
@@ -356,7 +378,7 @@ class PolygonWebSocketTester:
 async def test_websocket(tickers=None, duration=60):
     """Test WebSocket functionality with specified tickers"""
     if tickers is None:
-        tickers = ["PMN", "AAPL", "MSFT"]  # Default test tickers
+        tickers = ["PKI", "AAPL", "MSFT"]  # Default test tickers - PKI first to test the theory
     
     logger.info("🚀 Starting Polygon WebSocket Test")
     logger.info(f"🎯 Testing tickers: {tickers}")
@@ -401,8 +423,8 @@ async def main():
     import sys
     
     # Parse command line arguments
-    tickers = ["PMN"]  # Default to PMN for testing
-    duration = 60  # Default 60 seconds
+    tickers = ["PKI"]  # Default to PKI for testing the theory
+    duration = 120  # Default 120 seconds to give more time for PKI activity
     
     if len(sys.argv) > 1:
         # First argument: comma-separated tickers
@@ -413,7 +435,7 @@ async def main():
         try:
             duration = int(sys.argv[2])
         except ValueError:
-            logger.warning(f"Invalid duration '{sys.argv[2]}', using default 60 seconds")
+            logger.warning(f"Invalid duration '{sys.argv[2]}', using default 120 seconds")
     
     await test_websocket(tickers, duration)
 

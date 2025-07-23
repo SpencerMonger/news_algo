@@ -425,6 +425,7 @@ class ClickHouseManager:
             company_name String,
             sector String,
             industry String,
+            country String,
             market_cap Float64,
             float_shares Float64,
             price Float64,
@@ -468,6 +469,7 @@ class ClickHouseManager:
                     ticker.get('company_name', ''),
                     ticker.get('sector', ''),
                     ticker.get('industry', ''),
+                    ticker.get('country', ''),
                     ticker.get('market_cap', 0.0),
                     ticker.get('float_shares', 0.0),
                     ticker.get('price', 0.0),
@@ -482,7 +484,7 @@ class ClickHouseManager:
             
             # Column names for insertion
             columns = [
-                'ticker', 'company_name', 'sector', 'industry', 'market_cap',
+                'ticker', 'company_name', 'sector', 'industry', 'country', 'market_cap',
                 'float_shares', 'price', 'volume', 'last_updated',
                 'pe_ratio', 'eps', 'analyst_rating', 'insider_ownership', 'institutional_ownership'
             ]

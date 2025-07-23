@@ -48,6 +48,9 @@ class SentimentService:
         # Sentiment cache to avoid re-analyzing identical content
         self.sentiment_cache: Dict[str, Dict[str, Any]] = {}
         
+        # Country cache to avoid repeated database queries
+        self.country_cache: Dict[str, str] = {}
+        
         # Stats tracking
         self.stats = {
             'total_analyzed': 0,
@@ -56,6 +59,94 @@ class SentimentService:
             'cache_hits': 0,
             'start_time': time.time()
         }
+
+    async def get_ticker_country(self, ticker: str) -> str:
+        """
+        Get the country for a ticker from the float_list table
+        Returns 'UNKNOWN' if not found
+        """
+        # Check cache first
+        if ticker in self.country_cache:
+            return self.country_cache[ticker]
+        
+        try:
+            # Import here to avoid circular imports
+            from clickhouse_setup import ClickHouseManager
+            
+            ch_manager = ClickHouseManager()
+            ch_manager.connect()
+            
+            query = """
+            SELECT country FROM News.float_list 
+            WHERE ticker = %s
+            LIMIT 1
+            """
+            
+            result = ch_manager.client.query(query, [ticker])
+            
+            if result.result_rows:
+                country = result.result_rows[0][0] or 'UNKNOWN'
+            else:
+                country = 'UNKNOWN'
+            
+            # Cache the result
+            self.country_cache[ticker] = country
+            
+            ch_manager.close()
+            logger.debug(f"Ticker {ticker} country: {country}")
+            return country
+            
+        except Exception as e:
+            logger.warning(f"Error getting country for ticker {ticker}: {e}")
+            # Cache unknown result to avoid repeated failures
+            self.country_cache[ticker] = 'UNKNOWN'
+            return 'UNKNOWN'
+
+    async def get_batch_ticker_countries(self, tickers: List[str]) -> Dict[str, str]:
+        """
+        Get countries for multiple tickers in a single database query for efficiency
+        """
+        # Filter out tickers already in cache
+        uncached_tickers = [t for t in tickers if t not in self.country_cache]
+        
+        if uncached_tickers:
+            try:
+                # Import here to avoid circular imports
+                from clickhouse_setup import ClickHouseManager
+                
+                ch_manager = ClickHouseManager()
+                ch_manager.connect()
+                
+                # Build query with placeholder for IN clause
+                placeholders = ','.join(['%s'] * len(uncached_tickers))
+                query = f"""
+                SELECT ticker, country FROM News.float_list 
+                WHERE ticker IN ({placeholders})
+                """
+                
+                result = ch_manager.client.query(query, uncached_tickers)
+                
+                # Update cache with results
+                for row in result.result_rows:
+                    ticker, country = row[0], row[1] or 'UNKNOWN'
+                    self.country_cache[ticker] = country
+                
+                # Set UNKNOWN for tickers not found in database
+                for ticker in uncached_tickers:
+                    if ticker not in self.country_cache:
+                        self.country_cache[ticker] = 'UNKNOWN'
+                
+                ch_manager.close()
+                logger.debug(f"Batch loaded countries for {len(result.result_rows)} tickers")
+                
+            except Exception as e:
+                logger.warning(f"Error getting batch countries: {e}")
+                # Set all uncached tickers to UNKNOWN
+                for ticker in uncached_tickers:
+                    self.country_cache[ticker] = 'UNKNOWN'
+        
+        # Return country mapping for requested tickers
+        return {ticker: self.country_cache.get(ticker, 'UNKNOWN') for ticker in tickers}
     
     def scrape_article_content(self, url: str, max_chars: int = 6000) -> str:
         """Scrape article content from URL, limited to max_chars"""
@@ -211,13 +302,16 @@ class SentimentService:
             logger.error(f"❌ Claude API connection test failed: {e}")
             return False
     
-    def create_sentiment_prompt(self, article: Dict[str, Any]) -> str:
-        """Create a prompt for sentiment analysis"""
+    async def create_sentiment_prompt(self, article: Dict[str, Any]) -> str:
+        """Create a prompt for sentiment analysis with country-specific considerations"""
         ticker = article.get('ticker', 'UNKNOWN')
         headline = article.get('headline', '')
         summary = article.get('summary', '')
         full_content = article.get('full_content', '')
         article_url = article.get('article_url', '')
+        
+        # Get country information for this ticker
+        country = await self.get_ticker_country(ticker)
         
         # Always scrape full content from URL if available
         if article_url:
@@ -234,6 +328,7 @@ class SentimentService:
         # Apply 6K character limit to prevent token overflow
         content_to_analyze = content_to_analyze[:6000] if content_to_analyze else f"{headline}\n\n{summary}"
 
+        # Base prompt
         prompt = f"""
 Analyze the following news article about {ticker} and determine if it suggests a BUY, SELL, or HOLD signal based on the sentiment and potential market impact.
 
@@ -248,9 +343,15 @@ Instructions:
    - SELL: For negative sentiment with strong bearish indicators  
    - HOLD: For neutral sentiment or unclear market impact
 4. Rate confidence as high, medium, or low
-5. Give a brief explanation (1-2 sentences)
+5. Give a brief explanation (1-2 sentences)"""
 
-Special consideration: If the article discusses Bitcoin, cryptocurrency investments, or crypto-related business activities by the company, these should generally be viewed as high-confidence market movers. Bitcoin/crypto news often has significant immediate market impact on stock prices.
+        # Add Bitcoin/crypto consideration ONLY for USA tickers
+        if country == 'USA':
+            prompt += """
+
+Special consideration: If the article discusses Bitcoin, cryptocurrency investments, or crypto-related business activities by the company, these should generally be viewed as high-confidence market movers. Bitcoin/crypto news often has significant immediate market impact on stock prices."""
+
+        prompt += f"""
 
 Respond in this exact JSON format:
 {{
@@ -280,8 +381,8 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 logger.debug(f"📋 Cache hit for sentiment analysis: {article.get('ticker', 'UNKNOWN')}")
                 return self.sentiment_cache[content_hash]
             
-            # Create prompt
-            prompt = self.create_sentiment_prompt(article)
+            # Create prompt (now with country-specific logic)
+            prompt = await self.create_sentiment_prompt(article)
             
             # Analyze with Claude API
             start_time = time.time()
@@ -438,6 +539,12 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         
         logger.info(f"🧠 SENTIMENT ANALYSIS (CLAUDE API): Processing batch of {len(articles)} articles")
         
+        # Pre-load country data for all tickers in batch for efficiency
+        tickers = [article.get('ticker', '') for article in articles if article.get('ticker')]
+        if tickers:
+            await self.get_batch_ticker_countries(tickers)
+            logger.debug(f"Pre-loaded country data for {len(tickers)} tickers")
+        
         # Process articles in parallel (limited by ThreadPoolExecutor)
         analysis_tasks = [self.analyze_article_sentiment(article) for article in articles]
         
@@ -577,20 +684,56 @@ if __name__ == "__main__":
         service = SentimentService()
         await service.initialize()
         
-        # Test article
-        test_article = {
-            'ticker': 'AAPL',
-            'headline': 'Apple Reports Strong Q4 Earnings, Beats Expectations',
-            'summary': 'Apple Inc. reported quarterly earnings that exceeded analyst expectations, driven by strong iPhone sales.',
-            'full_content': 'Apple Inc. reported quarterly earnings that exceeded analyst expectations, driven by strong iPhone sales and services revenue growth.',
-            'content_hash': 'test_hash_123'
-        }
+        # Test articles - simulate USA and non-USA tickers
+        test_articles = [
+            {
+                'ticker': 'AAPL',  # Assuming USA ticker
+                'headline': 'Apple Reports Strong Q4 Earnings, Announces Bitcoin Investment',
+                'summary': 'Apple Inc. reported quarterly earnings that exceeded analyst expectations and announced a major Bitcoin investment strategy.',
+                'full_content': 'Apple Inc. reported quarterly earnings that exceeded analyst expectations, driven by strong iPhone sales and services revenue growth. The company also announced plans to invest $1 billion in Bitcoin.',
+                'content_hash': 'test_hash_usa_123'
+            },
+            {
+                'ticker': 'TSM',  # Assuming non-USA ticker (Taiwan)
+                'headline': 'Taiwan Semiconductor Announces Bitcoin Mining Chip Development',
+                'summary': 'Taiwan Semiconductor announced development of new chips optimized for Bitcoin mining.',
+                'full_content': 'Taiwan Semiconductor announced development of new chips optimized for Bitcoin mining, targeting the growing cryptocurrency market.',
+                'content_hash': 'test_hash_non_usa_456'
+            }
+        ]
         
-        result = await service.analyze_article_sentiment(test_article)
-        print(f"Test result: {result}")
+        # Test prompt generation to see country-specific logic
+        print("=== TESTING COUNTRY-SPECIFIC SENTIMENT PROMPTS ===")
         
-        stats = service.get_stats()
-        print(f"Stats: {stats}")
+        for article in test_articles:
+            ticker = article['ticker']
+            
+            # Manually set country for testing (simulate database lookup)
+            if ticker == 'AAPL':
+                service.country_cache[ticker] = 'USA'
+            else:
+                service.country_cache[ticker] = 'Taiwan'
+            
+            print(f"\n🔍 Testing ticker: {ticker}")
+            prompt = await service.create_sentiment_prompt(article)
+            
+            # Check if Bitcoin consideration is included
+            has_bitcoin_consideration = "Bitcoin/crypto news often has significant immediate market impact" in prompt
+            country = service.country_cache.get(ticker, 'UNKNOWN')
+            
+            print(f"📍 Country: {country}")
+            print(f"🪙 Bitcoin consideration included: {has_bitcoin_consideration}")
+            
+            if country == 'USA' and has_bitcoin_consideration:
+                print("✅ CORRECT: USA ticker has Bitcoin consideration")
+            elif country != 'USA' and not has_bitcoin_consideration:
+                print("✅ CORRECT: Non-USA ticker does NOT have Bitcoin consideration")
+            else:
+                print("❌ ERROR: Bitcoin consideration logic is incorrect")
+            
+            print("-" * 60)
+        
+        print("\n🧪 Test completed - Bitcoin consideration now only applies to USA tickers!")
         
         await service.cleanup()
     
