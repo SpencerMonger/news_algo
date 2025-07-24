@@ -457,6 +457,244 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         
         return {"error": "Max retries exceeded"}
 
+    async def query_claude_api_batch(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Send batch request to Claude API for multiple articles"""
+        try:
+            # Prepare batch requests
+            batch_requests = []
+            article_prompts = {}  # Store prompts by custom_id for later reference
+            
+            for i, article in enumerate(articles):
+                custom_id = f"article_{i}_{article.get('content_hash', '')[:8]}"
+                prompt = await self.create_sentiment_prompt(article)
+                
+                # Store the prompt for later reference
+                article_prompts[custom_id] = {
+                    'article': article,
+                    'prompt': prompt
+                }
+                
+                batch_request = {
+                    "custom_id": custom_id,
+                    "params": {
+                        "model": self.model,
+                        "max_tokens": 300,
+                        "temperature": 0.0,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": f"You are a financial analyst expert at analyzing news sentiment and its impact on stock prices. Always respond with valid JSON.\n\n{prompt}"
+                            }
+                        ]
+                    }
+                }
+                batch_requests.append(batch_request)
+            
+            # Create the batch
+            logger.info(f"🚀 Creating batch with {len(batch_requests)} requests...")
+            
+            batch_payload = {
+                "requests": batch_requests
+            }
+            
+            async with self.session.post(
+                "https://api.anthropic.com/v1/messages/batches",
+                json=batch_payload
+            ) as response:
+                
+                if response.status != 200:
+                    response_text = await response.text()
+                    logger.error(f"❌ Batch creation failed: {response.status} - {response_text}")
+                    return []
+                
+                batch_data = await response.json()
+                batch_id = batch_data['id']
+                logger.info(f"✅ Batch created: {batch_id}")
+                
+                # Monitor batch processing
+                results = await self.monitor_batch_processing(batch_id)
+                
+                if not results:
+                    return []
+                
+                # Process batch results
+                return await self.process_batch_results(results, article_prompts)
+                
+        except Exception as e:
+            logger.error(f"❌ Batch processing failed: {e}")
+            return []
+
+    async def monitor_batch_processing(self, batch_id: str, max_wait_time: int = 3600) -> Optional[List[Dict]]:
+        """Monitor batch processing until completion"""
+        start_time = time.time()
+        check_interval = 30  # Check every 30 seconds initially
+        
+        logger.info(f"⏳ Monitoring batch {batch_id}...")
+        
+        while time.time() - start_time < max_wait_time:
+            try:
+                # Check batch status
+                async with self.session.get(
+                    f"https://api.anthropic.com/v1/messages/batches/{batch_id}"
+                ) as response:
+                    
+                    if response.status != 200:
+                        logger.error(f"❌ Failed to check batch status: {response.status}")
+                        return None
+                    
+                    batch_status = await response.json()
+                    processing_status = batch_status['processing_status']
+                    request_counts = batch_status.get('request_counts', {})
+                    
+                    logger.info(f"📊 Batch {batch_id} status: {processing_status}")
+                    logger.info(f"   Processing: {request_counts.get('processing', 0)}, "
+                               f"Succeeded: {request_counts.get('succeeded', 0)}, "
+                               f"Errored: {request_counts.get('errored', 0)}")
+                    
+                    if processing_status == 'ended':
+                        # Batch completed, get results
+                        results_url = batch_status.get('results_url')
+                        if results_url:
+                            return await self.fetch_batch_results(results_url)
+                        else:
+                            logger.error("❌ Batch ended but no results URL provided")
+                            return None
+                    
+                    elif processing_status == 'canceling':
+                        logger.error("❌ Batch was canceled")
+                        return None
+                    
+                    # Still processing, wait before next check
+                    await asyncio.sleep(check_interval)
+                    
+                    # Increase check interval after first few checks
+                    if check_interval < 120:
+                        check_interval = min(check_interval + 10, 120)
+                        
+            except Exception as e:
+                logger.error(f"❌ Error checking batch status: {e}")
+                await asyncio.sleep(30)
+        
+        logger.error(f"❌ Batch {batch_id} timed out after {max_wait_time} seconds")
+        return None
+
+    async def fetch_batch_results(self, results_url: str) -> List[Dict]:
+        """Fetch batch results from the results URL"""
+        try:
+            logger.info(f"📥 Fetching batch results from {results_url}")
+            
+            async with self.session.get(results_url) as response:
+                if response.status != 200:
+                    logger.error(f"❌ Failed to fetch results: {response.status}")
+                    return []
+                
+                # Results are in JSONL format (one JSON object per line)
+                results_text = await response.text()
+                results = []
+                
+                for line in results_text.strip().split('\n'):
+                    if line.strip():
+                        try:
+                            result = json.loads(line)
+                            results.append(result)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"❌ Failed to parse result line: {e}")
+                            continue
+                
+                logger.info(f"✅ Fetched {len(results)} batch results")
+                return results
+                
+        except Exception as e:
+            logger.error(f"❌ Error fetching batch results: {e}")
+            return []
+
+    async def process_batch_results(self, batch_results: List[Dict], article_prompts: Dict) -> List[Dict[str, Any]]:
+        """Process batch results and convert to sentiment analysis format"""
+        processed_results = []
+        
+        for result in batch_results:
+            try:
+                custom_id = result.get('custom_id')
+                result_data = result.get('result')
+                
+                if not custom_id or not result_data:
+                    continue
+                
+                # Get the original article data
+                if custom_id not in article_prompts:
+                    logger.warning(f"⚠️ Unknown custom_id in results: {custom_id}")
+                    continue
+                
+                article_data = article_prompts[custom_id]
+                article = article_data['article']
+                
+                if result_data.get('type') == 'succeeded':
+                    # Extract the content from the successful result
+                    message = result_data.get('message', {})
+                    content_blocks = message.get('content', [])
+                    
+                    if content_blocks and len(content_blocks) > 0:
+                        content = content_blocks[0].get('text', '')
+                        
+                        # Clean up JSON if wrapped in markdown
+                        content = self.clean_json_from_markdown(content)
+                        
+                        # Parse JSON
+                        try:
+                            parsed_result = json.loads(content)
+                            
+                            # Add metadata
+                            parsed_result['analysis_time_ms'] = 0  # Not available in batch mode
+                            parsed_result['analyzed_at'] = datetime.now()
+                            parsed_result['content_hash'] = article.get('content_hash', '')
+                            parsed_result['country'] = await self.get_ticker_country(article.get('ticker', ''))
+                            
+                            processed_results.append(parsed_result)
+                            
+                            logger.info(f"✅ BATCH SENTIMENT: {article.get('ticker', 'UNKNOWN')} - {parsed_result.get('recommendation', 'UNKNOWN')} "
+                                       f"({parsed_result.get('confidence', 'unknown')} confidence)")
+                            
+                        except json.JSONDecodeError as e:
+                            logger.error(f"❌ JSON parsing failed for {custom_id}: {e}")
+                            # Create default result for parsing failure
+                            processed_results.append(self.create_default_result(article, f"JSON parsing failed: {str(e)}"))
+                    else:
+                        logger.error(f"❌ No content in successful result for {custom_id}")
+                        processed_results.append(self.create_default_result(article, "No content in response"))
+                
+                elif result_data.get('type') == 'errored':
+                    error_info = result_data.get('error', {})
+                    error_msg = error_info.get('message', 'Unknown error')
+                    logger.warning(f"❌ BATCH SENTIMENT FAILED: {article.get('ticker', 'UNKNOWN')} - {error_msg}")
+                    processed_results.append(self.create_default_result(article, error_msg))
+                
+                else:
+                    # Handle other result types (canceled, expired, etc.)
+                    result_type = result_data.get('type', 'unknown')
+                    logger.warning(f"⚠️ Batch result type '{result_type}' for {custom_id}")
+                    processed_results.append(self.create_default_result(article, f"Result type: {result_type}"))
+                    
+            except Exception as e:
+                logger.error(f"❌ Error processing batch result: {e}")
+                continue
+        
+        return processed_results
+
+    def create_default_result(self, article: Dict[str, Any], error_msg: str) -> Dict[str, Any]:
+        """Create a default sentiment result for failed analyses"""
+        return {
+            'ticker': article.get('ticker', 'UNKNOWN'),
+            'sentiment': 'neutral',
+            'recommendation': 'HOLD',
+            'confidence': 'low',
+            'explanation': f'Analysis failed: {error_msg}',
+            'analysis_time_ms': 0,
+            'analyzed_at': datetime.now(),
+            'content_hash': article.get('content_hash', ''),
+            'country': 'UNKNOWN',
+            'error': error_msg
+        }
+
     def clean_json_from_markdown(self, content: str) -> str:
         """Extract JSON from markdown code blocks"""
         if '```json' in content:
@@ -538,6 +776,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         """Get articles from historical_news that need sentiment analysis"""
         try:
             # Get articles that don't have sentiment analysis yet
+            # Fixed: Check for both empty strings and NULL values in ClickHouse
             query = """
             SELECT 
                 hn.ticker, 
@@ -548,7 +787,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             FROM News.historical_news hn
             LEFT JOIN News.historical_sentiment hs 
                 ON hn.content_hash = hs.content_hash
-            WHERE hs.content_hash IS NULL
+            WHERE (hs.content_hash = '' OR hs.content_hash IS NULL)
             AND hn.content_hash != ''
             ORDER BY hn.published_utc DESC
             LIMIT %s
@@ -619,10 +858,10 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         except Exception as e:
             logger.error(f"Error storing sentiment results: {e}")
 
-    async def run_historical_sentiment_analysis(self, batch_size: int = 20):
-        """Run the complete historical sentiment analysis process"""
+    async def run_historical_sentiment_analysis(self, batch_size: int = 50):
+        """Run the complete historical sentiment analysis process using batch processing"""
         try:
-            logger.info("🧠 Starting Historical Sentiment Analysis...")
+            logger.info("🧠 Starting Historical Sentiment Analysis with Batch Processing...")
             
             # Initialize
             if not await self.initialize():
@@ -644,32 +883,25 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                     break
                 
                 self.current_batch = articles  # Store for sentiment result processing
-                logger.info(f"🧠 BATCH {batch_count}: Analyzing {len(articles)} articles...")
+                logger.info(f"🧠 BATCH {batch_count}: Analyzing {len(articles)} articles using Batch API...")
                 
-                # Process articles in parallel
-                analysis_tasks = [self.analyze_article_sentiment(article) for article in articles]
-                sentiment_results = await asyncio.gather(*analysis_tasks, return_exceptions=True)
-                
-                # Filter out exceptions and prepare valid results
-                valid_results = []
-                for i, result in enumerate(sentiment_results):
-                    if isinstance(result, Exception):
-                        logger.error(f"Exception in sentiment analysis for article {i}: {result}")
-                        continue
-                    valid_results.append(result)
+                # Process articles using batch API
+                sentiment_results = await self.query_claude_api_batch(articles)
                 
                 # Store results in database
-                if valid_results:
-                    await self.store_sentiment_results(valid_results)
+                if sentiment_results:
+                    await self.store_sentiment_results(sentiment_results)
+                    self.stats['articles_analyzed'] += len(sentiment_results)
                 
+                self.stats['articles_processed'] += len(articles)
                 total_processed += len(articles)
                 
                 # Progress logging
-                logger.info(f"📈 BATCH {batch_count} COMPLETE: {len(valid_results)}/{len(articles)} successful analyses")
+                logger.info(f"📈 BATCH {batch_count} COMPLETE: {len(sentiment_results)}/{len(articles)} successful analyses")
                 logger.info(f"🔄 TOTAL PROGRESS: {total_processed} articles processed")
                 
-                # Rate limiting between batches
-                await asyncio.sleep(2)
+                # Rate limiting between batches (batch API handles internal rate limiting)
+                await asyncio.sleep(5)
             
             # Final stats
             elapsed = time.time() - self.stats['start_time']
@@ -681,6 +913,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             logger.info(f"  • Content scraped: {self.stats['content_scraped']}")
             logger.info(f"  • Cache hits: {self.stats['cache_hits']}")
             logger.info(f"  • Time elapsed: {elapsed/60:.1f} minutes")
+            logger.info(f"  • 💰 Estimated cost savings: 50% vs standard API")
             
             return True
             
