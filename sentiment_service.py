@@ -632,6 +632,16 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             'cache_size': len(self.sentiment_cache)
         }
     
+    def clear_cache(self):
+        """Clear both sentiment and country caches for testing purposes"""
+        sentiment_cache_size = len(self.sentiment_cache)
+        country_cache_size = len(self.country_cache)
+        
+        self.sentiment_cache.clear()
+        self.country_cache.clear()
+        
+        logger.info(f"🧹 CACHE CLEARED: {sentiment_cache_size} sentiment entries, {country_cache_size} country entries")
+    
     async def cleanup(self):
         """Clean up resources"""
         if self.session:
@@ -652,6 +662,15 @@ async def get_sentiment_service() -> SentimentService:
         await sentiment_service.initialize()
     
     return sentiment_service
+
+async def clear_sentiment_cache():
+    """Clear the global sentiment service cache for testing purposes"""
+    global sentiment_service
+    
+    if sentiment_service is not None:
+        sentiment_service.clear_cache()
+    else:
+        logger.info("🧹 CACHE CLEAR: No global sentiment service instance exists")
 
 async def analyze_articles_with_sentiment(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """

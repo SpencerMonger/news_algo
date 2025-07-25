@@ -974,6 +974,7 @@ class ContinuousPriceMonitor:
                 AND ticker IN ({ticker_placeholders})
                 GROUP BY ticker
                 HAVING change_pct >= 5.0 AND price_count >= 2
+                AND dateDiff('second', argMin(timestamp, timestamp), argMax(timestamp, timestamp)) <= 40
                 """
                 
                 debug_result = self.ch_manager.client.query(debug_query)

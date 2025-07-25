@@ -68,3 +68,7 @@ python3 run_system.py --skip-list --socket --any
 
 # Debugging: WebSocket without sentiment analysis
 python3 run_system.py --skip-list --socket --no-sentiment
+
+
+#### Grep for failed sentiment
+grep "blocked by sentiment filter" logs/run_system.log.2025-07-24 | grep -o '[A-Z][A-Z][A-Z][A-Z]*:' | cut -d':' -f1 | sort | uniq

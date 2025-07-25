@@ -169,27 +169,86 @@ class ClickHouseManager:
             logger.error(f"Error creating table: {e}")
             raise
 
+    def create_news_testing_table(self):
+        """Create the news_testing table with same schema as breaking_news for testing"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS News.news_testing (
+            id UUID DEFAULT generateUUIDv4(),
+            timestamp DateTime64(3) DEFAULT now64(),
+            source String,
+            ticker String,
+            headline String,
+            published_utc String,
+            article_url String,
+            summary String,
+            full_content String,
+            detected_at DateTime64(3) DEFAULT now64(),
+            processing_latency_ms UInt32,
+            market_relevant UInt8 DEFAULT 0,
+            
+            -- Performance tracking
+            source_check_time DateTime64(3),
+            content_hash String,
+            
+            -- Classification fields
+            news_type String DEFAULT 'other',
+            urgency_score UInt8 DEFAULT 0,
+            
+            -- Sentiment analysis fields
+            sentiment String DEFAULT 'neutral',
+            recommendation String DEFAULT 'HOLD',
+            confidence String DEFAULT 'low',
+            explanation String DEFAULT '',
+            analysis_time_ms UInt32 DEFAULT 0,
+            analyzed_at DateTime64(3) DEFAULT now64(),
+            
+            INDEX idx_ticker (ticker) TYPE bloom_filter GRANULARITY 1,
+            INDEX idx_timestamp (timestamp) TYPE minmax GRANULARITY 3,
+            INDEX idx_source (source) TYPE set(100) GRANULARITY 1,
+            INDEX idx_content_hash (content_hash) TYPE bloom_filter GRANULARITY 1,
+            INDEX idx_sentiment (sentiment) TYPE set(10) GRANULARITY 1,
+            INDEX idx_recommendation (recommendation) TYPE set(10) GRANULARITY 1
+        ) 
+        ENGINE = ReplacingMergeTree(detected_at)
+        PARTITION BY toYYYYMM(timestamp)
+        ORDER BY (content_hash, article_url)
+        SETTINGS index_granularity = 8192
+        """
+        
+        try:
+            self.client.command(create_table_sql)
+            logger.info("news_testing table created/verified with sentiment analysis columns")
+        except Exception as e:
+            logger.error(f"Error creating news_testing table: {e}")
+            raise
+
     def insert_articles(self, articles: List[Dict[str, Any]]) -> int:
         """Insert articles in batch for better performance"""
+        return self.insert_articles_to_table(articles, 'breaking_news')
+
+    def insert_articles_to_table(self, articles: List[Dict[str, Any]], table_name: str) -> int:
+        """Insert articles into specified table in batch for better performance"""
         if not articles:
             return 0
             
         try:
-            logger.info(f"Processing batch of {len(articles)} articles for insertion")
-            article_logger.info(f"BATCH_START: Processing {len(articles)} articles")
+            logger.info(f"Processing batch of {len(articles)} articles for insertion into {table_name}")
+            article_logger.info(f"BATCH_START: Processing {len(articles)} articles into {table_name}")
             
-            # Get recently seen tickers to avoid duplicate notifications
-            recent_tickers_query = """
-            SELECT DISTINCT ticker
-            FROM News.breaking_news
-            WHERE detected_at >= now() - INTERVAL 10 MINUTE
-            AND ticker != ''
-            """
-            recent_result = self.client.query(recent_tickers_query)
-            recently_seen_tickers = {row[0] for row in recent_result.result_rows}
-            
-            # Track tickers for immediate notifications (only TRULY NEW tickers)
+            # Only do ticker notifications and duplicate checking for breaking_news table
             new_tickers_for_notification = []
+            if table_name == 'breaking_news':
+                # Get recently seen tickers to avoid duplicate notifications
+                recent_tickers_query = """
+                SELECT DISTINCT ticker
+                FROM News.breaking_news
+                WHERE detected_at >= now() - INTERVAL 10 MINUTE
+                AND ticker != ''
+                """
+                recent_result = self.client.query(recent_tickers_query)
+                recently_seen_tickers = {row[0] for row in recent_result.result_rows}
+            else:
+                recently_seen_tickers = set()
             
             # Prepare data for insertion
             data_rows = []
@@ -199,9 +258,9 @@ class ClickHouseManager:
                 source = article.get('source', '')
                 content_hash = article.get('content_hash', '')
                 
-                # Check if this is a duplicate by content hash
+                # Check if this is a duplicate by content hash (only for breaking_news)
                 is_duplicate = False
-                if content_hash:
+                if table_name == 'breaking_news' and content_hash:
                     try:
                         duplicate_check = self.client.query(
                             f"SELECT COUNT(*) FROM News.breaking_news WHERE content_hash = '{content_hash}'"
@@ -215,15 +274,15 @@ class ClickHouseManager:
                     logger.info(f"Skipping duplicate article for {ticker}")
                     continue  # Skip duplicate articles entirely
                 
-                # FIXED: Only track TRULY NEW tickers for immediate notification
-                if ticker and ticker != 'UNKNOWN' and ticker not in recently_seen_tickers:
+                # FIXED: Only track TRULY NEW tickers for immediate notification (only for breaking_news)
+                if table_name == 'breaking_news' and ticker and ticker != 'UNKNOWN' and ticker not in recently_seen_tickers:
                     new_tickers_for_notification.append({
                         'ticker': ticker,
                         'timestamp': article.get('timestamp', datetime.now())
                     })
                     logger.info(f"🔥 TRULY NEW TICKER DETECTED: {ticker} - WILL TRIGGER IMMEDIATE NOTIFICATION!")
                     recently_seen_tickers.add(ticker)  # Add to set to avoid duplicate notifications in same batch
-                elif ticker and ticker != 'UNKNOWN':
+                elif table_name == 'breaking_news' and ticker and ticker != 'UNKNOWN':
                     logger.debug(f"📝 EXISTING TICKER: {ticker} - no immediate notification needed")
                 
                 # Debug timestamp issue for NEW articles only
@@ -245,10 +304,28 @@ class ClickHouseManager:
                 # Log potential timing issues
                 current_time = datetime.now()
                 if isinstance(timestamp_val, datetime):
-                    time_diff = (current_time - timestamp_val).total_seconds()
-                    if abs(time_diff) > 60:  # More than 1 minute difference
-                        article_logger.warning(f"TIME_DIFF: {ticker} | Article timestamp: {timestamp_val} | Current: {current_time} | Diff: {time_diff:.1f}s")
-                        article_logger.warning(f"POTENTIAL_DUPLICATE: {ticker} | This may be a duplicate article with updated timestamp")
+                    try:
+                        # Handle timezone-aware vs timezone-naive datetime comparison
+                        if timestamp_val.tzinfo is not None and current_time.tzinfo is None:
+                            # timestamp_val is timezone-aware, current_time is naive
+                            # Convert timestamp_val to naive for comparison
+                            timestamp_val_naive = timestamp_val.replace(tzinfo=None)
+                            time_diff = (current_time - timestamp_val_naive).total_seconds()
+                        elif timestamp_val.tzinfo is None and current_time.tzinfo is not None:
+                            # timestamp_val is naive, current_time is timezone-aware
+                            # Convert current_time to naive for comparison
+                            current_time_naive = current_time.replace(tzinfo=None)
+                            time_diff = (current_time_naive - timestamp_val).total_seconds()
+                        else:
+                            # Both are the same type (both naive or both aware)
+                            time_diff = (current_time - timestamp_val).total_seconds()
+                        
+                        if abs(time_diff) > 60:  # More than 1 minute difference
+                            article_logger.warning(f"TIME_DIFF: {ticker} | Article timestamp: {timestamp_val} | Current: {current_time} | Diff: {time_diff:.1f}s")
+                            article_logger.warning(f"POTENTIAL_DUPLICATE: {ticker} | This may be a duplicate article with updated timestamp")
+                    except Exception as e:
+                        # If there's any issue with time comparison, just log and continue
+                        logger.debug(f"Could not compare timestamps for {ticker}: {e}")
                 
                 data_rows.append([
                     timestamp_val,
@@ -290,10 +367,10 @@ class ClickHouseManager:
             
             # Log insertion attempt
             insertion_time = datetime.now()
-            article_logger.info(f"DB_INSERT_START: {insertion_time} | {len(data_rows)} articles")
+            article_logger.info(f"DB_INSERT_START: {insertion_time} | {len(data_rows)} articles | Table: {table_name}")
             
             result = self.client.insert(
-                'News.breaking_news',
+                f'News.{table_name}',
                 data_rows,
                 column_names=columns
             )
@@ -301,14 +378,15 @@ class ClickHouseManager:
             completion_time = datetime.now()
             insert_duration = (completion_time - insertion_time).total_seconds()
             
-            logger.info(f"Inserted {len(data_rows)} articles into ClickHouse in {insert_duration:.2f}s")
-            article_logger.info(f"DB_INSERT_COMPLETE: {completion_time} | {len(data_rows)} articles | Duration: {insert_duration:.2f}s")
+            logger.info(f"Inserted {len(data_rows)} articles into {table_name} in {insert_duration:.2f}s")
+            article_logger.info(f"DB_INSERT_COMPLETE: {completion_time} | {len(data_rows)} articles | Duration: {insert_duration:.2f}s | Table: {table_name}")
             
-            # Force merge for immediate deduplication
-            self.force_merge_breaking_news()
+            # Force merge for immediate deduplication (only for breaking_news)
+            if table_name == 'breaking_news':
+                self.force_merge_breaking_news()
             
-            # IMMEDIATE TICKER NOTIFICATIONS - ELIMINATES POLLING LAG
-            if new_tickers_for_notification:
+            # IMMEDIATE TICKER NOTIFICATIONS - ELIMINATES POLLING LAG (only for breaking_news)
+            if table_name == 'breaking_news' and new_tickers_for_notification:
                 logger.info(f"🚨 TRULY NEW TICKERS DETECTED: {len(new_tickers_for_notification)} tickers - SENDING IMMEDIATE NOTIFICATIONS!")
                 
                 # ZERO-LAG SOLUTION: Trigger immediate price checking directly
@@ -347,17 +425,18 @@ class ClickHouseManager:
                     timestamp = ticker_info['timestamp']
                     logger.info(f"📢 IMMEDIATE NOTIFICATION QUEUED: {ticker} at {timestamp}")
                     
-            else:
+            elif table_name == 'breaking_news':
                 logger.info("📝 No truly new tickers detected - all tickers were recently seen")
                 
-            logger.info(f"✅ IMMEDIATE NOTIFICATIONS: Processed {len(new_tickers_for_notification)} truly new tickers")
+            if table_name == 'breaking_news':
+                logger.info(f"✅ IMMEDIATE NOTIFICATIONS: Processed {len(new_tickers_for_notification)} truly new tickers")
             
             return len(data_rows)
             
         except Exception as e:
             error_time = datetime.now()
-            logger.error(f"Error inserting articles: {e}")
-            article_logger.error(f"DB_INSERT_ERROR: {error_time} | {e}")
+            logger.error(f"Error inserting articles into {table_name}: {e}")
+            article_logger.error(f"DB_INSERT_ERROR: {error_time} | {e} | Table: {table_name}")
             raise
 
     def get_recent_articles(self, ticker: str = None, hours: int = 24) -> List[Dict]:

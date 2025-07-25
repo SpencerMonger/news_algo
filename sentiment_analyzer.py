@@ -452,7 +452,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             async def run_analysis():
                 return await self.query_claude(prompt)
             
-            analysis = asyncio.run(run_analysis())
+            analysis = self._run_async_safely(run_analysis())
             
             if analysis and 'error' not in analysis:
                 successful_analyses += 1
@@ -554,7 +554,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             async def run_analysis():
                 return await self.query_claude(prompt)
             
-            analysis = asyncio.run(run_analysis())
+            analysis = self._run_async_safely(run_analysis())
             
             if analysis and 'error' not in analysis:
                 result = {
@@ -589,6 +589,24 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         
         return results
     
+    def _run_async_safely(self, coro):
+        """Safely run an async coroutine, handling event loop conflicts"""
+        try:
+            # Try to get the existing event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is already running, use thread executor
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, coro)
+                    return future.result()
+            else:
+                # If no loop is running, use asyncio.run
+                return asyncio.run(coro)
+        except RuntimeError:
+            # No event loop exists, create one
+            return asyncio.run(coro)
+
     def test_claude_connection(self):
         """Test connection to Claude API"""
         print("Testing Claude API connection...")
@@ -600,7 +618,8 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             async def run_test():
                 return await self.query_claude(test_prompt)
             
-            response = asyncio.run(run_test())
+            # Handle event loop properly
+            response = self._run_async_safely(run_test())
             
             if response and 'error' not in response:
                 print("✅ Claude API connection successful!")
@@ -762,6 +781,52 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         except Exception as e:
             print(f"❌ Error in debug: {e}")
 
+    async def analyze_single_url(self, url: str, ticker: str = "UNKNOWN"):
+        """Analyze a single URL for sentiment"""
+        print(f"\n{'='*80}")
+        print(f"ANALYZING SINGLE URL")
+        print(f"{'='*80}")
+        print(f"URL: {url}")
+        print(f"Ticker: {ticker}")
+        print(f"{'='*80}")
+        
+        # Create a test article from the URL
+        article = {
+            'ticker': ticker,
+            'headline': 'Single URL Analysis',
+            'summary': 'Analyzing single URL provided by user',
+            'full_content': '',
+            'article_url': url,
+            'source': 'User Input',
+            'timestamp': datetime.now()
+        }
+        
+        # Create prompt and analyze
+        prompt = self.create_sentiment_prompt(article)
+        analysis = await self.query_claude(prompt)
+        
+        if analysis and 'error' not in analysis:
+            print(f"✅ ANALYSIS SUCCESSFUL:")
+            print(f"   Sentiment: {analysis.get('sentiment', 'unknown')}")
+            print(f"   Recommendation: {analysis.get('recommendation', 'unknown')}")
+            print(f"   Confidence: {analysis.get('confidence', 'unknown')}")
+            print(f"   Explanation: {analysis.get('explanation', 'No explanation provided')}")
+            
+            logger.info(f"SINGLE URL ANALYSIS - {ticker}: {analysis.get('recommendation', 'unknown')} "
+                       f"({analysis.get('confidence', 'unknown')} confidence)")
+            return analysis
+        else:
+            print(f"❌ ANALYSIS FAILED:")
+            if analysis:
+                print(f"   Error: {analysis.get('error', 'Unknown error')}")
+                if 'raw_response' in analysis:
+                    print(f"   Raw Response: {analysis['raw_response'][:200]}...")
+            else:
+                print(f"   Error: No response from Claude")
+            
+            logger.warning(f"SINGLE URL ANALYSIS FAILED - {ticker}: {analysis.get('error', 'Unknown') if analysis else 'No response'}")
+            return None
+
     async def test_url_consistency(self, url: str, test_runs: int = 3):
         """Test if sentiment analysis is consistent for the same URL across multiple runs"""
         print(f"\n{'='*80}")
@@ -863,7 +928,18 @@ async def main_async():
     try:
         # Check for debug commands
         if len(sys.argv) > 1:
-            if sys.argv[1] == '--debug-scraping':
+            arg1 = sys.argv[1]
+            
+            # Check if it's a URL (starts with http)
+            if arg1.startswith('http'):
+                # Single URL analysis
+                url = arg1
+                ticker = sys.argv[2] if len(sys.argv) > 2 else "UNKNOWN"
+                print(f"\n🔍 Analyzing single URL...")
+                await analyzer.analyze_single_url(url, ticker)
+                return
+            
+            elif arg1 == '--debug-scraping':
                 if len(sys.argv) > 2:
                     # Debug specific URL
                     url = sys.argv[2]
@@ -875,7 +951,7 @@ async def main_async():
                     await analyzer.debug_recent_article()
                 return
             
-            elif sys.argv[1] == '--debug-ticker':
+            elif arg1 == '--debug-ticker':
                 if len(sys.argv) > 2:
                     ticker = sys.argv[2]
                     print(f"\n🔍 Debugging scraping for ticker: {ticker}")
@@ -884,12 +960,12 @@ async def main_async():
                     print("❌ Please provide a ticker symbol: --debug-ticker AAPL")
                 return
             
-            elif sys.argv[1] == '--test-deterministic':
+            elif arg1 == '--test-deterministic':
                 print("\n🧪 Running deterministic test...")
                 analyzer.test_deterministic_analysis(test_runs=5)
                 return
             
-            elif sys.argv[1] == '--test-url-consistency':
+            elif arg1 == '--test-url-consistency':
                 if len(sys.argv) > 2:
                     url = sys.argv[2]
                     test_runs = 3 # Default to 3 runs
@@ -904,9 +980,11 @@ async def main_async():
                     print("❌ Please provide a URL: --test-url-consistency http://example.com")
                 return
             
-            elif sys.argv[1] == '--help':
+            elif arg1 == '--help':
                 print("\n📖 USAGE:")
                 print("  python3 sentiment_analyzer.py                    # Run normal analysis")
+                print("  python3 sentiment_analyzer.py <URL>              # Analyze single URL")
+                print("  python3 sentiment_analyzer.py <URL> <TICKER>     # Analyze single URL with ticker")
                 print("  python3 sentiment_analyzer.py --debug-scraping   # Debug recent article scraping")
                 print("  python3 sentiment_analyzer.py --debug-scraping <URL>  # Debug specific URL")
                 print("  python3 sentiment_analyzer.py --debug-ticker <TICKER>  # Debug specific ticker")
