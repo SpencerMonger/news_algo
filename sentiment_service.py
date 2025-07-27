@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Sentiment Analysis Service - Integrated into NewsHead Pipeline
-Analyzes articles before database insertion using Claude API
+Analyzes articles before database insertion using Claude API with native load balancing
 """
 
 import asyncio
@@ -12,6 +12,7 @@ import time
 import os
 from datetime import datetime
 from typing import Dict, Any, Optional, List
+from dataclasses import dataclass
 import aiohttp
 from concurrent.futures import ThreadPoolExecutor
 import re
@@ -29,21 +30,303 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@dataclass
+class APIKeyInfo:
+    """Information about an API key for load balancing"""
+    key: str
+    last_8_chars: str
+    request_count: int
+    success_count: int
+    failure_count: int
+    rate_limit_count: int
+    last_used: float
+    is_rate_limited: bool
+    rate_limit_reset_time: float
+
+class NativeLoadBalancer:
+    """
+    Native Python load balancer for Claude API keys
+    Provides Portkey-like functionality without external dependencies
+    """
+    
+    def __init__(self):
+        self.api_keys: List[APIKeyInfo] = []
+        self.current_key_index = 0
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.claude_endpoint = "https://api.anthropic.com/v1/messages"
+        self.model = "claude-3-5-sonnet-20240620"
+        
+        self.stats = {
+            'total_requests': 0,
+            'successful_requests': 0,
+            'failed_requests': 0,
+            'rate_limit_hits': 0,
+            'key_switches': 0
+        }
+        
+    async def initialize(self):
+        """Initialize the load balancer with available API keys"""
+        try:
+            # Load all available API keys from environment
+            api_keys = []
+            
+            # Primary key
+            api_key_1 = os.getenv('ANTHROPIC_API_KEY')
+            if api_key_1:
+                api_keys.append(api_key_1)
+                
+            # Additional keys (support up to 9 total keys)
+            for i in range(2, 10):
+                key = os.getenv(f'ANTHROPIC_API_KEY{i}')
+                if key and key not in api_keys:  # Avoid duplicates
+                    api_keys.append(key)
+            
+            if not api_keys:
+                raise Exception("No API keys found in environment variables")
+            
+            # Create APIKeyInfo objects
+            for key in api_keys:
+                key_info = APIKeyInfo(
+                    key=key,
+                    last_8_chars=key[-8:] if len(key) >= 8 else key,
+                    request_count=0,
+                    success_count=0,
+                    failure_count=0,
+                    rate_limit_count=0,
+                    last_used=0,
+                    is_rate_limited=False,
+                    rate_limit_reset_time=0
+                )
+                self.api_keys.append(key_info)
+            
+            logger.info(f"🔑 NATIVE LOAD BALANCER: Initialized with {len(self.api_keys)} API keys")
+            for i, key_info in enumerate(self.api_keys, 1):
+                logger.info(f"🔑 KEY {i}: Anthropic Claude - {key_info.last_8_chars}")
+            
+            # Create aiohttp session with generous timeouts for Claude API
+            timeout = aiohttp.ClientTimeout(total=180, connect=30)
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(
+                    limit=50,
+                    limit_per_host=20,
+                    ttl_dns_cache=300
+                ),
+                headers={
+                    'anthropic-version': '2023-06-01',
+                    'content-type': 'application/json'
+                }
+            )
+            
+            logger.info("✅ Native Load Balancer initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Native Load Balancer: {e}")
+            return False
+    
+    def get_next_available_key(self) -> Optional[APIKeyInfo]:
+        """Get the next available API key using round-robin with rate limit awareness"""
+        current_time = time.time()
+        
+        # First, check if any rate-limited keys can be reset
+        for key_info in self.api_keys:
+            if key_info.is_rate_limited and current_time >= key_info.rate_limit_reset_time:
+                key_info.is_rate_limited = False
+                logger.info(f"🔓 KEY RESET: {key_info.last_8_chars} rate limit reset")
+        
+        # Find available keys (not rate limited)
+        available_keys = [k for k in self.api_keys if not k.is_rate_limited]
+        
+        if not available_keys:
+            logger.warning("⚠️ ALL KEYS RATE LIMITED - using least recently rate limited")
+            # Use the key with the earliest reset time
+            return min(self.api_keys, key=lambda k: k.rate_limit_reset_time)
+        
+        # Round-robin through available keys
+        if self.current_key_index >= len(available_keys):
+            self.current_key_index = 0
+        
+        selected_key = available_keys[self.current_key_index]
+        self.current_key_index = (self.current_key_index + 1) % len(available_keys)
+        
+        return selected_key
+    
+    def mark_key_rate_limited(self, key_info: APIKeyInfo, reset_delay: float = 60.0):
+        """Mark a key as rate limited with reset time"""
+        key_info.is_rate_limited = True
+        key_info.rate_limit_count += 1
+        key_info.rate_limit_reset_time = time.time() + reset_delay
+        self.stats['rate_limit_hits'] += 1
+        
+        logger.warning(f"🚫 KEY RATE LIMITED: {key_info.last_8_chars} - reset in {reset_delay}s")
+    
+    async def make_claude_request(self, prompt: str, max_retries: int = 3) -> Dict[str, Any]:
+        """Make a request to Claude API with load balancing and retry logic"""
+        self.stats['total_requests'] += 1
+        
+        for attempt in range(max_retries):
+            # Get next available key
+            key_info = self.get_next_available_key()
+            if not key_info:
+                return {"error": "No API keys available"}
+            
+            try:
+                # Update key usage stats
+                key_info.request_count += 1
+                key_info.last_used = time.time()
+                
+                # Prepare request
+                payload = {
+                    "model": self.model,
+                    "max_tokens": 300,
+                    "temperature": 0.0,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"You are a financial analyst expert at analyzing news sentiment and its impact on stock prices. Always respond with valid JSON.\n\n{prompt}"
+                        }
+                    ]
+                }
+                
+                # Make request with selected key
+                headers = {'x-api-key': key_info.key}
+                
+                async with self.session.post(
+                    self.claude_endpoint, 
+                    json=payload, 
+                    headers=headers
+                ) as response:
+                    
+                    if response.status == 200:
+                        # Success
+                        response_data = await response.json()
+                        key_info.success_count += 1
+                        self.stats['successful_requests'] += 1
+                        
+                        # Extract and parse content
+                        if response_data.get("content") and len(response_data["content"]) > 0:
+                            content = response_data["content"][0]["text"]
+                            content = self._clean_json_from_markdown(content)
+                            
+                            try:
+                                parsed_result = json.loads(content)
+                                logger.debug(f"✅ SUCCESS: Using key {key_info.last_8_chars}")
+                                return parsed_result
+                            except json.JSONDecodeError as e:
+                                logger.error(f"❌ JSON parsing failed: {e}")
+                                return {"error": f"JSON parsing failed: {str(e)}"}
+                        else:
+                            return {"error": "No content in response"}
+                    
+                    elif response.status == 429:
+                        # Rate limit - mark key and try next one
+                        self.mark_key_rate_limited(key_info)
+                        key_info.failure_count += 1
+                        
+                        if attempt < max_retries - 1:
+                            self.stats['key_switches'] += 1
+                            logger.info(f"🔄 SWITCHING KEYS: {key_info.last_8_chars} rate limited, trying next key")
+                            continue
+                        else:
+                            self.stats['failed_requests'] += 1
+                            return {"error": "All keys rate limited"}
+                    
+                    else:
+                        # Other HTTP error
+                        response_text = await response.text()
+                        key_info.failure_count += 1
+                        error_msg = f"HTTP {response.status}: {response_text}"
+                        
+                        if attempt < max_retries - 1:
+                            logger.warning(f"⚠️ HTTP {response.status} with key {key_info.last_8_chars}, retrying...")
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            self.stats['failed_requests'] += 1
+                            return {"error": error_msg}
+                            
+            except Exception as e:
+                key_info.failure_count += 1
+                error_msg = str(e)
+                
+                if attempt < max_retries - 1:
+                    logger.warning(f"⚠️ Request exception with key {key_info.last_8_chars}: {e}, retrying...")
+                    await asyncio.sleep(1)
+                    continue
+                else:
+                    self.stats['failed_requests'] += 1
+                    return {"error": error_msg}
+        
+        self.stats['failed_requests'] += 1
+        return {"error": "Max retries exceeded"}
+    
+    def _clean_json_from_markdown(self, content: str) -> str:
+        """Extract JSON from markdown code blocks"""
+        if '```json' in content:
+            start = content.find('```json') + 7
+            end = content.find('```', start)
+            if end != -1:
+                return content[start:end].strip()
+        elif '```' in content:
+            start = content.find('```') + 3
+            end = content.find('```', start)
+            if end != -1:
+                return content[start:end].strip()
+        return content.strip()
+    
+    def get_load_balancing_stats(self) -> Dict[str, Any]:
+        """Get detailed load balancing statistics"""
+        stats = {
+            'total_keys': len(self.api_keys),
+            'available_keys': len([k for k in self.api_keys if not k.is_rate_limited]),
+            'rate_limited_keys': len([k for k in self.api_keys if k.is_rate_limited]),
+            'total_requests': self.stats['total_requests'],
+            'successful_requests': self.stats['successful_requests'],
+            'failed_requests': self.stats['failed_requests'],
+            'rate_limit_hits': self.stats['rate_limit_hits'],
+            'key_switches': self.stats['key_switches'],
+            'success_rate': (self.stats['successful_requests'] / max(1, self.stats['total_requests']) * 100),
+            'key_details': []
+        }
+        
+        for i, key_info in enumerate(self.api_keys, 1):
+            key_stats = {
+                'key_id': f"Key_{i}",
+                'last_8_chars': key_info.last_8_chars,
+                'request_count': key_info.request_count,
+                'success_count': key_info.success_count,
+                'failure_count': key_info.failure_count,
+                'rate_limit_count': key_info.rate_limit_count,
+                'success_rate': (key_info.success_count / max(1, key_info.request_count) * 100),
+                'is_rate_limited': key_info.is_rate_limited,
+                'last_used': key_info.last_used
+            }
+            stats['key_details'].append(key_stats)
+        
+        return stats
+    
+    async def cleanup(self):
+        """Clean up resources"""
+        if self.session:
+            await self.session.close()
+        logger.info("✅ Native Load Balancer cleanup completed")
+
 class SentimentService:
     """
     Sentiment analysis service for real-time article analysis
-    Designed to be integrated into the news pipeline
-    Uses Claude API for sentiment analysis
+    Now includes native load balancing across multiple API keys
+    Uses Claude API for sentiment analysis with automatic failover
     """
     
     def __init__(self, claude_api_key: str = None):
-        # Claude API configuration
-        self.claude_endpoint = "https://api.anthropic.com/v1/messages"
-        self.api_key = claude_api_key or os.getenv('ANTHROPIC_API_KEY')
-        self.model = "claude-3-5-sonnet-20240620"  # Updated model with higher rate limits
+        # Native load balancer (replaces single key approach)
+        self.load_balancer = NativeLoadBalancer()
         
-        self.session = None
-        self.executor = ThreadPoolExecutor(max_workers=20)  # Increased from 7 to 20 for better concurrency
+        # Legacy support for single API key (backward compatibility)
+        self.legacy_api_key = claude_api_key or os.getenv('ANTHROPIC_API_KEY')
+        
+        self.executor = ThreadPoolExecutor(max_workers=20)
         
         # Sentiment cache to avoid re-analyzing identical content
         self.sentiment_cache: Dict[str, Dict[str, Any]] = {}
@@ -51,13 +334,15 @@ class SentimentService:
         # Country cache to avoid repeated database queries
         self.country_cache: Dict[str, str] = {}
         
-        # Stats tracking
+        # Stats tracking (enhanced with load balancing stats)
         self.stats = {
             'total_analyzed': 0,
             'successful_analyses': 0,
             'failed_analyses': 0,
             'cache_hits': 0,
-            'start_time': time.time()
+            'start_time': time.time(),
+            'load_balancing_enabled': False,
+            'load_balancing_stats': {}
         }
 
     async def get_ticker_country(self, ticker: str) -> str:
@@ -229,39 +514,28 @@ class SentimentService:
             return ""
 
     async def initialize(self):
-        """Initialize the sentiment service"""
+        """Initialize the sentiment service with native load balancing"""
         try:
-            # Check API key
-            if not self.api_key:
-                logger.error("❌ ANTHROPIC_API_KEY not found in environment variables")
-                logger.error("❌ Please add ANTHROPIC_API_KEY=your_key_here to your .env file")
-                return False
+            # Try to initialize native load balancer first
+            load_balancer_success = await self.load_balancer.initialize()
             
-            # Create aiohttp session for async requests with generous timeouts for Claude API
-            timeout = aiohttp.ClientTimeout(total=180, connect=30)
-            self.session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=aiohttp.TCPConnector(
-                    limit=10,
-                    limit_per_host=20,  # Increased from 7 to match max_workers
-                    ttl_dns_cache=300
-                ),
-                headers={
-                    'anthropic-version': '2023-06-01',
-                    'x-api-key': self.api_key,
-                    'content-type': 'application/json'
-                }
-            )
-            
-            # Test connection
-            is_connected = await self.test_connection()
-            if not is_connected:
-                logger.error("❌ Failed to connect to Claude API - sentiment analysis will be disabled")
-                return False
-            
-            logger.info("✅ Claude API Sentiment Analysis Service initialized successfully")
-            logger.info(f"🤖 Using model: {self.model}")
-            return True
+            if load_balancer_success:
+                self.stats['load_balancing_enabled'] = True
+                logger.info("✅ Sentiment Service initialized with NATIVE LOAD BALANCING")
+                logger.info(f"🤖 Using model: {self.load_balancer.model}")
+                logger.info(f"🔑 Load balancing across {len(self.load_balancer.api_keys)} API keys")
+                return True
+            else:
+                # Fallback to legacy single-key mode
+                if self.legacy_api_key:
+                    logger.warning("⚠️ Load balancing failed, falling back to single API key mode")
+                    logger.info("✅ Sentiment Service initialized with SINGLE API KEY")
+                    logger.info(f"🤖 Using model: claude-3-5-sonnet-20240620")
+                    return True
+                else:
+                    logger.error("❌ No API keys found in environment variables")
+                    logger.error("❌ Please add ANTHROPIC_API_KEY=your_key_here to your .env file")
+                    return False
             
         except Exception as e:
             logger.error(f"Error initializing sentiment service: {e}")
@@ -272,31 +546,54 @@ class SentimentService:
         try:
             logger.info("🔍 Testing Claude API connection...")
             
-            test_payload = {
-                "model": self.model,
-                "max_tokens": 20,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": "Respond with just: {'status': 'connected'}"
-                    }
-                ]
-            }
-            
-            async with self.session.post(
-                self.claude_endpoint,
-                json=test_payload
-            ) as response:
+            if self.stats['load_balancing_enabled']:
+                # Test using load balancer
+                test_prompt = "Respond with just: {'status': 'connected'}"
+                result = await self.load_balancer.make_claude_request(test_prompt)
                 
-                if response.status == 200:
-                    response_data = await response.json()
-                    content = response_data.get('content', [{}])[0].get('text', '')
-                    logger.info(f"✅ Claude API connection successful - Response: {content}")
+                if result and 'error' not in result:
+                    logger.info(f"✅ Claude API connection successful via load balancer")
                     return True
                 else:
-                    response_text = await response.text()
-                    logger.error(f"❌ Claude API connection failed: {response.status} - {response_text}")
+                    logger.error(f"❌ Claude API connection failed via load balancer: {result.get('error', 'Unknown error')}")
                     return False
+            else:
+                # Test using legacy single key mode
+                # Create temporary session for testing
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    test_payload = {
+                        "model": "claude-3-5-sonnet-20240620",
+                        "max_tokens": 20,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": "Respond with just: {'status': 'connected'}"
+                            }
+                        ]
+                    }
+                    
+                    headers = {
+                        'anthropic-version': '2023-06-01',
+                        'x-api-key': self.legacy_api_key,
+                        'content-type': 'application/json'
+                    }
+                    
+                    async with session.post(
+                        "https://api.anthropic.com/v1/messages",
+                        json=test_payload,
+                        headers=headers
+                    ) as response:
+                        
+                        if response.status == 200:
+                            response_data = await response.json()
+                            content = response_data.get('content', [{}])[0].get('text', '')
+                            logger.info(f"✅ Claude API connection successful (single key) - Response: {content}")
+                            return True
+                        else:
+                            response_text = await response.text()
+                            logger.error(f"❌ Claude API connection failed (single key): {response.status} - {response_text}")
+                            return False
                     
         except Exception as e:
             logger.error(f"❌ Claude API connection test failed: {e}")
@@ -368,7 +665,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
     
     async def analyze_article_sentiment(self, article: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Analyze sentiment of a single article
+        Analyze sentiment of a single article using native load balancing or legacy mode
         Returns sentiment data to be added to the article
         """
         try:
@@ -384,9 +681,16 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             # Create prompt (now with country-specific logic)
             prompt = await self.create_sentiment_prompt(article)
             
-            # Analyze with Claude API
+            # Analyze with Claude API (load balanced or legacy)
             start_time = time.time()
-            analysis_result = await self.query_claude_api_async(prompt)
+            
+            if self.stats['load_balancing_enabled']:
+                # Use native load balancer
+                analysis_result = await self.load_balancer.make_claude_request(prompt)
+            else:
+                # Use legacy single key approach
+                analysis_result = await self.query_claude_api_legacy(prompt)
+            
             analysis_time = time.time() - start_time
             
             if analysis_result and 'error' not in analysis_result:
@@ -400,7 +704,8 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 if content_hash:
                     self.sentiment_cache[content_hash] = analysis_result
                 
-                logger.info(f"✅ SENTIMENT ANALYSIS: {article.get('ticker', 'UNKNOWN')} - {analysis_result.get('recommendation', 'UNKNOWN')} "
+                mode = "LOAD BALANCED" if self.stats['load_balancing_enabled'] else "SINGLE KEY"
+                logger.info(f"✅ SENTIMENT ANALYSIS ({mode}): {article.get('ticker', 'UNKNOWN')} - {analysis_result.get('recommendation', 'UNKNOWN')} "
                            f"({analysis_result.get('confidence', 'unknown')} confidence) in {analysis_time:.2f}s")
                 
                 return analysis_result
@@ -437,14 +742,27 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 'error': str(e)
             }
     
-    async def query_claude_api_async(self, prompt: str, max_retries: int = 2) -> Optional[Dict[str, Any]]:
-        """Send async request to Claude API with rate limit handling"""
+    async def query_claude_api_legacy(self, prompt: str, max_retries: int = 2) -> Optional[Dict[str, Any]]:
+        """Legacy single-key Claude API method (backward compatibility)"""
+        if not self.load_balancer.session:
+            # Create session if not exists
+            timeout = aiohttp.ClientTimeout(total=180, connect=30)
+            self.load_balancer.session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(limit=10, limit_per_host=7, ttl_dns_cache=300),
+                headers={
+                    'anthropic-version': '2023-06-01',
+                    'x-api-key': self.legacy_api_key,
+                    'content-type': 'application/json'
+                }
+            )
+        
         for attempt in range(max_retries + 1):
             try:
                 payload = {
-                    "model": self.model,
+                    "model": "claude-3-5-sonnet-20240620",
                     "max_tokens": 300,
-                    "temperature": 0.0,  # Consistent results
+                    "temperature": 0.0,
                     "messages": [
                         {
                             "role": "user",
@@ -453,45 +771,35 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                     ]
                 }
                 
-                async with self.session.post(self.claude_endpoint, json=payload) as response:
+                async with self.load_balancer.session.post(
+                    "https://api.anthropic.com/v1/messages", 
+                    json=payload
+                ) as response:
                     
                     if response.status == 200:
                         response_data = await response.json()
                         
-                        # Extract content from Claude response
                         if response_data.get("content") and len(response_data["content"]) > 0:
                             content = response_data["content"][0]["text"]
+                            content = self.load_balancer._clean_json_from_markdown(content)
                             
-                            # Check for empty content
-                            if not content or content.strip() == "":
-                                logger.warning(f"⚠️ Claude API returned empty content!")
-                                return {"error": "Empty response from Claude API"}
-                            
-                            # Clean up JSON if wrapped in markdown
-                            content = self.clean_json_from_markdown(content)
-                            
-                            # Parse JSON
                             try:
                                 parsed_result = json.loads(content)
                                 return parsed_result
                             except json.JSONDecodeError as e:
                                 logger.error(f"❌ JSON parsing failed: {e}")
-                                logger.error(f"❌ Raw content: {repr(content)}")
-                                return {"error": f"JSON parsing failed: {str(e)}", "raw_response": content}
+                                return {"error": f"JSON parsing failed: {str(e)}"}
                         else:
-                            logger.error(f"❌ No content in Claude response!")
                             return {"error": "No content in response"}
                     
                     elif response.status == 429:
-                        # Rate limit error - retry with exponential backoff
                         if attempt < max_retries:
-                            wait_time = (2 ** attempt) * 2  # 2s, 4s, 8s
-                            logger.warning(f"⚠️ Rate limit hit (attempt {attempt + 1}/{max_retries + 1}), waiting {wait_time}s before retry...")
+                            wait_time = (2 ** attempt) * 2
+                            logger.warning(f"⚠️ Rate limit hit (attempt {attempt + 1}/{max_retries + 1}), waiting {wait_time}s...")
                             await asyncio.sleep(wait_time)
                             continue
                         else:
                             response_text = await response.text()
-                            logger.error(f"❌ Rate limit exceeded after {max_retries + 1} attempts")
                             return {"error": f"Rate limit exceeded: {response_text}"}
                     
                     else:
@@ -501,8 +809,8 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                         
             except Exception as e:
                 if attempt < max_retries:
-                    wait_time = (2 ** attempt) * 1  # 1s, 2s, 4s
-                    logger.warning(f"⚠️ Request failed (attempt {attempt + 1}/{max_retries + 1}): {e}, waiting {wait_time}s before retry...")
+                    wait_time = (2 ** attempt) * 1
+                    logger.warning(f"⚠️ Request failed (attempt {attempt + 1}/{max_retries + 1}): {e}, waiting {wait_time}s...")
                     await asyncio.sleep(wait_time)
                     continue
                 else:
@@ -511,33 +819,16 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         
         return {"error": "Max retries exceeded"}
     
-    def clean_json_from_markdown(self, content: str) -> str:
-        """Extract JSON from markdown code blocks"""
-        # Remove markdown code blocks
-        if '```json' in content:
-            # Extract content between ```json and ```
-            start = content.find('```json') + 7
-            end = content.find('```', start)
-            if end != -1:
-                return content[start:end].strip()
-        elif '```' in content:
-            # Extract content between ``` and ```
-            start = content.find('```') + 3
-            end = content.find('```', start)
-            if end != -1:
-                return content[start:end].strip()
-        
-        return content.strip()
-    
     async def analyze_batch_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Analyze sentiment for a batch of articles
+        Analyze sentiment for a batch of articles with native load balancing
         Returns articles with sentiment data added
         """
         if not articles:
             return articles
         
-        logger.info(f"🧠 SENTIMENT ANALYSIS (CLAUDE API): Processing batch of {len(articles)} articles")
+        mode = "LOAD BALANCED" if self.stats['load_balancing_enabled'] else "SINGLE KEY"
+        logger.info(f"🧠 SENTIMENT ANALYSIS ({mode}): Processing batch of {len(articles)} articles")
         
         # Pre-load country data for all tickers in batch for efficiency
         tickers = [article.get('ticker', '') for article in articles if article.get('ticker')]
@@ -600,7 +891,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                     })
                     enriched_articles.append(article)
             
-            logger.info(f"✅ SENTIMENT ANALYSIS COMPLETE: {successful_analyses}/{len(articles)} successful analyses")
+            logger.info(f"✅ SENTIMENT ANALYSIS COMPLETE ({mode}): {successful_analyses}/{len(articles)} successful analyses")
             return enriched_articles
             
         except Exception as e:
@@ -618,19 +909,26 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             return articles
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get sentiment analysis statistics"""
+        """Get sentiment analysis statistics including load balancing stats"""
         runtime = time.time() - self.stats['start_time']
         success_rate = (self.stats['successful_analyses'] / self.stats['total_analyzed'] * 100) if self.stats['total_analyzed'] > 0 else 0
         
-        return {
+        base_stats = {
             'runtime_seconds': runtime,
             'total_analyzed': self.stats['total_analyzed'],
             'successful_analyses': self.stats['successful_analyses'],
             'failed_analyses': self.stats['failed_analyses'],
             'cache_hits': self.stats['cache_hits'],
             'success_rate': success_rate,
-            'cache_size': len(self.sentiment_cache)
+            'cache_size': len(self.sentiment_cache),
+            'load_balancing_enabled': self.stats['load_balancing_enabled']
         }
+        
+        # Add load balancing stats if enabled
+        if self.stats['load_balancing_enabled']:
+            base_stats['load_balancing_stats'] = self.load_balancer.get_load_balancing_stats()
+        
+        return base_stats
     
     def clear_cache(self):
         """Clear both sentiment and country caches for testing purposes"""
@@ -644,8 +942,8 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
     
     async def cleanup(self):
         """Clean up resources"""
-        if self.session:
-            await self.session.close()
+        if self.load_balancer:
+            await self.load_balancer.cleanup()
         if self.executor:
             self.executor.shutdown(wait=True)
         logger.info("✅ Sentiment service cleanup completed")
@@ -676,6 +974,7 @@ async def analyze_articles_with_sentiment(articles: List[Dict[str, Any]]) -> Lis
     """
     Convenience function to analyze articles with sentiment
     This is the main integration point for the news pipeline
+    Now supports native load balancing automatically
     """
     if not articles:
         return articles
@@ -721,38 +1020,42 @@ if __name__ == "__main__":
             }
         ]
         
-        # Test prompt generation to see country-specific logic
-        print("=== TESTING COUNTRY-SPECIFIC SENTIMENT PROMPTS ===")
+        # Test load balancing functionality
+        print("=== TESTING NATIVE LOAD BALANCING SENTIMENT SERVICE ===")
         
-        for article in test_articles:
+        # Show load balancing status
+        stats = service.get_stats()
+        if stats['load_balancing_enabled']:
+            lb_stats = stats['load_balancing_stats']
+            print(f"🔑 Load Balancing: ENABLED with {lb_stats['total_keys']} API keys")
+            print(f"✅ Available Keys: {lb_stats['available_keys']}")
+            print(f"🚫 Rate Limited Keys: {lb_stats['rate_limited_keys']}")
+        else:
+            print("🔑 Load Balancing: DISABLED (using single API key)")
+        
+        # Test batch analysis
+        enriched_articles = await service.analyze_batch_articles(test_articles)
+        
+        print(f"\n📊 Analysis Results:")
+        for article in enriched_articles:
             ticker = article['ticker']
-            
-            # Manually set country for testing (simulate database lookup)
-            if ticker == 'AAPL':
-                service.country_cache[ticker] = 'USA'
-            else:
-                service.country_cache[ticker] = 'Taiwan'
-            
-            print(f"\n🔍 Testing ticker: {ticker}")
-            prompt = await service.create_sentiment_prompt(article)
-            
-            # Check if Bitcoin consideration is included
-            has_bitcoin_consideration = "Bitcoin/crypto news often has significant immediate market impact" in prompt
-            country = service.country_cache.get(ticker, 'UNKNOWN')
-            
-            print(f"📍 Country: {country}")
-            print(f"🪙 Bitcoin consideration included: {has_bitcoin_consideration}")
-            
-            if country == 'USA' and has_bitcoin_consideration:
-                print("✅ CORRECT: USA ticker has Bitcoin consideration")
-            elif country != 'USA' and not has_bitcoin_consideration:
-                print("✅ CORRECT: Non-USA ticker does NOT have Bitcoin consideration")
-            else:
-                print("❌ ERROR: Bitcoin consideration logic is incorrect")
-            
-            print("-" * 60)
+            recommendation = article.get('recommendation', 'UNKNOWN')
+            confidence = article.get('confidence', 'unknown')
+            print(f"   {ticker}: {recommendation} ({confidence} confidence)")
         
-        print("\n🧪 Test completed - Bitcoin consideration now only applies to USA tickers!")
+        # Show final stats
+        final_stats = service.get_stats()
+        print(f"\n📈 Final Statistics:")
+        print(f"   Total Analyzed: {final_stats['total_analyzed']}")
+        print(f"   Success Rate: {final_stats['success_rate']:.1f}%")
+        print(f"   Cache Hits: {final_stats['cache_hits']}")
+        
+        if final_stats['load_balancing_enabled']:
+            lb_stats = final_stats['load_balancing_stats']
+            print(f"   Load Balancer Success Rate: {lb_stats['success_rate']:.1f}%")
+            print(f"   Key Switches: {lb_stats['key_switches']}")
+        
+        print("\n✅ Test completed!")
         
         await service.cleanup()
     

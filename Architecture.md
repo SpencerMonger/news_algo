@@ -5,7 +5,7 @@
 NewsHead is a high-performance real-time stock market news monitoring and price tracking system designed to achieve **sub-10-second** news-to-alert latency. The system implements a zero-lag architecture through process isolation, file-based triggers, and aggressive optimization techniques. The system now supports **dual news collection modes**: traditional web scraping and real-time WebSocket streaming via Benzinga's API.
 
 ### Overview
-The NewsHead system includes a comprehensive sentiment analysis engine that analyzes news articles using Claude API before database insertion. This enables intelligent price alerts that only trigger when both price movements AND favorable sentiment conditions are met.
+The NewsHead system includes a comprehensive sentiment analysis engine that analyzes news articles using Claude API before database insertion. This enables intelligent price alerts that only trigger when both price movements AND favorable sentiment conditions are met. The sentiment analysis now features **native load balancing** across multiple API keys without requiring external gateway servers.
 
 ## Core Architecture Principles
 
@@ -388,33 +388,61 @@ TTL timestamp + INTERVAL 30 DAY
 ### Overview
 The NewsHead system includes a comprehensive sentiment analysis engine that analyzes news articles using Claude API before database insertion. This enables intelligent price alerts that only trigger when both price movements AND favorable sentiment conditions are met.
 
+**NEW**: The sentiment analysis system now includes **native Python load balancing** that automatically distributes requests across multiple API keys without requiring external servers like Portkey Gateway.
+
 ### Architecture Components
 
-#### `sentiment_service.py` - AI-Powered Sentiment Analysis Service
-**Purpose**: Real-time sentiment analysis of news articles using Claude API
-**Technology**: Anthropic Claude 3.5 Sonnet API with async processing
+#### `sentiment_service.py` - AI-Powered Sentiment Analysis Service with Native Load Balancing
+**Purpose**: Real-time sentiment analysis of news articles using Claude API with automatic load balancing
+**Technology**: Anthropic Claude 3.5 Sonnet API with native Python load balancing and async processing
 
 **Key Features**:
+- **Native Load Balancing**: Automatically distributes requests across multiple API keys without external dependencies
+- **Zero Infrastructure**: No external servers or Node.js dependencies required
+- **Automatic Failover**: Seamlessly switches between API keys when rate limits are hit
+- **Backward Compatibility**: Falls back to single-key mode if only one API key is available
 - **Cloud AI Processing**: Uses Claude API for high-quality sentiment analysis
-- **Batch Processing**: Analyzes multiple articles simultaneously (up to 7 concurrent)
+- **Batch Processing**: Analyzes multiple articles simultaneously (up to 20 concurrent)
 - **Intelligent Caching**: Avoids re-analyzing identical content
 - **Fallback Handling**: Graceful degradation when API analysis fails
-- **Performance Tracking**: Detailed statistics and timing metrics
-- **Rate Limit Management**: Automatic retry with exponential backoff
+- **Performance Tracking**: Detailed statistics and timing metrics including per-key analytics
+- **Rate Limit Management**: Automatic retry with exponential backoff and key rotation
 
-**Sentiment Analysis Workflow**:
+**Native Load Balancing Architecture**:
 ```python
-# Article Analysis Process
-Article → Content Hash Check → AI Analysis → Response Parsing → Database Enrichment
+# Multi-Key Configuration (automatic detection)
+ANTHROPIC_API_KEY=sk-ant-key1     # Primary key
+ANTHROPIC_API_KEY2=sk-ant-key2    # Secondary key  
+ANTHROPIC_API_KEY3=sk-ant-key3    # Tertiary key
+# ... up to ANTHROPIC_API_KEY9
 ```
+
+**Load Balancing Features**:
+- **Round-Robin Distribution**: Evenly distributes requests across available keys
+- **Rate Limit Awareness**: Automatically excludes rate-limited keys from rotation
+- **Smart Recovery**: Automatically re-enables keys after rate limit cooldown
+- **Per-Key Statistics**: Tracks usage, success rates, and failures for each key
+- **Automatic Key Switching**: Seamlessly switches to next available key on 429 errors
+- **Fallback Logic**: Uses least recently rate-limited key when all keys are limited
 
 **AI Model Integration**:
 - **API Endpoint**: `https://api.anthropic.com/v1/messages`
 - **Model Type**: Claude 3.5 Sonnet (claude-3-5-sonnet-20240620)
 - **Analysis Prompt**: Financial news sentiment analysis with BUY/SELL recommendations
 - **Response Format**: Structured JSON with sentiment, recommendation, confidence, and explanation
-- **Rate Limits**: 40,000 tokens/minute for high-throughput processing
-- **Concurrent Requests**: Up to 7 simultaneous API calls for optimal performance
+- **Rate Limits**: 40,000 tokens/minute per key (multiplied by number of keys)
+- **Concurrent Requests**: Up to 20 simultaneous API calls distributed across keys
+
+**Load Balancing vs Single Key Performance**:
+
+| Feature | Single Key | Native Load Balancing |
+|---------|------------|----------------------|
+| **Throughput** | ~40 requests/minute | ~40 × N keys requests/minute |
+| **Rate Limit Resilience** | Fails on 429 errors | Automatic key switching |
+| **Infrastructure** | Simple | Zero additional complexity |
+| **Failover** | Manual retry only | Automatic failover |
+| **Monitoring** | Basic stats | Per-key detailed analytics |
+| **Setup** | 1 environment variable | N environment variables |
 
 **Analysis Results Structure**:
 ```json
@@ -429,6 +457,33 @@ Article → Content Hash Check → AI Analysis → Response Parsing → Database
 }
 ```
 
+**Load Balancing Statistics**:
+```json
+{
+    "load_balancing_enabled": true,
+    "load_balancing_stats": {
+        "total_keys": 3,
+        "available_keys": 2,
+        "rate_limited_keys": 1,
+        "total_requests": 150,
+        "successful_requests": 142,
+        "key_switches": 8,
+        "success_rate": 94.7,
+        "key_details": [
+            {
+                "key_id": "Key_1",
+                "last_8_chars": "abc123ef",
+                "request_count": 52,
+                "success_count": 48,
+                "success_rate": 92.3,
+                "rate_limit_count": 2,
+                "is_rate_limited": false
+            }
+        ]
+    }
+}
+```
+
 **Possible Label Values**:
 - **Sentiment**: `"positive"`, `"negative"`, `"neutral"`
 - **Recommendation**: `"BUY"`, `"SELL"`, `"HOLD"`
@@ -437,14 +492,14 @@ Article → Content Hash Check → AI Analysis → Response Parsing → Database
 ### Integration Points
 
 #### News Pipeline Integration
-Both news collection systems now include sentiment analysis:
+Both news collection systems now include native load balancing sentiment analysis:
 
 **Web Scraper Integration** (`web_scraper.py`):
 ```python
 async def flush_buffer_to_clickhouse(self):
-    """Flush article buffer to ClickHouse WITH sentiment analysis"""
+    """Flush article buffer to ClickHouse WITH native load balancing sentiment analysis"""
     if self.batch_queue:
-        # SENTIMENT ANALYSIS BEFORE DATABASE INSERTION
+        # SENTIMENT ANALYSIS WITH NATIVE LOAD BALANCING
         try:
             enriched_articles = await analyze_articles_with_sentiment(list(self.batch_queue))
             inserted_count = self.ch_manager.insert_articles(enriched_articles)
@@ -456,9 +511,9 @@ async def flush_buffer_to_clickhouse(self):
 **WebSocket Integration** (`benzinga_websocket.py`):
 ```python
 async def flush_buffer_to_clickhouse(self):
-    """Flush article buffer to ClickHouse WITH sentiment analysis (same as web_scraper.py)"""
+    """Flush article buffer to ClickHouse WITH native load balancing sentiment analysis"""
     if self.batch_queue:
-        # SENTIMENT ANALYSIS BEFORE DATABASE INSERTION
+        # SENTIMENT ANALYSIS WITH NATIVE LOAD BALANCING
         try:
             enriched_articles = await analyze_articles_with_sentiment(list(self.batch_queue))
             inserted_count = self.ch_manager.insert_articles(enriched_articles)
@@ -472,7 +527,7 @@ The price monitoring system now includes sentiment-based filtering:
 
 **Enhanced Price Alert Logic** (`price_checker.py`):
 ```sql
--- SENTIMENT-ENHANCED PRICE ALERTS
+-- SENTIMENT-ENHANCED PRICE ALERTS WITH NATIVE LOAD BALANCING
 -- Only trigger alerts when:
 -- 1. Price moves 5%+ within 30 seconds (existing logic)
 -- 2. AND sentiment is 'BUY' with 'high' confidence (NEW requirement)
@@ -482,7 +537,7 @@ SELECT
     p.current_price,
     p.first_price,
     ((p.current_price - p.first_price) / p.first_price) * 100 as change_pct,
-    -- Sentiment analysis data
+    -- Sentiment analysis data (processed via native load balancing)
     n.sentiment,
     n.recommendation,
     n.confidence,
@@ -504,24 +559,31 @@ AND (n.recommendation = 'BUY' AND n.confidence = 'high')
 ```
 
 ### System Initialization
-Sentiment analysis is initialized as part of the main system startup:
+Sentiment analysis with native load balancing is initialized as part of the main system startup:
 
 **System Startup Integration** (`run_system.py`):
 ```python
 async def initialize_sentiment_service():
-    """Initialize the sentiment analysis service"""
-    logging.info("🧠 Initializing sentiment analysis service...")
+    """Initialize the sentiment analysis service with native load balancing"""
+    logging.info("🧠 Initializing sentiment analysis service with native load balancing...")
     
     try:
-        # Get sentiment service instance
+        # Get sentiment service instance (now with native load balancing)
         service = await get_sentiment_service()
         
-        # Test connection to Claude API
+        # Test connection to Claude API (automatically uses load balancing if available)
         is_connected = await service.test_connection()
         
         if is_connected:
-            logging.info("✅ Sentiment analysis service initialized successfully")
-            logging.info("🤖 AI-powered sentiment analysis is ACTIVE")
+            stats = service.get_stats()
+            if stats['load_balancing_enabled']:
+                lb_stats = stats['load_balancing_stats']
+                logging.info("✅ Sentiment analysis service initialized with NATIVE LOAD BALANCING")
+                logging.info(f"🔑 Load balancing across {lb_stats['total_keys']} API keys")
+                logging.info("🤖 AI-powered sentiment analysis with automatic failover is ACTIVE")
+            else:
+                logging.info("✅ Sentiment analysis service initialized with SINGLE API KEY")
+                logging.info("🤖 AI-powered sentiment analysis is ACTIVE")
             return True
         else:
             logging.error("❌ Sentiment analysis service failed to initialize")
@@ -534,14 +596,16 @@ async def initialize_sentiment_service():
 
 ### Performance Characteristics
 
-#### Sentiment Analysis Performance
+#### Native Load Balancing Performance
 - **Analysis Time**: ~2-5 seconds per article (depends on API latency)
-- **Batch Processing**: Multiple articles analyzed in parallel (up to 7 concurrent requests)
+- **Batch Processing**: Multiple articles analyzed in parallel (up to 20 concurrent requests)
+- **Load Distribution**: Automatic round-robin across available keys
+- **Rate Limit Handling**: Immediate key switching on 429 errors
 - **Cache Hit Rate**: ~30-50% for similar content
 - **Fallback Time**: <100ms when analysis fails
-- **Memory Usage**: ~50MB additional for API service (vs ~100MB for local AI)
-- **Rate Limits**: 40,000 tokens/minute (Claude 3.5 Sonnet)
-- **Concurrent Requests**: Up to 7 simultaneous API calls
+- **Memory Usage**: ~60MB additional for load balancer (vs ~50MB for single key)
+- **Rate Limits**: 40,000 tokens/minute × number of API keys
+- **Concurrent Requests**: Up to 20 simultaneous API calls distributed across keys
 
 #### Database Impact
 - **Schema Enhancement**: Added 6 sentiment fields to `breaking_news` table
@@ -549,12 +613,18 @@ async def initialize_sentiment_service():
 - **Storage Increase**: ~20% additional storage for sentiment data
 - **Query Performance**: Optimized sentiment-based queries with proper indexing
 
-### Data Flow with Sentiment Analysis
+### Data Flow with Native Load Balancing
 
 #### Enhanced News Processing Flow
 ```
-News Source → Article Extraction → Sentiment Analysis → Database Insert → File Trigger
-     0s              ~1s                 ~2s              ~2.5s         ~3s
+News Source → Article Extraction → Native Load Balancing → Sentiment Analysis → Database Insert → File Trigger
+     0s              ~1s                    ~0.1s               ~2s              ~2.5s         ~3s
+```
+
+#### Load Balancing Request Flow
+```
+Article → Load Balancer → Key Selection → API Request → Response → Next Article (Different Key)
+  ~0s         ~0.01s          ~0.01s         ~2s          ~0.1s           ~0s
 ```
 
 #### Sentiment-Enhanced Alert Flow
@@ -565,11 +635,14 @@ File Trigger → Price Check → Sentiment Lookup → Alert Decision → Databas
 
 ### Error Handling and Resilience
 
-#### Sentiment Analysis Fallbacks
-- **AI Service Unavailable**: Articles processed without sentiment (default values)
-- **Analysis Timeout**: 30-second timeout with graceful fallback
+#### Native Load Balancing Fallbacks
+- **Key Rate Limited**: Automatically switch to next available key
+- **All Keys Rate Limited**: Use least recently rate-limited key
+- **API Service Unavailable**: Articles processed without sentiment (default values)
+- **Analysis Timeout**: 180-second timeout with graceful fallback
 - **Malformed Responses**: JSON parsing errors handled gracefully
-- **Network Issues**: Retry logic with exponential backoff
+- **Network Issues**: Retry logic with exponential backoff per key
+- **Load Balancer Failure**: Automatic fallback to single-key legacy mode
 
 #### Alert System Resilience
 - **Missing Sentiment Data**: Backward compatibility maintained
@@ -578,14 +651,20 @@ File Trigger → Price Check → Sentiment Lookup → Alert Decision → Databas
 
 ### Configuration and Tuning
 
-#### Sentiment Service Configuration
+#### Native Load Balancing Configuration
 ```python
-# Claude API Configuration
-CLAUDE_API_ENDPOINT = "https://api.anthropic.com/v1/messages"
+# Environment Variables (automatic detection)
+ANTHROPIC_API_KEY=sk-ant-primary-key      # Required: Primary key
+ANTHROPIC_API_KEY2=sk-ant-secondary-key   # Optional: Secondary key
+ANTHROPIC_API_KEY3=sk-ant-tertiary-key    # Optional: Tertiary key
+# ... up to ANTHROPIC_API_KEY9
+
+# Load Balancer Settings
 CLAUDE_MODEL = "claude-3-5-sonnet-20240620"
 CLAUDE_TIMEOUT = 180  # seconds
-CLAUDE_MAX_WORKERS = 7  # concurrent requests
+CLAUDE_MAX_WORKERS = 20  # concurrent requests
 CLAUDE_CACHE_SIZE = 1000  # cached analyses
+RATE_LIMIT_RESET_DELAY = 60  # seconds to wait after rate limit
 ```
 
 #### Alert Threshold Configuration
@@ -599,20 +678,22 @@ SENTIMENT_LOOKBACK = 1  # hour (how far back to look for sentiment)
 
 ### Monitoring and Metrics
 
-#### Sentiment Analysis Metrics
-- **Total Articles Analyzed**: Count of articles processed
-- **Analysis Success Rate**: Percentage of successful analyses
-- **Average Analysis Time**: Time per article analysis
-- **Cache Hit Rate**: Percentage of cache hits vs new analyses
-- **Claude API Uptime**: Availability of Claude API service
-- **Rate Limit Hits**: Number of rate limit encounters
-- **API Response Time**: Average Claude API response latency
+#### Native Load Balancing Metrics
+- **Total API Keys**: Count of configured API keys
+- **Available Keys**: Count of non-rate-limited keys
+- **Rate Limited Keys**: Count of currently rate-limited keys
+- **Key Switches**: Number of automatic key switches due to rate limits
+- **Per-Key Statistics**: Individual success rates, request counts, and failure rates
+- **Load Distribution**: Request distribution across keys
+- **Failover Events**: Count of automatic failovers
+- **Recovery Events**: Count of rate-limit recoveries
 
 #### Enhanced Alert Metrics
 - **Sentiment-Filtered Alerts**: Alerts triggered with sentiment conditions
 - **Blocked Alerts**: Price moves blocked by sentiment filter
 - **Sentiment Distribution**: Distribution of BUY/SELL/HOLD recommendations
 - **Confidence Levels**: Distribution of high/medium/low confidence analyses
+- **Load Balancing Efficiency**: Success rate improvement from load balancing
 
 ### Command Line Options
 
@@ -621,21 +702,38 @@ SENTIMENT_LOOKBACK = 1  # hour (how far back to look for sentiment)
 # Skip sentiment analysis initialization (for testing)
 python3 run_system.py --skip-list --no-sentiment
 
-# Normal operation with sentiment analysis (default)
+# Normal operation with native load balancing sentiment analysis (default)
 python3 run_system.py --skip-list
 
-# WebSocket mode with sentiment analysis
+# WebSocket mode with native load balancing sentiment analysis
 python3 run_system.py --skip-list --socket
 ```
 
+### Migration from External Gateways
+
+#### Benefits Over External Gateway Solutions
+1. **Zero Infrastructure**: No external servers, no Node.js dependencies
+2. **No Deployment Complexity**: No additional processes to manage
+3. **Better Performance**: Direct API calls without proxy overhead
+4. **Enhanced Monitoring**: Detailed per-key statistics and health tracking
+5. **Automatic Failover**: Built-in intelligence for key management
+6. **Cost Effective**: No additional infrastructure costs
+7. **Simpler Maintenance**: Single Python codebase
+
+#### Migration Steps
+1. **Add Additional API Keys**: Set `ANTHROPIC_API_KEY2`, `ANTHROPIC_API_KEY3`, etc.
+2. **Restart System**: Native load balancing auto-detects and enables
+3. **Monitor Performance**: Check load balancing stats in logs
+4. **Remove External Dependencies**: No longer need Portkey Gateway or similar services
+
 ### Future Enhancements
 
-#### Planned Sentiment Improvements
-1. **Multi-Model Support**: Support for different AI models
-2. **Custom Prompts**: Configurable analysis prompts
-3. **Sentiment Scoring**: Numerical sentiment scores vs categorical
-4. **Historical Analysis**: Sentiment trend analysis over time
-5. **Model Fine-tuning**: Custom model training on financial news
+#### Planned Load Balancing Improvements
+1. **Weighted Load Balancing**: Different weights for different key tiers
+2. **Geographic Distribution**: Route requests based on key geographic regions
+3. **Cost Optimization**: Automatically use least expensive keys first
+4. **Health Monitoring**: Advanced key health checks and performance monitoring
+5. **Dynamic Key Management**: Hot-swap keys without service restart
 
 #### Advanced Alert Logic
 1. **Sentiment Momentum**: Consider sentiment changes over time
@@ -643,7 +741,7 @@ python3 run_system.py --skip-list --socket
 3. **Confidence Weighting**: Different thresholds for different confidence levels
 4. **Sector-Specific Models**: Specialized sentiment models by industry
 
-This sentiment analysis integration transforms NewsHead from a simple news monitoring system into an intelligent trading signal generator that combines real-time news detection with AI-powered sentiment analysis to produce high-quality, actionable alerts.
+This native load balancing integration transforms NewsHead's sentiment analysis from a single-point-of-failure system into a robust, high-throughput, and highly available service that can handle enterprise-scale news processing without external dependencies.
 
 ### Ticker Universe Management
 
