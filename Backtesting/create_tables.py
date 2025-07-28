@@ -27,9 +27,12 @@ def create_backtesting_tables():
         
         logger.info("Creating ClickHouse tables for backtesting system...")
         
-        # 1. Historical News Table
+        # 1. Historical News Table - DROP AND RECREATE for clean data
+        logger.info("🗑️ Dropping existing historical_news table...")
+        ch_manager.client.command("DROP TABLE IF EXISTS News.historical_news")
+        
         historical_news_sql = """
-        CREATE TABLE IF NOT EXISTS News.historical_news (
+        CREATE TABLE News.historical_news (
             ticker String,
             headline String,
             article_url String,
@@ -45,11 +48,14 @@ def create_backtesting_tables():
         """
         
         ch_manager.client.command(historical_news_sql)
-        logger.info("✅ Created historical_news table")
+        logger.info("✅ Created fresh historical_news table")
         
-        # 2. Historical Sentiment Table
+        # 2. Historical Sentiment Table - Also drop and recreate for consistency
+        logger.info("🗑️ Dropping existing historical_sentiment table...")
+        ch_manager.client.command("DROP TABLE IF EXISTS News.historical_sentiment")
+        
         historical_sentiment_sql = """
-        CREATE TABLE IF NOT EXISTS News.historical_sentiment (
+        CREATE TABLE News.historical_sentiment (
             ticker String,
             headline String,
             article_url String,
@@ -68,11 +74,14 @@ def create_backtesting_tables():
         """
         
         ch_manager.client.command(historical_sentiment_sql)
-        logger.info("✅ Created historical_sentiment table")
+        logger.info("✅ Created fresh historical_sentiment table")
         
-        # 3. Backtest Trades Table
+        # 3. Backtest Trades Table - Also drop and recreate for consistency
+        logger.info("🗑️ Dropping existing backtest_trades table...")
+        ch_manager.client.command("DROP TABLE IF EXISTS News.backtest_trades")
+        
         backtest_trades_sql = """
-        CREATE TABLE IF NOT EXISTS News.backtest_trades (
+        CREATE TABLE News.backtest_trades (
             trade_id String,
             ticker String,
             article_url String,
@@ -98,38 +107,38 @@ def create_backtesting_tables():
         """
         
         ch_manager.client.command(backtest_trades_sql)
-        logger.info("✅ Created backtest_trades table")
+        logger.info("✅ Created fresh backtest_trades table")
         
-        # 4. Ticker Master List Table (for backtesting)
+        # 4. Ticker Master Backtest Table - Keep existing logic (truncate)
         ticker_master_sql = """
         CREATE TABLE IF NOT EXISTS News.ticker_master_backtest (
             ticker String,
-            company_name String DEFAULT '',
-            sector String DEFAULT '',
-            industry String DEFAULT '',
-            country String DEFAULT '',
-            market_cap Float64 DEFAULT 0,
-            price Float64 DEFAULT 0,
-            volume UInt64 DEFAULT 0,
-            float_shares Float64 DEFAULT 0,
+            company_name String,
+            sector String,
+            industry String,
+            country String,
+            market_cap Float64,
+            price Float64,
+            volume UInt64,
+            float_shares Float64,
             scraped_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
         ORDER BY ticker
         """
         
         ch_manager.client.command(ticker_master_sql)
-        logger.info("✅ Created ticker_master_backtest table")
+        logger.info("✅ Created/verified ticker_master_backtest table")
+        
+        # Close connection
+        ch_manager.close()
         
         logger.info("🎉 All backtesting tables created successfully!")
+        logger.info("📊 Tables created:")
+        logger.info("  • historical_news: Store scraped Finviz news articles (FRESH)")
+        logger.info("  • historical_sentiment: Store Claude sentiment analysis results (FRESH)")
+        logger.info("  • backtest_trades: Store simulated trade results (FRESH)")
+        logger.info("  • ticker_master_backtest: Store ticker metadata")
         
-        # Display table info
-        logger.info("\n📊 BACKTESTING TABLES SUMMARY:")
-        logger.info("  • historical_news: Store scraped Finviz news articles")
-        logger.info("  • historical_sentiment: Store LLM sentiment analysis results")
-        logger.info("  • backtest_trades: Store simulated trade results")
-        logger.info("  • ticker_master_backtest: Store master ticker list from Finviz")
-        
-        ch_manager.close()
         return True
         
     except Exception as e:
@@ -140,7 +149,6 @@ if __name__ == "__main__":
     success = create_backtesting_tables()
     if success:
         print("\n✅ Backtesting tables created successfully!")
-        print("You can now run the backtesting system.")
     else:
         print("\n❌ Failed to create backtesting tables!")
         sys.exit(1) 

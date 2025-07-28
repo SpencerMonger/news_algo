@@ -104,14 +104,15 @@ class BacktestOrchestrator:
             self.log_step_complete(1, "CREATE TABLES", False, step_duration)
             return False
 
-    async def step_2_scrape_news(self) -> bool:
+    async def step_2_scrape_news(self, ticker_limit: int = None) -> bool:
         """STEP 2: Scrape historical news from Finviz"""
         step_start = time.time()
-        self.log_step_start(2, "SCRAPE NEWS", "Scraping 6 months of newswire articles from Finviz (5am-9am EST only)")
+        limit_desc = f" (limited to {ticker_limit} tickers)" if ticker_limit else ""
+        self.log_step_start(2, "SCRAPE NEWS", f"Scraping 6 months of newswire articles from Finviz (5am-9am EST only){limit_desc}")
         
         try:
             self.finviz_scraper = FinvizHistoricalScraper()
-            success = await self.finviz_scraper.run_historical_scrape()
+            success = await self.finviz_scraper.run_historical_scrape(ticker_limit=ticker_limit)
             self.stats['news_scraped'] = success
             
             step_duration = time.time() - step_start
@@ -257,7 +258,7 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         return report
 
-    async def run_complete_backtest(self, start_step: int = 1, end_step: int = 5, csv_filename: str = None) -> bool:
+    async def run_complete_backtest(self, start_step: int = 1, end_step: int = 5, csv_filename: str = None, ticker_limit: int = None) -> bool:
         """Run the complete backtesting pipeline"""
         try:
             logger.info("🎯 STARTING NEWSHEAD BACKTESTING SYSTEM")
@@ -266,36 +267,29 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             success = True
             
-            # Step 1: Create Tables
+            # Step 1: Create tables
             if start_step <= 1 <= end_step:
                 if not await self.step_1_create_tables():
-                    logger.error("❌ Step 1 failed - cannot continue")
+                    logger.error("❌ Step 1 failed")
                     success = False
-                    return False
             
-            # Step 2: Scrape News
+            # Step 2: Scrape news
             if start_step <= 2 <= end_step:
-                if not await self.step_2_scrape_news():
-                    logger.error("❌ Step 2 failed - cannot continue to sentiment analysis")
+                if not await self.step_2_scrape_news(ticker_limit=ticker_limit):
+                    logger.error("❌ Step 2 failed")
                     success = False
-                    if end_step > 2:
-                        return False
             
-            # Step 3: Analyze Sentiment  
+            # Step 3: Analyze sentiment
             if start_step <= 3 <= end_step:
                 if not await self.step_3_analyze_sentiment():
-                    logger.error("❌ Step 3 failed - cannot continue to trade simulation")
+                    logger.error("❌ Step 3 failed")
                     success = False
-                    if end_step > 3:
-                        return False
             
-            # Step 4: Simulate Trades
+            # Step 4: Simulate trades
             if start_step <= 4 <= end_step:
                 if not await self.step_4_simulate_trades():
-                    logger.error("❌ Step 4 failed - cannot continue to CSV export")
+                    logger.error("❌ Step 4 failed")
                     success = False
-                    if end_step > 4:
-                        return False
             
             # Step 5: Export CSV
             if start_step <= 5 <= end_step:
@@ -324,12 +318,18 @@ def main():
                        help='Ending step (1=tables, 2=scrape, 3=sentiment, 4=trades, 5=export)')
     parser.add_argument('--csv-filename', help='Custom filename for CSV export')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be executed without running')
+    parser.add_argument('--limit', type=int, help='Limit number of ticker pages to scrape (e.g., --limit 30)')
     
     args = parser.parse_args()
     
     # Validate step range
     if args.start_step > args.end_step:
         print("❌ Error: start-step cannot be greater than end-step")
+        sys.exit(1)
+    
+    # Validate limit
+    if args.limit is not None and args.limit <= 0:
+        print("❌ Error: --limit must be a positive integer")
         sys.exit(1)
     
     # Show execution plan
@@ -348,6 +348,7 @@ def main():
         print(f"STEP {step}: {step_names[step]}")
     
     print(f"\nCSV Filename: {args.csv_filename or 'Auto-generated'}")
+    print(f"Ticker Limit: {args.limit or 'No limit (all tickers)'}")
     print(f"Dry Run: {'Yes' if args.dry_run else 'No'}")
     
     if args.dry_run:
@@ -372,7 +373,8 @@ def main():
         success = asyncio.run(orchestrator.run_complete_backtest(
             start_step=args.start_step,
             end_step=args.end_step,
-            csv_filename=args.csv_filename
+            csv_filename=args.csv_filename,
+            ticker_limit=args.limit
         ))
         
         if success:

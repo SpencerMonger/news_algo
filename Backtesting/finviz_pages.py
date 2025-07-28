@@ -6,7 +6,6 @@ Only scrapes newswires articles published between 5am-9am EST
 """
 
 import asyncio
-import aiohttp
 import logging
 import re
 import os
@@ -17,6 +16,7 @@ from typing import List, Dict, Any, Set
 from bs4 import BeautifulSoup
 import pytz
 from urllib.parse import urljoin, urlparse
+from crawl4ai import AsyncWebCrawler, CrawlResult
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,7 +29,7 @@ load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,  # Changed back from DEBUG to INFO
+    level=logging.INFO,  # Changed back to INFO for normal operation
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 class FinvizHistoricalScraper:
     def __init__(self):
         self.ch_manager = None
-        self.session = None
+        self.crawler = None
         
         # Finviz screener URLs for ticker discovery
         self.screener_urls = [
@@ -54,21 +54,6 @@ class FinvizHistoricalScraper:
         # EST timezone for filtering articles
         self.est_tz = pytz.timezone('US/Eastern')
         
-        # Browser headers to avoid detection
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'same-origin',
-            'Cache-Control': 'max-age=0'
-        }
-        
         # Stats tracking
         self.stats = {
             'tickers_found': 0,
@@ -80,22 +65,74 @@ class FinvizHistoricalScraper:
         }
 
     async def initialize(self):
-        """Initialize the scraper"""
+        """Initialize the scraper with Crawl4AI"""
         try:
             # Initialize ClickHouse connection
             self.ch_manager = ClickHouseManager()
             self.ch_manager.connect()
             
-            # Create HTTP session with longer timeout for news scraping
-            timeout = aiohttp.ClientTimeout(total=30)
-            connector = aiohttp.TCPConnector(limit=20, limit_per_host=5)
-            self.session = aiohttp.ClientSession(
-                timeout=timeout, 
-                connector=connector,
-                headers=self.headers
-            )
+            # Initialize Crawl4AI AsyncWebCrawler with optimized settings for backtesting
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    self.crawler = AsyncWebCrawler(
+                        verbose=False,  # Reduced logging for cleaner output
+                        headless=True,
+                        browser_type="chromium",
+                        
+                        # Optimized settings for backtesting (slower pace than real-time)
+                        max_idle_time=30000,  # 30s timeout
+                        keep_alive=True,
+                        
+                        # Resource limits suitable for backtesting
+                        max_memory_usage=512,  # 512MB
+                        max_concurrent_sessions=2,  # 2 sessions for parallel processing
+                        delay_between_requests=1.0,  # 1s delay for respectful scraping
+                        
+                        # Browser flags optimized for scraping
+                        extra_args=[
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--disable-gpu",
+                            "--disable-software-rasterizer",
+                            "--disable-background-timer-throttling",
+                            "--disable-backgrounding-occluded-windows",
+                            "--disable-renderer-backgrounding",
+                            "--disable-features=TranslateUI",
+                            "--disable-ipc-flooding-protection",
+                            "--memory-pressure-off",
+                            "--max_old_space_size=256",
+                            "--aggressive-cache-discard",
+                            "--disable-extensions",
+                            "--disable-plugins",
+                            "--disable-images",  # Don't load images for faster scraping
+                            "--disable-javascript",  # We only need HTML structure
+                            "--disable-web-security",
+                            "--disable-features=VizDisplayCompositor",
+                            "--disable-background-networking",
+                            "--disable-sync",
+                            "--disable-default-apps",
+                            "--disable-component-update",
+                            "--disable-hang-monitor",
+                            "--disable-prompt-on-repost",
+                            "--disable-client-side-phishing-detection",
+                            "--disable-component-extensions-with-background-pages",
+                            "--no-first-run",
+                            "--no-default-browser-check",
+                            "--disable-popup-blocking",
+                            "--disable-notifications",
+                        ]
+                    )
+                    await self.crawler.start()
+                    logger.info(f"✅ Crawl4AI browser started successfully (attempt {attempt + 1})")
+                    break
+                except Exception as e:
+                    logger.warning(f"❌ Failed to start Crawl4AI browser (attempt {attempt + 1}): {e}")
+                    if attempt == max_retries - 1:
+                        raise Exception(f"Failed to initialize Crawl4AI after {max_retries} attempts")
+                    await asyncio.sleep(2)
             
-            logger.info("✅ Finviz Historical Scraper initialized")
+            logger.info("✅ Finviz Historical Scraper with Crawl4AI initialized")
             return True
             
         except Exception as e:
@@ -126,10 +163,10 @@ class FinvizHistoricalScraper:
             return 0.0
 
     async def get_ticker_list_from_screeners(self) -> List[Dict[str, Any]]:
-        """Get complete ticker list from Finviz screener URLs"""
+        """Get complete ticker list from Finviz screener URLs using Crawl4AI"""
         all_tickers = []
         
-        logger.info(f"📊 Scraping ticker lists from {len(self.screener_urls)} screener URLs...")
+        logger.info(f"📊 Scraping ticker lists from {len(self.screener_urls)} screener URLs with Crawl4AI...")
         
         for i, screener_url in enumerate(self.screener_urls):
             url_desc = f"price under $3" if i == 0 else f"price $3 to $10"
@@ -148,86 +185,92 @@ class FinvizHistoricalScraper:
                 logger.info(f"📄 Scraping {url_desc} page {page_num}")
                 
                 try:
-                    async with self.session.get(page_url) as response:
-                        if response.status != 200:
-                            logger.warning(f"HTTP {response.status} for page {page_num}, stopping")
-                            break
-                        
-                        html = await response.text()
-                        soup = BeautifulSoup(html, 'html.parser')
-                        
-                        # Find screener table
-                        table = soup.find('table', {'class': 'screener_table'})
+                    # Use Crawl4AI instead of aiohttp
+                    result: CrawlResult = await self.crawler.arun(
+                        url=page_url,
+                        wait_for="css:table.screener_table, table[width='100%']",
+                        delay_before_return_html=2.0,  # Wait for page to load
+                        timeout=30  # 30s timeout for screener pages
+                    )
+                    
+                    if not result.success or not result.html:
+                        logger.warning(f"Failed to scrape page {page_num}: {result.error_message}")
+                        break
+                    
+                    soup = BeautifulSoup(result.html, 'html.parser')
+                    
+                    # Find screener table
+                    table = soup.find('table', {'class': 'screener_table'})
+                    if not table:
+                        table = soup.find('table', {'width': '100%'})
                         if not table:
-                            table = soup.find('table', {'width': '100%'})
-                            if not table:
-                                logger.warning(f"No table found on page {page_num}, stopping")
-                                break
-                        
-                        # Get table rows
-                        rows = table.find_all('tr')
-                        if len(rows) < 2:
-                            logger.info(f"No data rows on page {page_num}, stopping")
+                            logger.warning(f"No table found on page {page_num}, stopping")
                             break
+                    
+                    # Get table rows
+                    rows = table.find_all('tr')
+                    if len(rows) < 2:
+                        logger.info(f"No data rows on page {page_num}, stopping")
+                        break
+                    
+                    # Parse header row
+                    header_row = rows[0]
+                    headers = [th.get_text().strip().lower() for th in header_row.find_all(['td', 'th'])]
+                    
+                    # Create column mapping
+                    col_map = {}
+                    for idx, header in enumerate(headers):
+                        col_map[header] = idx
+                    
+                    # Process data rows
+                    page_tickers = 0
+                    for row in rows[1:]:
+                        cells = row.find_all(['td', 'th'])
+                        if len(cells) < len(headers):
+                            continue
                         
-                        # Parse header row
-                        header_row = rows[0]
-                        headers = [th.get_text().strip().lower() for th in header_row.find_all(['td', 'th'])]
-                        
-                        # Create column mapping
-                        col_map = {}
-                        for idx, header in enumerate(headers):
-                            col_map[header] = idx
-                        
-                        # Process data rows
-                        page_tickers = 0
-                        for row in rows[1:]:
-                            cells = row.find_all(['td', 'th'])
-                            if len(cells) < len(headers):
+                        try:
+                            # Extract ticker (usually first or second column)
+                            ticker_text = cells[col_map.get('ticker', 1)].get_text().strip()
+                            if not ticker_text or len(ticker_text) < 3 or len(ticker_text) > 4:
                                 continue
                             
-                            try:
-                                # Extract ticker (usually first or second column)
-                                ticker_text = cells[col_map.get('ticker', 1)].get_text().strip()
-                                if not ticker_text or len(ticker_text) < 3 or len(ticker_text) > 4:
-                                    continue
+                            # Build ticker data
+                            ticker_data = {
+                                'ticker': ticker_text,
+                                'company_name': cells[col_map.get('company', 2)].get_text().strip() if col_map.get('company', 2) < len(cells) else '',
+                                'sector': cells[col_map.get('sector', 3)].get_text().strip() if col_map.get('sector', 3) < len(cells) else '',
+                                'industry': cells[col_map.get('industry', 4)].get_text().strip() if col_map.get('industry', 4) < len(cells) else '',
+                                'country': cells[col_map.get('country', 5)].get_text().strip() if col_map.get('country', 5) < len(cells) else '',
+                                'market_cap': self.parse_table_value(cells[col_map.get('market cap', 6)].get_text().strip() if col_map.get('market cap', 6) < len(cells) else '0'),
+                                'price': self.parse_table_value(cells[col_map.get('price', 7)].get_text().strip() if col_map.get('price', 7) < len(cells) else '0'),
+                                'volume': int(self.parse_table_value(cells[col_map.get('volume', 8)].get_text().strip() if col_map.get('volume', 8) < len(cells) else '0')),
+                                'float_shares': self.parse_table_value(cells[col_map.get('float', 9)].get_text().strip() if col_map.get('float', 9) < len(cells) else '0')
+                            }
+                            
+                            if ticker_data['ticker']:
+                                all_tickers.append(ticker_data)
+                                page_tickers += 1
                                 
-                                # Build ticker data
-                                ticker_data = {
-                                    'ticker': ticker_text,
-                                    'company_name': cells[col_map.get('company', 2)].get_text().strip() if col_map.get('company', 2) < len(cells) else '',
-                                    'sector': cells[col_map.get('sector', 3)].get_text().strip() if col_map.get('sector', 3) < len(cells) else '',
-                                    'industry': cells[col_map.get('industry', 4)].get_text().strip() if col_map.get('industry', 4) < len(cells) else '',
-                                    'country': cells[col_map.get('country', 5)].get_text().strip() if col_map.get('country', 5) < len(cells) else '',
-                                    'market_cap': self.parse_table_value(cells[col_map.get('market cap', 6)].get_text().strip() if col_map.get('market cap', 6) < len(cells) else '0'),
-                                    'price': self.parse_table_value(cells[col_map.get('price', 7)].get_text().strip() if col_map.get('price', 7) < len(cells) else '0'),
-                                    'volume': int(self.parse_table_value(cells[col_map.get('volume', 8)].get_text().strip() if col_map.get('volume', 8) < len(cells) else '0')),
-                                    'float_shares': self.parse_table_value(cells[col_map.get('float', 9)].get_text().strip() if col_map.get('float', 9) < len(cells) else '0')
-                                }
-                                
-                                if ticker_data['ticker']:
-                                    all_tickers.append(ticker_data)
-                                    page_tickers += 1
-                                    
-                            except Exception as e:
-                                logger.debug(f"Error parsing ticker row: {e}")
-                                continue
-                        
-                        if page_tickers == 0:
-                            logger.info(f"No valid tickers on page {page_num}, stopping")
-                            break
-                        
-                        url_tickers += page_tickers
-                        page_num += 1
-                        
-                        # Safety limit
-                        if page_num > 50:
-                            logger.warning(f"Reached page limit for {url_desc}")
-                            break
-                        
-                        # Delay between pages
-                        await asyncio.sleep(1)
-                        
+                        except Exception as e:
+                            logger.debug(f"Error parsing ticker row: {e}")
+                            continue
+                    
+                    if page_tickers == 0:
+                        logger.info(f"No valid tickers on page {page_num}, stopping")
+                        break
+                    
+                    url_tickers += page_tickers
+                    page_num += 1
+                    
+                    # Safety limit
+                    if page_num > 50:
+                        logger.warning(f"Reached page limit for {url_desc}")
+                        break
+                    
+                    # Delay between pages for respectful scraping
+                    await asyncio.sleep(2)
+                    
                 except Exception as e:
                     logger.error(f"Error scraping page {page_num}: {e}")
                     break
@@ -246,6 +289,56 @@ class FinvizHistoricalScraper:
         
         logger.info(f"📊 Total unique tickers found: {len(final_tickers)}")
         return final_tickers
+
+    async def get_ticker_list_from_database(self) -> List[Dict[str, Any]]:
+        """Get ticker list from existing float_list table instead of scraping screeners"""
+        try:
+            logger.info("📊 Getting ticker list from existing float_list table...")
+            
+            # Query the existing float_list table
+            query = """
+            SELECT 
+                ticker,
+                company_name,
+                sector,
+                industry,
+                country,
+                market_cap,
+                price,
+                volume,
+                float_shares
+            FROM News.float_list 
+            WHERE ticker IS NOT NULL 
+            AND ticker != ''
+            ORDER BY ticker
+            """
+            
+            result = self.ch_manager.client.query(query)
+            tickers = []
+            
+            for row in result.result_rows:
+                ticker_data = {
+                    'ticker': row[0],
+                    'company_name': row[1] or '',
+                    'sector': row[2] or '',
+                    'industry': row[3] or '',
+                    'country': row[4] or '',
+                    'market_cap': float(row[5]) if row[5] else 0.0,
+                    'price': float(row[6]) if row[6] else 0.0,
+                    'volume': int(row[7]) if row[7] else 0,
+                    'float_shares': float(row[8]) if row[8] else 0.0
+                }
+                tickers.append(ticker_data)
+            
+            self.stats['tickers_found'] = len(tickers)
+            logger.info(f"📊 Found {len(tickers)} tickers from float_list table")
+            
+            return tickers
+            
+        except Exception as e:
+            logger.error(f"Error getting tickers from database: {e}")
+            logger.info("Falling back to screener scraping...")
+            return await self.get_ticker_list_from_screeners()
 
     def is_newswire_article(self, article_text: str, article_url: str) -> str:
         """Check if article is from target newswires and return the type"""
@@ -287,203 +380,551 @@ class FinvizHistoricalScraper:
         content = f"{headline}|{article_url}".strip()
         return hashlib.md5(content.encode()).hexdigest()
 
+    def extract_timestamp_from_finviz_news(self, link, soup) -> str:
+        """Extract timestamp from Finviz news listing - improved approach"""
+        try:
+            # Enhanced timestamp patterns for Finviz pages
+            time_patterns = [
+                # Full date patterns like "Jun 09, 2025 12:58 ET"
+                r'\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*ET\b',     # "June 09, 2025 12:58 ET"
+                r'\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*EST\b',    # "June 09, 2025 12:58 EST"
+                r'\b[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s*[AP]M\s*ET\b',  # "June 09, 2025 12:58 PM ET"
+                
+                # Finviz specific patterns
+                r'Today\s+\d{1,2}:\d{2}[AP]M',                                     # "Today 08:30AM"
+                r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M',                        # "Jul-21-25 08:20AM"
+                r'\w{3}-\d{2}-\d{2}',                                              # "Jul-23-25"
+                
+                # ISO-like patterns
+                r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b',                     # "2024-01-15 10:30:00"
+                r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\b',                           # "2024-01-15 10:30"
+                
+                # Time-only patterns (fallback)
+                r'\b\d{1,2}:\d{2}\s*[AP]M\s*ET\b',                               # "09:30 AM ET"
+                r'\b\d{1,2}:\d{2}\s*[AP]M\s*EST\b',                              # "09:30 AM EST"
+                r'\b\d{1,2}:\d{2}\s*ET\b',                                        # "09:30 ET"
+                r'\b\d{1,2}:\d{2}\s*EST\b',                                       # "09:30 EST"
+            ]
+            
+            # Method 1: Look for timestamp in the same table row or container as the link
+            container = link.parent
+            if container:
+                # Look for timestamp patterns in the container text
+                container_text = container.get_text()
+                logger.debug(f"🔍 Container text: '{container_text[:100]}...'")
+                
+                for pattern in time_patterns:
+                    match = re.search(pattern, container_text)
+                    if match:
+                        found_time = match.group().strip()
+                        logger.debug(f"✅ Found timestamp in container: {found_time}")
+                        return found_time
+                
+                # Method 2: Look for timestamp in sibling elements (table cells, etc.)
+                parent = container.parent
+                if parent:
+                    # Check all siblings for timestamp information
+                    for sibling in parent.find_all(['td', 'span', 'div']):
+                        sibling_text = sibling.get_text().strip()
+                        if sibling_text and len(sibling_text) < 50:  # Timestamps are usually short
+                            for pattern in time_patterns:
+                                match = re.search(pattern, sibling_text)
+                                if match:
+                                    found_time = match.group().strip()
+                                    logger.debug(f"✅ Found timestamp in sibling: {found_time}")
+                                    return found_time
+                
+                # Method 3: Look for specific timestamp elements with datetime attributes
+                for time_elem in container.find_all(['time', 'span', 'div']):
+                    # Check for datetime attributes
+                    datetime_attr = time_elem.get('datetime')
+                    if datetime_attr:
+                        logger.debug(f"✅ Found datetime attribute: {datetime_attr}")
+                        return datetime_attr
+                    
+                    # Check for timestamp-like classes
+                    elem_class = time_elem.get('class', [])
+                    if any(cls for cls in elem_class if 'time' in cls.lower() or 'date' in cls.lower()):
+                        time_text = time_elem.get_text(strip=True)
+                        if time_text and len(time_text) > 3:
+                            logger.debug(f"✅ Found timestamp by class: {time_text}")
+                            return time_text
+                
+                # Method 4: Look in broader container (table row, etc.)
+                broader_container = parent.parent if parent else None
+                if broader_container:
+                    broader_text = broader_container.get_text()
+                    logger.debug(f"🔍 Broader container text: '{broader_text[:100]}...'")
+                    for pattern in time_patterns:
+                        match = re.search(pattern, broader_text)
+                        if match:
+                            found_time = match.group().strip()
+                            logger.debug(f"✅ Found timestamp in broader container: {found_time}")
+                            return found_time
+            
+            # Method 5: Look for news table structure - Finviz often uses tables for news
+            news_tables = soup.find_all('table')
+            for table in news_tables:
+                # Check if this table contains our link
+                if link in table.find_all('a'):
+                    # Look for timestamp in the same row
+                    row = link.find_parent('tr')
+                    if row:
+                        row_text = row.get_text()
+                        logger.debug(f"🔍 Table row text: '{row_text[:100]}...'")
+                        for pattern in time_patterns:
+                            match = re.search(pattern, row_text)
+                            if match:
+                                found_time = match.group().strip()
+                                logger.debug(f"✅ Found timestamp in table row: {found_time}")
+                                return found_time
+            
+            # Method 6: Look for timestamp anywhere in the vicinity of the link
+            # Sometimes timestamps might be in nearby text nodes
+            link_text = link.get_text()
+            logger.debug(f"🔍 Link text: '{link_text}'")
+            
+            # Check if the link text itself contains a timestamp
+            for pattern in time_patterns:
+                match = re.search(pattern, link_text)
+                if match:
+                    found_time = match.group().strip()
+                    logger.debug(f"✅ Found timestamp in link text: {found_time}")
+                    return found_time
+            
+            # Method 7: Look in all text around the link (more aggressive search)
+            if container:
+                # Get all text from parent containers up to 3 levels up
+                search_containers = [container]
+                current = container
+                for level in range(3):
+                    if current.parent:
+                        current = current.parent
+                        search_containers.append(current)
+                
+                for search_container in search_containers:
+                    search_text = search_container.get_text()
+                    logger.debug(f"🔍 Level {search_containers.index(search_container)} container: '{search_text[:100]}...'")
+                    
+                    for pattern in time_patterns:
+                        match = re.search(pattern, search_text)
+                        if match:
+                            found_time = match.group().strip()
+                            logger.debug(f"✅ Found timestamp at level {search_containers.index(search_container)}: {found_time}")
+                            return found_time
+            
+        except Exception as e:
+            logger.debug(f"❌ Error extracting timestamp from Finviz news: {e}")
+        
+        # Return current time as fallback
+        current_time = datetime.now().strftime("%H:%M ET")
+        logger.warning(f"⚠️ No timestamp found, using current time as fallback: {current_time}")
+        return current_time
+
+    def parse_finviz_timestamp(self, time_text: str) -> datetime:
+        """Parse timestamp from Finviz - enhanced version with better format support"""
+        if not time_text:
+            logger.warning("⚠️ Empty time_text provided to parse_finviz_timestamp")
+            return datetime.now()
+        
+        time_text = time_text.strip()
+        logger.debug(f"🕐 Attempting to parse timestamp: '{time_text}'")
+        
+        try:
+            # Handle full datetime patterns
+            full_datetime_patterns = [
+                # "June 09, 2025 12:58 ET" format
+                (r'([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*ET', '%B %d, %Y %H:%M'),
+                (r'([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*EST', '%B %d, %Y %H:%M'),
+                # "June 09, 2025 12:58 PM ET" format
+                (r'([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*([AP]M)\s*ET', '%B %d, %Y %I:%M %p'),
+                # ISO format
+                (r'(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2}):(\d{2})', '%Y-%m-%d %H:%M:%S'),
+                (r'(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2})', '%Y-%m-%d %H:%M'),
+            ]
+            
+            for pattern, format_str in full_datetime_patterns:
+                if re.search(pattern, time_text):
+                    try:
+                        # Clean up the text for parsing
+                        clean_text = re.sub(r'\s*ET$|\s*EST$', '', time_text)
+                        parsed_time = datetime.strptime(clean_text, format_str.replace(' ET', '').replace(' EST', ''))
+                        logger.debug(f"✅ PARSED FULL DATETIME: '{time_text}' -> {parsed_time}")
+                        return parsed_time
+                    except ValueError as e:
+                        logger.debug(f"❌ Failed to parse with pattern {pattern}: {e}")
+                        continue
+            
+            # Handle Finviz-specific patterns
+            if 'Today' in time_text:
+                # "Today 08:30AM" format
+                time_match = re.search(r'Today\s+(\d{1,2}):(\d{2})([AP]M)', time_text)
+                if time_match:
+                    hour = int(time_match.group(1))
+                    minute = int(time_match.group(2))
+                    ampm = time_match.group(3)
+                    
+                    # Convert to 24-hour format
+                    if ampm == 'PM' and hour != 12:
+                        hour += 12
+                    elif ampm == 'AM' and hour == 12:
+                        hour = 0
+                    
+                    today = datetime.now().date()
+                    parsed_time = datetime.combine(today, datetime.min.time().replace(hour=hour, minute=minute))
+                    logger.debug(f"✅ PARSED TODAY: '{time_text}' -> {parsed_time}")
+                    return parsed_time
+                else:
+                    logger.debug(f"❌ 'Today' found but regex didn't match: '{time_text}'")
+            
+            # Handle "Jul-21-25 08:20AM" format
+            finviz_match = re.search(r'(\w{3})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})([AP]M)', time_text)
+            if finviz_match:
+                month_str = finviz_match.group(1)
+                day = int(finviz_match.group(2))
+                year = int(f"20{finviz_match.group(3)}")  # Convert 25 to 2025
+                hour = int(finviz_match.group(4))
+                minute = int(finviz_match.group(5))
+                ampm = finviz_match.group(6)
+                
+                # Convert to 24-hour format
+                if ampm == 'PM' and hour != 12:
+                    hour += 12
+                elif ampm == 'AM' and hour == 12:
+                    hour = 0
+                
+                # Parse month
+                month_map = {
+                    'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+                    'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
+                }
+                month = month_map.get(month_str, 1)
+                
+                parsed_time = datetime(year, month, day, hour, minute)
+                logger.debug(f"✅ PARSED FINVIZ FORMAT: '{time_text}' -> {parsed_time}")
+                return parsed_time
+            
+            # Handle "Jul-23-25" date-only format
+            date_only_match = re.search(r'(\w{3})-(\d{2})-(\d{2})$', time_text)
+            if date_only_match:
+                month_str = date_only_match.group(1)
+                day = int(date_only_match.group(2))
+                year = int(f"20{date_only_match.group(3)}")
+                
+                # Parse month
+                month_map = {
+                    'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+                    'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
+                }
+                month = month_map.get(month_str, 1)
+                
+                parsed_time = datetime(year, month, day, 9, 0)  # Default to 9 AM
+                logger.debug(f"✅ PARSED DATE ONLY: '{time_text}' -> {parsed_time}")
+                return parsed_time
+            
+            # Fallback to time-only parsing (existing logic)
+            time_match = re.search(r'(\d{1,2}):(\d{2})([AP]M)?', time_text)
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2))
+                ampm = time_match.group(3)
+                
+                # Convert to 24-hour format if AM/PM is specified
+                if ampm:
+                    if ampm == 'PM' and hour != 12:
+                        hour += 12
+                    elif ampm == 'AM' and hour == 12:
+                        hour = 0
+                
+                # Use today's date with the EXACT time found in the article
+                today = datetime.now().date()
+                parsed_time = datetime.combine(today, datetime.min.time().replace(hour=hour, minute=minute))
+                
+                # If this time is more than 12 hours in the future, assume it's from yesterday
+                time_diff = (datetime.now() - parsed_time).total_seconds()
+                if time_diff < -43200:  # More than 12 hours in future
+                    parsed_time = parsed_time - timedelta(days=1)
+                    logger.debug(f"✅ FROM YESTERDAY: '{time_text}' -> {parsed_time}")
+                else:
+                    logger.debug(f"✅ TIME ONLY: '{time_text}' -> {parsed_time}")
+                
+                return parsed_time
+            else:
+                logger.debug(f"❌ No time patterns matched: '{time_text}'")
+                
+        except Exception as e:
+            logger.debug(f"❌ Error parsing time '{time_text}': {e}")
+        
+        # Fallback to current time
+        logger.warning(f"⚠️ Could not parse time '{time_text}', using current time")
+        return datetime.now()
+
+    def debug_finviz_structure(self, link, soup, ticker):
+        """Debug function to understand Finviz page structure"""
+        try:
+            logger.debug(f"🔍 DEBUGGING STRUCTURE for {ticker}")
+            
+            # Get link details
+            href = link.get('href', '')
+            text = link.get_text().strip()
+            logger.debug(f"📎 Link: '{text}' -> {href}")
+            
+            # Check parent structure
+            container = link.parent
+            if container:
+                logger.debug(f"📦 Parent tag: {container.name}")
+                logger.debug(f"📦 Parent classes: {container.get('class', [])}")
+                logger.debug(f"📦 Parent text: '{container.get_text()[:200]}...'")
+                
+                # Check if parent is a table cell
+                if container.name == 'td':
+                    row = container.parent
+                    if row and row.name == 'tr':
+                        cells = row.find_all('td')
+                        logger.debug(f"📊 Table row has {len(cells)} cells:")
+                        for i, cell in enumerate(cells):
+                            cell_text = cell.get_text().strip()
+                            logger.debug(f"  Cell {i}: '{cell_text[:50]}...'")
+                            
+                            # Check for timestamp patterns in each cell
+                            time_patterns = [
+                                r'Today\s+\d{1,2}:\d{2}[AP]M',
+                                r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M',
+                                r'\w{3}-\d{2}-\d{2}',
+                                r'\b\d{1,2}:\d{2}\s*[AP]M\s*ET\b',
+                                r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\b'
+                            ]
+                            
+                            for pattern in time_patterns:
+                                if re.search(pattern, cell_text):
+                                    logger.debug(f"  ✅ TIMESTAMP PATTERN FOUND in cell {i}: '{cell_text}'")
+                
+                # Check grandparent
+                grandparent = container.parent
+                if grandparent:
+                    logger.debug(f"👴 Grandparent tag: {grandparent.name}")
+                    logger.debug(f"👴 Grandparent text: '{grandparent.get_text()[:200]}...'")
+            
+            # Look for nearby timestamp elements
+            logger.debug("🔍 Looking for nearby timestamp elements...")
+            
+            # Check for time elements
+            time_elements = soup.find_all('time')
+            if time_elements:
+                logger.debug(f"⏰ Found {len(time_elements)} <time> elements on page")
+                for time_elem in time_elements:
+                    logger.debug(f"  Time element: {time_elem}")
+            
+            # Check for elements with timestamp-like classes
+            timestamp_classes = ['time', 'date', 'timestamp', 'published', 'datetime']
+            for class_name in timestamp_classes:
+                elements = soup.find_all(class_=lambda x: x and class_name in str(x).lower())
+                if elements:
+                    logger.debug(f"📅 Found {len(elements)} elements with '{class_name}' in class")
+                    for elem in elements[:3]:  # Show first 3
+                        logger.debug(f"  {elem.name}: {elem.get_text()[:50]}")
+            
+        except Exception as e:
+            logger.debug(f"❌ Error in debug structure: {e}")
+
     async def scrape_ticker_news(self, ticker: str) -> List[Dict[str, Any]]:
-        """Scrape 6 months of news for a specific ticker"""
+        """Scrape 6 months of news for a specific ticker using Crawl4AI - FINAL CORRECT approach"""
         articles = []
         
         # Construct ticker page URL - use the same format as shown in screenshot
         ticker_url = f"https://elite.finviz.com/quote.ashx?t={ticker}&ty=c&ta=1&p=i1"
         
-        logger.info(f"📰 Scraping news for {ticker}...")
+        logger.info(f"📰 Scraping news for {ticker} with Crawl4AI...")
         
         try:
-            async with self.session.get(ticker_url) as response:
-                if response.status != 200:
-                    logger.warning(f"HTTP {response.status} for {ticker}")
-                    return articles
+            # Use Crawl4AI instead of aiohttp
+            result: CrawlResult = await self.crawler.arun(
+                url=ticker_url,
+                wait_for="css:table",
+                delay_before_return_html=3.0,  # Wait for news content to load
+                timeout=30  # 30s timeout for ticker pages
+            )
+            
+            if not result.success or not result.html:
+                logger.warning(f"Failed to scrape {ticker}: {result.error_message}")
+                return articles
+            
+            soup = BeautifulSoup(result.html, 'html.parser')
+            
+            # Debug: Log the page structure to understand the layout
+            logger.debug(f"Page title: {soup.title.string if soup.title else 'No title'}")
+            
+            # FINAL CORRECT APPROACH: Look for table elements that contain both timestamps and multiple news links
+            timestamp_pattern = r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M'
+            newswires = ['GlobeNewswire', 'ACCESSWIRE', 'PRNewswire', 'BusinessWire', 'TipRanks']
+            
+            # Find table elements (tr, td) that contain both timestamps and newswires
+            table_elements = soup.find_all(['tr', 'td'])
+            news_elements = []
+            
+            for element in table_elements:
+                element_text = element.get_text()
                 
-                html = await response.text()
-                soup = BeautifulSoup(html, 'html.parser')
+                # Must have at least one timestamp
+                timestamp_matches = re.findall(timestamp_pattern, element_text)
+                if not timestamp_matches:
+                    continue
                 
-                # Debug: Log the page structure to understand the layout
-                logger.debug(f"Page title: {soup.title.string if soup.title else 'No title'}")
+                # Must have at least one newswire
+                has_newswire = any(nw in element_text for nw in newswires)
+                if not has_newswire:
+                    continue
                 
-                # Find all links on the page that could be news articles
-                all_links = soup.find_all('a', href=True)
+                # Must have multiple news links (more than 5)
+                links = element.find_all('a', href=True)
+                valid_links = [link for link in links if link.get_text().strip() and len(link.get_text().strip()) > 10]
+                if len(valid_links) < 5:
+                    continue
                 
-                logger.debug(f"Found {len(all_links)} total links on {ticker} page")
-                
-                # Look for news links - they should contain news URLs or newswire domains
-                news_links_found = 0
-                
-                for link in all_links:
-                    try:
+                news_elements.append(element)
+                logger.debug(f"Found news element with {len(timestamp_matches)} timestamps and {len(valid_links)} links")
+            
+            logger.debug(f"Found {len(news_elements)} table elements containing news")
+            
+            processed_articles = set()  # To avoid duplicates
+            
+            for news_element in news_elements:
+                try:
+                    element_text = news_element.get_text()
+                    
+                    # Extract all timestamps from this element
+                    timestamps = re.findall(timestamp_pattern, element_text)
+                    
+                    # Get all valid links from this element
+                    links = news_element.find_all('a', href=True)
+                    valid_links = []
+                    for link in links:
+                        link_text = link.get_text().strip()
                         href = link.get('href', '')
-                        text = link.get_text().strip()
+                        if link_text and len(link_text) > 10 and href:
+                            valid_links.append(link)
+                    
+                    logger.debug(f"Processing element with {len(timestamps)} timestamps and {len(valid_links)} valid links")
+                    
+                    # SIMPLIFIED APPROACH: Match timestamps with links by position
+                    # Since both timestamps and links appear in chronological order, we can match by index
+                    min_count = min(len(timestamps), len(valid_links))
+                    
+                    for i in range(min_count):
+                        timestamp_text = timestamps[i]
+                        link = valid_links[i]
                         
-                        if not href or not text:
-                            continue
+                        logger.debug(f"Processing article {i+1}/{min_count}: {timestamp_text}")
                         
-                        # Check if this is a news link by URL patterns
-                        is_news_link = False
-                        
-                        # Direct newswire URLs
-                        if any(domain in href.lower() for domain in [
-                            'businesswire.com', 'globenewswire.com', 
-                            'prnewswire.com', 'accesswire.com'
-                        ]):
-                            is_news_link = True
-                        
-                        # Finviz news URLs
-                        elif 'finviz.com/news' in href.lower():
-                            is_news_link = True
-                        
-                        # Yahoo Finance news URLs
-                        elif 'finance.yahoo.com/news' in href.lower():
-                            is_news_link = True
+                        try:
+                            href = link.get('href', '')
+                            headline_text = link.get_text().strip()
                             
-                        # Other news patterns
-                        elif any(pattern in href.lower() for pattern in [
-                            '/news/', 'news.', 'press-release', 'article'
-                        ]):
-                            # Additional check - make sure it's not a navigation link
-                            if not any(nav in href.lower() for nav in [
-                                'screener', 'portfolio', 'insider', 'futures', 
-                                'forex', 'crypto', 'backtests', 'pricing'
-                            ]):
-                                is_news_link = True
-                        
-                        if not is_news_link:
-                            continue
-                        
-                        news_links_found += 1
-                        
-                        # Convert relative URLs to absolute
-                        if href.startswith('/'):
-                            article_url = f"https://elite.finviz.com{href}"
-                        elif href.startswith('http'):
-                            article_url = href
-                        else:
-                            continue
-                        
-                        # Try to extract date from the link text or surrounding elements
-                        published_utc = None
-                        
-                        # Look for date patterns in the link text first
-                        date_patterns = [
-                            r'Today (\d{2}:\d{2}AM)',                # Today 07:56AM
-                            r'(\w{3}-\d{2}-\d{2}) (\d{2}:\d{2}AM)',  # Jul-21-25 08:20AM
-                            r'(\w{3}-\d{2}-\d{2})',                  # Jul-23-25
-                            r'(\d{2}-\d{2}-\d{2})',                  # MM-DD-YY
-                            r'(\d{4}-\d{2}-\d{2})',                  # YYYY-MM-DD
-                            r'(\d{1,2}/\d{1,2}/\d{4})',              # M/D/YYYY
-                            r'(\w{3} \d{1,2})',                      # Jul 23
-                        ]
-                        
-                        # Check the link text and parent elements for dates
-                        search_text = text
-                        parent = link.parent
-                        if parent:
-                            search_text += " " + parent.get_text()
-                        
-                        for pattern in date_patterns:
-                            match = re.search(pattern, search_text)
-                            if match:
-                                try:
-                                    if pattern.startswith(r'Today'):
-                                        # Today format - use current date
-                                        time_str = match.group(1)
-                                        today = datetime.now().date()
-                                        time_obj = datetime.strptime(time_str, '%H:%M%p').time()
-                                        published_utc = datetime.combine(today, time_obj)
-                                        
-                                    elif r'AM\)' in pattern:
-                                        # Date with time format
-                                        date_str = match.group(1)
-                                        time_str = match.group(2)
-                                        
-                                        # Parse date part
-                                        if re.match(r'\w{3}-\d{2}-\d{2}', date_str):
-                                            date_obj = datetime.strptime(date_str, '%b-%d-%y').date()
-                                            time_obj = datetime.strptime(time_str, '%H:%M%p').time()
-                                            published_utc = datetime.combine(date_obj, time_obj)
-                                            
-                                    else:
-                                        # Date only formats
-                                        date_str = match.group(1)
-                                        
-                                        if re.match(r'\w{3}-\d{2}-\d{2}', date_str):
-                                            # Jul-23-25 format
-                                            published_utc = datetime.strptime(date_str, '%b-%d-%y')
-                                        elif re.match(r'\d{2}-\d{2}-\d{2}', date_str):
-                                            # MM-DD-YY format
-                                            published_utc = datetime.strptime(date_str, '%m-%d-%y')
-                                        elif re.match(r'\d{4}-\d{2}-\d{2}', date_str):
-                                            # YYYY-MM-DD format
-                                            published_utc = datetime.strptime(date_str, '%Y-%m-%d')
-                                        elif re.match(r'\d{1,2}/\d{1,2}/\d{4}', date_str):
-                                            # M/D/YYYY format
-                                            published_utc = datetime.strptime(date_str, '%m/%d/%Y')
-                                        elif re.match(r'\w{3} \d{1,2}', date_str):
-                                            # Jul 23 format - assume current year
-                                            published_utc = datetime.strptime(f"{date_str} {datetime.now().year}", '%b %d %Y')
-                                    
-                                    if published_utc:
+                            logger.debug(f"  Link: {headline_text[:50]}... -> {href}")
+                            
+                            if not href or not headline_text or len(headline_text) < 10:
+                                logger.debug(f"  ❌ Skipped: Invalid link or headline")
+                                continue
+                            
+                            # SIMPLE APPROACH: Just find ANY newswire in the element text
+                            # Since we know this element contains valid newswire articles
+                            element_text = news_element.get_text()
+                            newswire_type = None
+                            
+                            # Look for newswire labels - try to find one that makes sense for this article
+                            for newswire in newswires:
+                                if f'({newswire})' in element_text:
+                                    if newswire == 'ACCESSWIRE':
+                                        newswire_type = 'Accesswire'
+                                    elif newswire == 'PRNewswire':
+                                        newswire_type = 'PRNewswire'
+                                    elif newswire == 'BusinessWire':
+                                        newswire_type = 'BusinessWire'
+                                    elif newswire == 'GlobeNewswire':
+                                        newswire_type = 'GlobeNewswire'
+                                    elif newswire == 'TipRanks':
+                                        newswire_type = 'TipRanks'
+                                    break
+                            
+                            # If no parentheses format, try without parentheses
+                            if not newswire_type:
+                                for newswire in newswires:
+                                    if newswire in element_text:
+                                        if newswire == 'ACCESSWIRE':
+                                            newswire_type = 'Accesswire'
+                                        elif newswire == 'PRNewswire':
+                                            newswire_type = 'PRNewswire'
+                                        elif newswire == 'BusinessWire':
+                                            newswire_type = 'BusinessWire'
+                                        elif newswire == 'GlobeNewswire':
+                                            newswire_type = 'GlobeNewswire'
+                                        elif newswire == 'TipRanks':
+                                            newswire_type = 'TipRanks'
                                         break
-                                        
-                                except Exception as e:
-                                    logger.debug(f"Error parsing date '{match.group()}': {e}")
-                                    continue
-                        
-                        # If no date found, try to extract from URL or skip
-                        if not published_utc:
-                            logger.debug(f"No date found for article: {text[:50]}...")
-                            # For now, assign current date and let filtering handle it
-                            published_utc = datetime.now()
-                        
-                        # Filter by 6 months
-                        cutoff_date = datetime.now() - timedelta(days=180)
-                        if published_utc < cutoff_date:
-                            logger.debug(f"Article too old: {published_utc}")
+                            
+                            # For now, accept any article from elements we know contain newswires
+                            # We can refine this later if needed
+                            if not newswire_type:
+                                newswire_type = 'GlobeNewswire'  # Default fallback since we know these are valid
+                                logger.debug(f"Using fallback newswire for: {headline_text[:50]}")
+                            
+                            logger.debug(f"  Newswire: {newswire_type}")
+                            
+                            # Convert relative URLs to absolute
+                            if href.startswith('/'):
+                                article_url = f"https://elite.finviz.com{href}"
+                            elif href.startswith('http'):
+                                article_url = href
+                            else:
+                                logger.debug(f"  ❌ Skipped: Invalid URL format")
+                                continue
+                            
+                            # Parse timestamp
+                            published_utc = self.parse_finviz_timestamp(timestamp_text)
+                            logger.debug(f"  Timestamp: {published_utc}")
+                            
+                            # Remove the 6-month filter - collect all articles
+                            # cutoff_date = datetime.now() - timedelta(days=180)
+                            # if published_utc < cutoff_date:
+                            #     logger.debug(f"  ❌ Skipped: Article too old ({published_utc})")
+                            #     continue
+                            
+                            # Create unique key to avoid duplicates
+                            article_key = (headline_text, article_url)
+                            if article_key in processed_articles:
+                                logger.debug(f"  ❌ Skipped: Duplicate article")
+                                continue
+                            processed_articles.add(article_key)
+                            
+                            # Create article record
+                            article = {
+                                'ticker': ticker,
+                                'headline': headline_text,
+                                'article_url': article_url,
+                                'published_utc': published_utc,
+                                'newswire_type': newswire_type,
+                                'content_hash': self.generate_content_hash(headline_text, article_url)
+                            }
+                            
+                            articles.append(article)
+                            self.stats['articles_found'] += 1
+                            
+                            logger.debug(f"  ✅ ADDED: {headline_text[:50]}... ({newswire_type}) at {published_utc}")
+                            
+                        except Exception as e:
+                            logger.debug(f"  ❌ Error processing link {i}: {e}")
                             continue
-                        
-                        # Check if it's a newswire article
-                        newswire_type = self.is_newswire_article(text, article_url)
-                        if not newswire_type:
-                            logger.debug(f"Not a newswire article: {text[:50]}...")
-                            continue
-                        
-                        # Filter by time (5am-9am EST) - temporarily disabled for more data collection
-                        # We can analyze timing patterns later and re-enable if needed
-                        # if not self.filter_by_time(published_utc):
-                        #     logger.debug(f"Article outside 5am-9am EST window: {published_utc}")
-                        #     continue
-                        
-                        # Create article record
-                        article = {
-                            'ticker': ticker,
-                            'headline': text,
-                            'article_url': article_url,
-                            'published_utc': published_utc,
-                            'newswire_type': newswire_type,
-                            'content_hash': self.generate_content_hash(text, article_url)
-                        }
-                        
-                        articles.append(article)
-                        self.stats['articles_found'] += 1
-                        
-                        logger.debug(f"Found article: {text[:50]}... ({newswire_type})")
-                        
-                        # Log progress
-                        if len(articles) % 10 == 0:
-                            logger.info(f"  📰 {ticker}: Found {len(articles)} qualifying articles...")
-                        
-                    except Exception as e:
-                        logger.debug(f"Error processing news link for {ticker}: {e}")
-                        continue
-                
-                logger.debug(f"Total news links found on {ticker} page: {news_links_found}")
-                
+                    
+                except Exception as e:
+                    logger.debug(f"Error processing news element: {e}")
+                    continue
+            
+            # Log progress
+            if len(articles) % 10 == 0 and len(articles) > 0:
+                logger.info(f"  📰 {ticker}: Found {len(articles)} qualifying articles...")
+            
+            logger.debug(f"Found {len(articles)} articles total")
+            
         except Exception as e:
             logger.error(f"Error scraping news for {ticker}: {e}")
         
@@ -561,23 +1002,29 @@ class FinvizHistoricalScraper:
         except Exception as e:
             logger.error(f"Error storing articles: {e}")
 
-    async def run_historical_scrape(self):
+    async def run_historical_scrape(self, ticker_limit: int = None):
         """Run the complete historical scraping process"""
         try:
-            logger.info("🚀 Starting Finviz Historical News Scraping...")
+            limit_desc = f" (limited to {ticker_limit} tickers)" if ticker_limit else ""
+            logger.info(f"🚀 Starting Finviz Historical News Scraping with Crawl4AI{limit_desc}...")
             
             # Initialize
             if not await self.initialize():
                 logger.error("Failed to initialize scraper")
                 return False
             
-            # Step 1: Get ticker list from screeners
-            logger.info("📊 STEP 1: Getting ticker list from Finviz screeners...")
-            tickers = await self.get_ticker_list_from_screeners()
+            # Step 1: Get ticker list from database (much faster than scraping)
+            logger.info("📊 STEP 1: Getting ticker list from database...")
+            tickers = await self.get_ticker_list_from_database()
             
             if not tickers:
-                logger.error("No tickers found from screeners")
+                logger.error("No tickers found from database")
                 return False
+            
+            # Apply ticker limit if specified
+            if ticker_limit and ticker_limit < len(tickers):
+                logger.info(f"🔢 Limiting tickers from {len(tickers)} to {ticker_limit} for testing")
+                tickers = tickers[:ticker_limit]
             
             # Store ticker list
             await self.store_ticker_list(tickers)
@@ -608,8 +1055,8 @@ class FinvizHistoricalScraper:
                     if processed % 10 == 0:
                         logger.info(f"📈 PROGRESS: {processed}/{len(tickers)} tickers processed, {self.stats['articles_stored']} articles stored")
                     
-                    # Rate limiting
-                    await asyncio.sleep(2)
+                    # Rate limiting for respectful scraping
+                    await asyncio.sleep(3)
                     
                 except Exception as e:
                     logger.error(f"Error processing {ticker}: {e}")
@@ -639,11 +1086,19 @@ class FinvizHistoricalScraper:
 
     async def cleanup(self):
         """Clean up resources"""
-        if self.session:
-            await self.session.close()
-        if self.ch_manager:
-            self.ch_manager.close()
-        logger.info("✅ Finviz scraper cleanup completed")
+        try:
+            # Close Crawl4AI crawler
+            if self.crawler:
+                await self.crawler.close()
+                
+            # Close ClickHouse connection
+            if self.ch_manager:
+                self.ch_manager.close()
+                
+            logger.info("✅ Finviz scraper cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
 
 async def main():
     """Main function"""
