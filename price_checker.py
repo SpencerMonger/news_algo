@@ -331,40 +331,6 @@ class ContinuousPriceMonitor:
                     
                     logger.debug(f"📈 WEBSOCKET TRADE {symbol}: ${price:.4f} (size: {size})")
                 
-            elif event_type == "Q":  # Quote message (NBBO)
-                bid_price = msg.get("bp", msg.get("P", 0.0))
-                ask_price = msg.get("ap", msg.get("p", 0.0))
-                bid_size = msg.get("bs", msg.get("S", 0))
-                ask_size = msg.get("as", msg.get("s", 0))
-                
-                # Calculate mid-price from bid/ask
-                if bid_price > 0 and ask_price > 0:
-                    mid_price = (bid_price + ask_price) / 2.0
-                    
-                    # Add to price buffer as fallback if no trades available
-                    if symbol not in self.websocket_price_buffer:
-                        self.websocket_price_buffer[symbol] = []
-                    
-                    # Only use quotes if we don't have recent trades for this ticker
-                    recent_trades = any(
-                        p.get('source') == 'websocket_trade' and 
-                        (current_time - p['timestamp']).total_seconds() < 5
-                        for p in self.websocket_price_buffer[symbol][-5:]  # Check last 5 entries
-                    ) if self.websocket_price_buffer[symbol] else False
-                    
-                    if not recent_trades:
-                        self.websocket_price_buffer[symbol].append({
-                            'price': mid_price,
-                            'volume': 0,  # Quotes don't have volume
-                            'timestamp': current_time,
-                            'source': 'websocket_quote',
-                            'websocket_timestamp': timestamp,
-                            'bid_price': bid_price,
-                            'ask_price': ask_price
-                        })
-                        
-                        logger.debug(f"💬 WEBSOCKET QUOTE {symbol}: Mid=${mid_price:.4f} (Bid=${bid_price:.4f}, Ask=${ask_price:.4f})")
-                
             elif event_type == "status":
                 logger.debug(f"📡 WebSocket status: {msg}")
                 
@@ -911,6 +877,7 @@ class ContinuousPriceMonitor:
             ) p
             WHERE ((p.current_price - p.first_price) / p.first_price) * 100 >= 5.0 
             AND dateDiff('second', p.first_timestamp, p.current_timestamp) <= 40
+            AND p.current_price < 20.0
             -- SENTIMENT CONDITIONS: Only trigger if sentiment supports the price movement (from price_tracking)
             AND (
                 -- ONLY High confidence BUY recommendation
