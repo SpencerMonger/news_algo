@@ -100,3 +100,6 @@ tmp/
 
 # LocalAI models and configuration files
 models/
+
+# Gateway folder - should not be tracked
+gateway-main/

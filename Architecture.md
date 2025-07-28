@@ -299,8 +299,16 @@ async def get_price_with_double_call(self, ticker: str):
 ```python
 # Alert triggers based on price movement thresholds
 PRICE_CHANGE_THRESHOLD = 0.05  # 5% change
-VOLUME_SPIKE_THRESHOLD = 2.0   # 2x average volume
+SENTIMENT_ANALYSIS = 'BUY' AND 'high' # LLM outputs labels
 ```
+
+**WebSocket Concurrency Fix**:
+- **Issue Resolved**: Fixed race condition where `websocket_listener()` and `update_websocket_subscriptions()` competed for the same WebSocket receive channel
+- **Root Cause**: Both coroutines calling `await websocket.recv()` simultaneously caused "cannot call recv while another coroutine is already running recv or recv_streaming" errors
+- **Solution**: Implemented fire-and-forget subscription management - subscription requests are sent without waiting for confirmation responses
+- **Impact**: Eliminates WebSocket connection failures that previously caused unexpected fallbacks to REST API mode
+- **Safety**: REST API fallback still handles any edge cases where WebSocket subscriptions might fail
+- **Performance**: Maintains sub-second WebSocket price streaming reliability without concurrency issues
 
 ### Data Management Layer
 
