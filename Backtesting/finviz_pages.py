@@ -806,25 +806,57 @@ class FinvizHistoricalScraper:
                     
                     logger.debug(f"Processing element with {len(timestamps)} timestamps and {len(valid_links)} valid links")
                     
-                    # SIMPLIFIED APPROACH: Match timestamps with links by position
-                    # Since both timestamps and links appear in chronological order, we can match by index
-                    min_count = min(len(timestamps), len(valid_links))
+                    # IMPROVED APPROACH: Find the timestamp closest to each article link
+                    # Instead of positional matching, find timestamps near each link in the text
                     
-                    for i in range(min_count):
-                        timestamp_text = timestamps[i]
-                        link = valid_links[i]
-                        
-                        logger.debug(f"Processing article {i+1}/{min_count}: {timestamp_text}")
-                        
+                    element_html = str(news_element)
+                    
+                    for link in valid_links:
                         try:
                             href = link.get('href', '')
                             headline_text = link.get_text().strip()
                             
-                            logger.debug(f"  Link: {headline_text[:50]}... -> {href}")
+                            logger.debug(f"Processing link: {headline_text[:50]}...")
                             
                             if not href or not headline_text or len(headline_text) < 10:
                                 logger.debug(f"  ❌ Skipped: Invalid link or headline")
                                 continue
+                            
+                            # Find the position of this link in the HTML
+                            link_html = str(link)
+                            link_position = element_html.find(link_html)
+                            
+                            if link_position == -1:
+                                logger.debug(f"  ❌ Skipped: Could not find link position in HTML")
+                                continue
+                            
+                            # Find the closest timestamp to this link
+                            closest_timestamp = None
+                            min_distance = float('inf')
+                            
+                            for timestamp in timestamps:
+                                # Find all positions of this timestamp in the HTML
+                                timestamp_positions = []
+                                start = 0
+                                while True:
+                                    pos = element_html.find(timestamp, start)
+                                    if pos == -1:
+                                        break
+                                    timestamp_positions.append(pos)
+                                    start = pos + 1
+                                
+                                # Find the closest timestamp position to the link
+                                for ts_pos in timestamp_positions:
+                                    distance = abs(ts_pos - link_position)
+                                    if distance < min_distance:
+                                        min_distance = distance
+                                        closest_timestamp = timestamp
+                            
+                            if not closest_timestamp:
+                                logger.debug(f"  ❌ Skipped: No timestamp found near link")
+                                continue
+                            
+                            logger.debug(f"  Found closest timestamp: {closest_timestamp}")
                             
                             # SIMPLE APPROACH: Just find ANY newswire in the element text
                             # Since we know this element contains valid newswire articles
@@ -880,7 +912,7 @@ class FinvizHistoricalScraper:
                                 continue
                             
                             # Parse timestamp
-                            published_utc = self.parse_finviz_timestamp(timestamp_text)
+                            published_utc = self.parse_finviz_timestamp(closest_timestamp)
                             logger.debug(f"  Timestamp: {published_utc}")
                             
                             # Remove the 6-month filter - collect all articles
@@ -912,7 +944,7 @@ class FinvizHistoricalScraper:
                             logger.debug(f"  ✅ ADDED: {headline_text[:50]}... ({newswire_type}) at {published_utc}")
                             
                         except Exception as e:
-                            logger.debug(f"  ❌ Error processing link {i}: {e}")
+                            logger.debug(f"  ❌ Error processing link: {e}")
                             continue
                     
                 except Exception as e:
