@@ -254,17 +254,9 @@ class ContinuousPriceMonitor:
                 logger.info(f"📡 Subscribing to {len(new_subscriptions)} new WebSocket streams: {new_subscriptions}")
                 await self.websocket.send(json.dumps(subscribe_message))
                 
-                # Wait for subscription confirmation
-                try:
-                    response = await asyncio.wait_for(self.websocket.recv(), timeout=5.0)
-                    response_data = json.loads(response)
-                    if response_data.get("status") == "success":
-                        self.websocket_subscriptions.update(new_subscriptions)
-                        logger.info(f"✅ Successfully subscribed to {len(new_subscriptions)} WebSocket streams")
-                    else:
-                        logger.warning(f"⚠️ WebSocket subscription response: {response_data}")
-                except asyncio.TimeoutError:
-                    logger.warning("⏱️ Timeout waiting for WebSocket subscription confirmation")
+                # Update subscription tracking immediately (fire-and-forget)
+                self.websocket_subscriptions.update(new_subscriptions)
+                logger.info(f"✅ Subscribed to {len(new_subscriptions)} WebSocket streams")
             
             # Unsubscribe from old tickers
             old_subscriptions = current_subscriptions - needed_subscriptions
