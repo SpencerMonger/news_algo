@@ -160,9 +160,14 @@ class TradervueCSVExporter:
                 exit_date = exit_time.strftime('%Y-%m-%d')
                 exit_time_str = exit_time.strftime('%H:%M:%S')
                 
-                # Create notes with trade details
+                # Create notes with trade details - ENHANCED with price trigger info
+                price_trigger_info = ""
+                if 'price_increase_pct' in trade and 'bars_count' in trade:
+                    price_trigger_info = f"Price trigger: {trade['price_increase_pct']:.2f}% move, {trade['bars_count']} bars, "
+                
                 notes = (f"News Trade - {trade['sentiment'].upper()} sentiment, "
                         f"{trade['confidence']} confidence, "
+                        f"{price_trigger_info}"
                         f"Duration: {trade['trade_duration_seconds']}s, "
                         f"Explanation: {trade['explanation'][:100]}")
                 

@@ -49,8 +49,9 @@ class BacktestOrchestrator:
     Manages the sequential execution of all backtesting components
     """
     
-    def __init__(self):
+    def __init__(self, skip_sentiment_check: bool = False):
         self.start_time = time.time()
+        self.skip_sentiment_check = skip_sentiment_check
         self.stats = {
             'total_runtime': 0,
             'steps_completed': 0,
@@ -148,12 +149,18 @@ class BacktestOrchestrator:
             return False
 
     async def step_4_simulate_trades(self) -> bool:
-        """STEP 4: Simulate trades based on sentiment analysis"""
+        """STEP 4: Simulate trades based on enhanced conditions (sentiment + 5% price movement + time filtering)"""
         step_start = time.time()
-        self.log_step_start(4, "SIMULATE TRADES", "Simulating trades using Polygon API (BUY on ask +30s, SELL on bid at 9:28am)")
+        
+        if self.skip_sentiment_check:
+            description = "TESTING MODE: Trade simulation using 10-second bars with 5% price movement detection ONLY (sentiment bypassed)"
+        else:
+            description = "Enhanced trade simulation using 10-second bars: BUY +30s after 5% price increase + BUY/high sentiment, SELL at 9:28am EST (7am-9:30am window only)"
+        
+        self.log_step_start(4, "SIMULATE TRADES", description)
         
         try:
-            self.trade_simulator = TradeSimulator()
+            self.trade_simulator = TradeSimulator(skip_sentiment_check=self.skip_sentiment_check)
             success = await self.trade_simulator.run_trade_simulation()
             self.stats['trades_simulated'] = success
             
@@ -281,9 +288,13 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             # Step 3: Analyze sentiment
             if start_step <= 3 <= end_step:
-                if not await self.step_3_analyze_sentiment():
-                    logger.error("❌ Step 3 failed")
-                    success = False
+                if self.skip_sentiment_check:
+                    logger.info("🔄 TESTING MODE: Skipping sentiment analysis step (step 3) - not needed for price movement testing")
+                    self.stats['sentiment_analyzed'] = True  # Mark as completed to avoid blocking later steps
+                else:
+                    if not await self.step_3_analyze_sentiment():
+                        logger.error("❌ Step 3 failed")
+                        success = False
             
             # Step 4: Simulate trades
             if start_step <= 4 <= end_step:
@@ -319,6 +330,7 @@ def main():
     parser.add_argument('--csv-filename', help='Custom filename for CSV export')
     parser.add_argument('--dry-run', action='store_true', help='Show what would be executed without running')
     parser.add_argument('--limit', type=int, help='Limit number of ticker pages to scrape (e.g., --limit 30)')
+    parser.add_argument('--skip-sentiment-check', action='store_true', help='Skip sentiment analysis and use default values for trade simulation')
     
     args = parser.parse_args()
     
@@ -336,8 +348,8 @@ def main():
     step_names = {
         1: "Create ClickHouse Tables",
         2: "Scrape Historical News from Finviz",
-        3: "Analyze Sentiment with Claude API", 
-        4: "Simulate Trades with Polygon API",
+        3: "SKIPPED: Sentiment Analysis (not needed in testing mode)" if args.skip_sentiment_check else "Analyze Sentiment with Claude API", 
+        4: "TESTING MODE: Price Movement Detection Only" if args.skip_sentiment_check else "Enhanced Trade Simulation (10s bars + 5% movement detection)",
         5: "Export to Tradervue CSV"
     }
     
@@ -350,6 +362,7 @@ def main():
     print(f"\nCSV Filename: {args.csv_filename or 'Auto-generated'}")
     print(f"Ticker Limit: {args.limit or 'No limit (all tickers)'}")
     print(f"Dry Run: {'Yes' if args.dry_run else 'No'}")
+    print(f"Skip Sentiment Check: {'Yes' if args.skip_sentiment_check else 'No'}")
     
     if args.dry_run:
         print("\n✅ Dry run completed - no actual execution performed")
@@ -357,9 +370,14 @@ def main():
     
     # Confirm execution
     print("\n⚠️  This will run the complete backtesting pipeline.")
-    print("Make sure you have the required API keys configured:")
-    print("  • ANTHROPIC_API_KEY (for sentiment analysis)")
-    print("  • POLYGON_API_KEY (for trade simulation)")
+    if args.skip_sentiment_check:
+        print("Make sure you have the required API key configured:")
+        print("  • POLYGON_API_KEY (for trade simulation)")
+        print("  • ANTHROPIC_API_KEY (not needed - sentiment analysis skipped)")
+    else:
+        print("Make sure you have the required API keys configured:")
+        print("  • ANTHROPIC_API_KEY (for sentiment analysis)")
+        print("  • POLYGON_API_KEY (for trade simulation)")
     
     confirm = input("\nProceed with backtesting? (y/N): ").strip().lower()
     if confirm != 'y':
@@ -367,7 +385,7 @@ def main():
         return
     
     # Run backtesting
-    orchestrator = BacktestOrchestrator()
+    orchestrator = BacktestOrchestrator(skip_sentiment_check=args.skip_sentiment_check)
     
     try:
         success = asyncio.run(orchestrator.run_complete_backtest(

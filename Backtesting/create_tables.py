@@ -109,7 +109,16 @@ def create_backtesting_tables():
         ch_manager.client.command(backtest_trades_sql)
         logger.info("✅ Created fresh backtest_trades table")
         
-        # 4. Ticker Master Backtest Table - Keep existing logic (truncate)
+        # Check if historical_price table exists (but don't drop it!)
+        # This table is managed by the dedicated fetch_historical_prices.py script
+        try:
+            ch_manager.client.command("SELECT 1 FROM News.historical_price LIMIT 1")
+            logger.info("✅ Historical price table exists (managed separately)")
+        except Exception:
+            logger.warning("⚠️ Historical price table does not exist - run fetch_historical_prices.py first")
+            logger.warning("   This table is NOT managed by the backtest script!")
+        
+        # Create/verify ticker_master_backtest table
         ticker_master_sql = """
         CREATE TABLE IF NOT EXISTS News.ticker_master_backtest (
             ticker String,
@@ -138,6 +147,7 @@ def create_backtesting_tables():
         logger.info("  • historical_sentiment: Store Claude sentiment analysis results (FRESH)")
         logger.info("  • backtest_trades: Store simulated trade results (FRESH)")
         logger.info("  • ticker_master_backtest: Store ticker metadata")
+        logger.info("  • historical_price: Managed separately by fetch_historical_prices.py (NOT TOUCHED)")
         
         return True
         

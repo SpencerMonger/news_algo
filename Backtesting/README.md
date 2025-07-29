@@ -4,13 +4,14 @@ A comprehensive backtesting system for testing news-based trading strategies. Th
 
 ## Overview
 
-The backtesting system consists of 5 main components that run sequentially:
+The backtesting system consists of 6 main components that run sequentially:
 
 1. **Create Tables** - Sets up ClickHouse database tables
 2. **Scrape News** - Scrapes 6 months of newswire articles from Finviz
-3. **Analyze Sentiment** - Uses Claude API for sentiment analysis
-4. **Simulate Trades** - Simulates trades using Polygon API price data
-5. **Export CSV** - Exports results to Tradervue CSV format
+3. **Fetch Price Data** - Downloads 10-second aggregate bars from Polygon API
+4. **Analyze Sentiment** - Uses Claude API for sentiment analysis
+5. **Simulate Trades** - Simulates trades using pre-fetched price data
+6. **Export CSV** - Exports results to Tradervue CSV format
 
 ## Prerequisites
 
@@ -76,9 +77,45 @@ python run_backtest.py --limit 10
 # Specify custom CSV filename
 python run_backtest.py --csv-filename my_backtest_results.csv
 
+# Skip sentiment requirements for testing (price movement only)
+python run_backtest.py --skip-sentiment-check
+
 # Dry run to see execution plan
 python run_backtest.py --dry-run
+
+# Combine options for comprehensive testing
+python run_backtest.py --limit 10 --skip-sentiment-check
 ```
+
+## Testing Mode
+
+### Skip Sentiment Analysis for Testing
+
+You can bypass the sentiment analysis requirement to test the price movement detection logic independently:
+
+```bash
+# Test with price movement only (no sentiment requirements)
+python run_backtest.py --skip-sentiment-check --limit 10
+
+# Run only the trade simulation step in testing mode
+python run_backtest.py --start-step 4 --end-step 4 --skip-sentiment-check
+
+# Run steps 1, 2, and 4 only (skip sentiment analysis entirely)
+python run_backtest.py --start-step 1 --end-step 4 --skip-sentiment-check
+```
+
+**Testing Mode Features:**
+- **Skips Step 3 Entirely:** Sentiment analysis step is automatically bypassed
+- **Bypasses Sentiment Requirements:** Uses all articles regardless of sentiment analysis
+- **Price Movement Only:** Tests pure price-based trading logic (5% increase in 40 seconds)
+- **Faster Testing:** No dependency on Claude API or sentiment analysis step
+- **Debugging Tool:** Isolates price movement detection from sentiment analysis
+
+**Use Cases:**
+- Testing Polygon API integration and price data retrieval
+- Validating 10-second bar aggregation logic
+- Debugging price movement detection algorithms
+- Performance testing without API rate limits from sentiment analysis
 
 ## File Structure
 
@@ -113,7 +150,7 @@ Creates the necessary ClickHouse tables:
 - Gets ticker list from existing `News.float_list` table (faster than scraping screeners)
 - Navigates to individual ticker pages to scrape news using Crawl4AI
 - Filters for newswire articles only (PRNewswire, BusinessWire, GlobeNewswire, Accesswire, TipRanks)
-- Only includes articles published between 5am-9am EST
+- Only includes articles published between 7am-9:30am EST (updated from 5am-9am)
 - Scrapes complete historical data (no date filtering)
 
 **Key Features:**
@@ -198,7 +235,35 @@ for timestamp in timestamps:
 - **After:** Found 91 articles for AACG with 100% accurate timestamps
 - **Timestamp Accuracy:** Perfect match with Finviz page display (e.g., "May-16-25 07:00AM" → "2025-05-16 07:00:00")
 
-### 3. Sentiment Analysis (`sentiment_historical.py`)
+### 3. Price Data Fetching (`fetch_historical_prices.py`)
+
+**What it does:**
+- Fetches 10-second aggregate bars from Polygon API for all tickers in `float_list` table
+- Only retrieves data during trading hours (7am-9:30am EST)
+- Stores data in `News.historical_price` table for efficient backtesting
+- Processes 180 days of historical data by default (configurable)
+- Handles rate limiting and API errors gracefully
+
+**Key Features:**
+- **Trading Hours Only:** Filters data to 7am-9:30am EST window automatically
+- **10-Second Granularity:** High-resolution price data for accurate backtesting
+- **Batch Processing:** Efficiently processes multiple tickers and dates
+- **Rate Limiting:** Respects Polygon API limits with controlled concurrency
+- **Data Persistence:** Stores all data locally for fast trade simulation
+
+**Usage:**
+```bash
+# Fetch price data for all tickers (180 days back)
+python -m Backtesting.fetch_historical_prices
+
+# Test with limited tickers
+python -m Backtesting.fetch_historical_prices --limit 10
+
+# Fetch different time range
+python -m Backtesting.fetch_historical_prices --days 90
+```
+
+### 4. Sentiment Analysis (`sentiment_historical.py`)
 
 **What it does:**
 - Processes scraped articles using Claude API
@@ -211,22 +276,32 @@ for timestamp in timestamps:
 - Provides detailed explanations for each recommendation
 - Caches content to avoid re-scraping
 
-### 4. Trade Simulation (`trade_simulation.py`)
+### 5. Trade Simulation (`trade_simulation.py`)
 
 **What it does:**
-- Simulates trades based on sentiment analysis
-- Uses Polygon API for historical bid/ask quotes
-- **Entry:** BUY on ask price 30 seconds after article publication
-- **Exit:** SELL on bid price at exactly 9:28 AM EST
-- Only trades articles with `recommendation='BUY'` and `confidence='high'`
+- Simulates trades based on sentiment analysis and price movement conditions
+- Uses Polygon API 10-second aggregate bars for historical price data
+- **Entry:** BUY 30 seconds after initial timestamp if all conditions are met
+- **Exit:** SELL at exactly 9:28 AM EST
+- Only trades articles that meet ALL the following conditions:
+  1. Published between 7am-9:30am EST
+  2. Sentiment analysis shows 'BUY' with 'high' confidence
+  3. Price increases 5%+ within first 40 seconds of publication timestamp
 
-**Trade Logic:**
-- 100 shares per trade (configurable)
-- Calculates P&L and percentage returns
-- Tracks trade duration and spreads
-- Comprehensive error handling for missing price data
+**Enhanced Trade Logic:**
+- **Time Filtering:** Only processes articles published between 7am-9:30am EST
+- **Price Movement Detection:** Uses 10-second aggregate bars to detect 5% price increase within 40 seconds
+- **Dual Condition Requirement:** Both sentiment (BUY/high) AND price movement (5%+) must be met
+- **Historical Bar Analysis:** Gets complete price data from publication time until 9:30am EST
+- **Realistic Entry/Exit:** Entry at 30 seconds after trigger, exit at 9:28am EST using closest bar prices
 
-### 5. CSV Export (`export_csv.py`)
+**Key Features:**
+- **10-Second Aggregate Bars:** More granular and reliable than bid/ask quotes
+- **Comprehensive Filtering:** Multiple stages of filtering with detailed statistics
+- **Price Movement Validation:** Confirms actual price momentum before executing trades
+- **Enhanced Logging:** Detailed tracking of filtering reasons and trade triggers
+
+### 6. CSV Export (`export_csv.py`)
 
 **What it does:**
 - Exports trade results to Tradervue generic CSV format
@@ -242,25 +317,27 @@ for timestamp in timestamps:
 
 ## Trading Strategy Details
 
-### Entry Criteria
-- Article sentiment analysis = 'BUY'
-- Confidence level = 'high'
-- Article published between 5am-9am EST
-- From approved newswire sources only
+### Entry Criteria (ALL must be met)
+1. **Time Window:** Article published between 7am-9:30am EST
+2. **Sentiment Analysis:** Article sentiment = 'BUY' with 'high' confidence
+3. **Price Movement:** Stock price increases 5%+ within first 40 seconds of publication
+4. **Newswire Source:** From approved sources (PRNewswire, BusinessWire, GlobeNewswire, Accesswire, TipRanks)
 
 ### Trade Execution
-- **Entry Time:** 30 seconds after article publication
-- **Entry Price:** Ask price (market buy)
-- **Exit Time:** 9:28 AM EST (same day)
-- **Exit Price:** Bid price (market sell)
-- **Position Size:** 100 shares
+- **Price Data Source:** Polygon API 10-second aggregate bars
+- **Entry Time:** Exactly 30 seconds after article publication timestamp
+- **Entry Price:** Close price from closest 10-second bar to entry time
+- **Exit Time:** Exactly 9:28 AM EST (same day)
+- **Exit Price:** Close price from closest 10-second bar to exit time
+- **Position Size:** 100 shares per trade
 
-### Article Filtering
-- **Time Window:** 5am-9am EST only
-- **Newswire Sources:** PRNewswire, BusinessWire, GlobeNewswire, Accesswire, TipRanks
-- **Ticker Universe:** Stocks from existing `News.float_list` table
-- **Geography:** Global tickers (with USA-specific Bitcoin/crypto considerations)
-- **Historical Range:** All available articles (no date filtering)
+### Enhanced Logic Flow
+1. **Article Analysis:** Process articles with BUY/high sentiment
+2. **Time Filtering:** Reject articles outside 7am-9:30am EST window
+3. **Price Data Retrieval:** Get 10-second bars from publication to 9:30am EST
+4. **Movement Detection:** Check for 5%+ price increase within first 40 seconds
+5. **Trade Execution:** If all conditions met, simulate entry at +30s and exit at 9:28am
+6. **P&L Calculation:** Calculate profit/loss using bar close prices
 
 ## Usage Examples
 
