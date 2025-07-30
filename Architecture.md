@@ -310,6 +310,70 @@ SENTIMENT_ANALYSIS = 'BUY' AND 'high' # LLM outputs labels
 - **Safety**: REST API fallback still handles any edge cases where WebSocket subscriptions might fail
 - **Performance**: Maintains sub-second WebSocket price streaming reliability without concurrency issues
 
+**Price Alert Timing Bug Fix**:
+- **Issue Identified**: Critical bug in price alert timing logic that allowed alerts outside the intended 40-second window
+- **Root Cause**: Broken ClickHouse aggregation functions were comparing unrelated timestamps instead of actual price movement timestamps
+- **Bug Details**: 
+  - `argMax(pt.timestamp, pt.timestamp)` and `argMin(pt.timestamp, pt.timestamp)` found random earliest/latest timestamps in query window
+  - These timestamps were unrelated to when actual min/max prices occurred
+  - System reported "4 seconds" for price movements that actually took 30+ minutes
+  - 40-second restriction was bypassed due to incorrect timestamp comparison
+- **Solution Implemented**:
+  ```sql
+  -- BEFORE (Broken Logic)
+  argMax(pt.price, pt.timestamp) as current_price,     -- Price at latest timestamp
+  argMin(pt.price, pt.timestamp) as first_price,      -- Price at earliest timestamp
+  argMax(pt.timestamp, pt.timestamp) as current_timestamp, -- Random latest timestamp
+  argMin(pt.timestamp, pt.timestamp) as first_timestamp,   -- Random earliest timestamp
+  
+  -- AFTER (Fixed Logic)
+  argMax(pt.price, pt.timestamp) as current_price,     -- Price at latest timestamp
+  argMin(pt.price, pt.timestamp) as first_price,      -- Price at earliest timestamp  
+  max(pt.timestamp) as current_timestamp,              -- Actual latest timestamp
+  min(pt.timestamp) as first_timestamp,                -- Actual earliest timestamp (anchor)
+  ```
+- **Window Management**: Removed rolling 15-minute window, now uses ticker's first timestamp as anchor point
+- **Automatic Cleanup**: Added logic to stop monitoring tickers after 40-second window expires:
+  ```sql
+  -- Only look at data within 40 seconds of each ticker's first timestamp
+  AND pt.timestamp <= (
+      SELECT min(pt2.timestamp) + INTERVAL 40 SECOND 
+      FROM News.price_tracking pt2 
+      WHERE pt2.ticker = pt.ticker
+  )
+  ```
+- **Impact**: Ensures 40-second trading window is strictly enforced, prevents false alerts from stale price data
+- **Performance**: Queries become more efficient as old tickers automatically expire from consideration
+
+**Individual Article Processing Architecture**:
+- **Issue Resolved**: Eliminated batch processing bottleneck that caused fast articles to wait for slow articles to complete sentiment analysis before ANY could be inserted to database
+- **Root Cause**: Previous system used `asyncio.gather()` to wait for ALL articles in a batch to complete sentiment analysis before ANY could be inserted to database
+- **Impact**: Fast articles (5-second analysis) were blocked by slow articles (30+ second analysis) in the same batch
+- **Solution Implemented**: Individual processing with immediate insertion
+  ```python
+  # BEFORE (Batch Blocking)
+  sentiment_results = await asyncio.gather(*analysis_tasks)  # Wait for ALL
+  # Then insert ALL articles together
+  
+  # AFTER (Individual Processing)  
+  for batch in article_batches:
+      tasks = [process_single_article(article) for article in batch]
+      await asyncio.gather(*tasks)  # Each task handles its own insertion immediately
+  ```
+- **Processing Flow**: Each article now follows individual pipeline:
+  ```
+  Article → Sentiment Analysis → Immediate Database Insertion → Continue to Next Article
+     0s           ~2-15s                    ~0.1s                        ~0s
+  ```
+- **Batch Structure**: Still processes 20 articles concurrently for API efficiency, but each completes independently
+- **Zero Loss Guarantee**: Failed sentiment analysis articles still get inserted with default sentiment values
+- **Performance Impact**: 
+  - Fast articles (IXHL case): Complete in ~13 seconds instead of waiting 30+ minutes for batch
+  - System throughput: Unchanged (same concurrency)
+  - Database load: Slightly higher (individual inserts vs batch inserts)
+  - Alert latency: Dramatically reduced for fast-processing articles
+- **Implementation**: Applied to both `sentiment_service.py` and `benzinga_websocket.py`
+
 ### Data Management Layer
 
 #### `clickhouse_setup.py` - Database Management

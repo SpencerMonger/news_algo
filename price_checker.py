@@ -846,8 +846,8 @@ class ContinuousPriceMonitor:
                     pt.ticker,
                     argMax(pt.price, pt.timestamp) as current_price,
                     argMin(pt.price, pt.timestamp) as first_price,
-                    argMax(pt.timestamp, pt.timestamp) as current_timestamp,
-                    argMin(pt.timestamp, pt.timestamp) as first_timestamp,
+                    max(pt.timestamp) as current_timestamp,
+                    min(pt.timestamp) as first_timestamp,
                     count() as price_count,
                     COALESCE(a.alert_count, 0) as existing_alerts,
                     -- Get the most recent sentiment from price_tracking (no need to query breaking_news)
@@ -861,9 +861,14 @@ class ContinuousPriceMonitor:
                     WHERE timestamp >= now() - INTERVAL 2 MINUTE
                     GROUP BY ticker
                 ) a ON pt.ticker = a.ticker
-                WHERE pt.timestamp >= now() - INTERVAL 15 MINUTE
-                AND pt.ticker IN ({ticker_placeholders})
+                WHERE pt.ticker IN ({ticker_placeholders})
                 AND COALESCE(a.alert_count, 0) < 8
+                -- Only look at data within 40 seconds of each ticker's first timestamp
+                AND pt.timestamp <= (
+                    SELECT min(pt2.timestamp) + INTERVAL 40 SECOND 
+                    FROM News.price_tracking pt2 
+                    WHERE pt2.ticker = pt.ticker
+                )
                 GROUP BY pt.ticker, a.alert_count
                 HAVING first_price > 0 AND price_count >= 2
             ) p

@@ -145,9 +145,14 @@ class TradeSimulator:
             timestamp = timestamp.replace(tzinfo=pytz.UTC)
         
         est_time = timestamp.astimezone(self.est_tz)
-        time_str = est_time.strftime("%H:%M:%S")
         
-        return self.trading_start_time_est <= time_str <= self.trading_end_time_est
+        # Convert to time objects for proper comparison
+        from datetime import time
+        start_time = time(7, 0, 0)  # 7:00:00 AM
+        end_time = time(9, 30, 0)   # 9:30:00 AM
+        current_time = est_time.time()
+        
+        return start_time <= current_time <= end_time
 
     async def get_articles_for_trading(self, batch_size: int = 50) -> List[Dict[str, Any]]:
         """Get articles with sentiment analysis that meet trading criteria, filtered by time"""
@@ -168,9 +173,15 @@ class TradeSimulator:
                     hn.content_hash
                 FROM News.historical_news hn
                 LEFT JOIN News.backtest_trades bt
-                    ON hn.content_hash = bt.article_url  -- Using article_url as unique identifier
-                WHERE bt.trade_id IS NULL  -- Not already traded
+                    ON hn.article_url = bt.article_url  -- Fixed: match article_url with article_url
+                WHERE (bt.trade_id IS NULL OR bt.trade_id = '')  -- Not already traded (handle both NULL and empty string)
                 AND hn.ticker != ''
+                AND toDate(hn.published_utc) >= '2025-01-30'  -- Only articles in price data date range
+                AND toDate(hn.published_utc) <= '2025-07-29'  -- Only articles in price data date range
+                AND (
+                    (toHour(hn.published_utc) >= 12 AND toHour(hn.published_utc) < 14) OR  -- 12pm-2pm UTC (7am-9am EST)
+                    (toHour(hn.published_utc) = 14 AND toMinute(hn.published_utc) <= 30)   -- 2:00pm-2:30pm UTC (9am-9:30am EST)
+                )
                 ORDER BY hn.published_utc ASC
                 LIMIT %s
                 """
@@ -189,11 +200,17 @@ class TradeSimulator:
                     hs.content_hash
                 FROM News.historical_sentiment hs
                 LEFT JOIN News.backtest_trades bt
-                    ON hs.content_hash = bt.article_url  -- Using article_url as unique identifier
-                WHERE bt.trade_id IS NULL  -- Not already traded
+                    ON hs.article_url = bt.article_url  -- Fixed: match article_url with article_url
+                WHERE (bt.trade_id IS NULL OR bt.trade_id = '')  -- Not already traded (handle both NULL and empty string)
                 AND hs.recommendation = 'BUY'
                 AND hs.confidence = 'high'
                 AND hs.ticker != ''
+                AND toDate(hs.published_utc) >= '2025-01-30'  -- Only articles in price data date range
+                AND toDate(hs.published_utc) <= '2025-07-29'  -- Only articles in price data date range
+                AND (
+                    (toHour(hs.published_utc) >= 12 AND toHour(hs.published_utc) < 14) OR  -- 12pm-2pm UTC (7am-9am EST)
+                    (toHour(hs.published_utc) = 14 AND toMinute(hs.published_utc) <= 30)   -- 2:00pm-2:30pm UTC (9am-9:30am EST)
+                )
                 ORDER BY hs.published_utc ASC
                 LIMIT %s
                 """
@@ -204,12 +221,7 @@ class TradeSimulator:
             for row in result.result_rows:
                 ticker, headline, article_url, published_utc, sentiment, recommendation, confidence, explanation, content_hash = row
                 
-                # Filter by trading hours (7am-9:30am EST)
-                if not self.is_trading_hours(published_utc):
-                    self.stats['articles_filtered_time'] += 1
-                    logger.debug(f"⏰ Filtered out {ticker} - published outside trading hours: {published_utc}")
-                    continue
-                
+                # All articles are already filtered to trading hours by the SQL query
                 articles.append({
                     'ticker': ticker,
                     'headline': headline,
@@ -222,7 +234,7 @@ class TradeSimulator:
                     'content_hash': content_hash
                 })
             
-            logger.info(f"📊 Found {len(articles)} articles in trading hours (filtered {self.stats['articles_filtered_time']} outside 7am-9:30am EST)")
+            logger.info(f"📊 Found {len(articles)} articles in trading hours (7am-9:30am EST)")
             if self.skip_sentiment_check:
                 logger.info("🔄 TESTING MODE: Sentiment requirements bypassed - all articles will be tested for price movement only")
             return articles

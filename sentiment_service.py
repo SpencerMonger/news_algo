@@ -821,14 +821,14 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
     
     async def analyze_batch_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Analyze sentiment for a batch of articles with native load balancing
-        Returns articles with sentiment data added
+        Analyze sentiment for articles individually with immediate processing
+        Each article is processed and returned as soon as its analysis completes
         """
         if not articles:
             return articles
         
         mode = "LOAD BALANCED" if self.stats['load_balancing_enabled'] else "SINGLE KEY"
-        logger.info(f"🧠 SENTIMENT ANALYSIS ({mode}): Processing batch of {len(articles)} articles")
+        logger.info(f"🧠 SENTIMENT ANALYSIS ({mode}): Processing {len(articles)} articles individually")
         
         # Pre-load country data for all tickers in batch for efficiency
         tickers = [article.get('ticker', '') for article in articles if article.get('ticker')]
@@ -836,77 +836,93 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             await self.get_batch_ticker_countries(tickers)
             logger.debug(f"Pre-loaded country data for {len(tickers)} tickers")
         
-        # Process articles in parallel (limited by ThreadPoolExecutor)
-        analysis_tasks = [self.analyze_article_sentiment(article) for article in articles]
+        # Process articles individually with immediate completion
+        enriched_articles = []
+        successful_analyses = 0
         
+        # Process in smaller concurrent batches to avoid overwhelming the API
+        batch_size = 20
+        
+        for i in range(0, len(articles), batch_size):
+            batch = articles[i:i + batch_size]
+            logger.info(f"📦 Processing batch {i//batch_size + 1}: {len(batch)} articles")
+            
+            # Create tasks for this batch
+            tasks = []
+            for j, article in enumerate(batch):
+                task = asyncio.create_task(self._process_single_article_individually(article, i + j + 1))
+                tasks.append(task)
+            
+            # Execute batch concurrently and collect results as they complete
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Exception in individual article processing: {result}")
+                    # Add default sentiment for exceptions
+                    enriched_articles.append(self._create_default_sentiment_article(articles[len(enriched_articles)], str(result)))
+                else:
+                    enriched_articles.append(result)
+                    if result.get('sentiment') != 'neutral' or 'error' not in str(result.get('explanation', '')):
+                        successful_analyses += 1
+            
+            # Small delay between batches to avoid rate limits
+            if i + batch_size < len(articles):
+                await asyncio.sleep(0.5)
+        
+        logger.info(f"✅ INDIVIDUAL PROCESSING COMPLETE ({mode}): {successful_analyses}/{len(articles)} successful analyses")
+        return enriched_articles
+    
+    async def _process_single_article_individually(self, article: Dict[str, Any], index: int) -> Dict[str, Any]:
+        """Process a single article individually and return enriched article immediately"""
         try:
-            # Wait for all analyses to complete
-            sentiment_results = await asyncio.gather(*analysis_tasks, return_exceptions=True)
+            ticker = article.get('ticker', 'UNKNOWN')
+            logger.debug(f"🧠 #{index:2d} ANALYZING: {ticker}")
             
-            # Add sentiment data to articles
-            enriched_articles = []
-            successful_analyses = 0
+            # Analyze sentiment for this single article
+            sentiment_result = await self.analyze_article_sentiment(article)
             
-            for i, (article, sentiment_result) in enumerate(zip(articles, sentiment_results)):
-                try:
-                    if isinstance(sentiment_result, Exception):
-                        logger.error(f"Exception in sentiment analysis for article {i}: {sentiment_result}")
-                        # Add default sentiment
-                        sentiment_data = {
-                            'sentiment': 'neutral',
-                            'recommendation': 'HOLD',
-                            'confidence': 'low',
-                            'explanation': f'Analysis exception: {str(sentiment_result)}',
-                            'analysis_time_ms': 0,
-                            'analyzed_at': datetime.now(),
-                            'error': str(sentiment_result)
-                        }
-                    else:
-                        sentiment_data = sentiment_result
-                        if 'error' not in sentiment_data:
-                            successful_analyses += 1
-                    
-                    # Add sentiment fields to article
-                    article.update({
-                        'sentiment': sentiment_data.get('sentiment', 'neutral'),
-                        'recommendation': sentiment_data.get('recommendation', 'HOLD'),
-                        'confidence': sentiment_data.get('confidence', 'low'),
-                        'explanation': sentiment_data.get('explanation', 'No explanation'),
-                        'analysis_time_ms': sentiment_data.get('analysis_time_ms', 0),
-                        'analyzed_at': sentiment_data.get('analyzed_at', datetime.now())
-                    })
-                    
-                    enriched_articles.append(article)
-                    
-                except Exception as e:
-                    logger.error(f"Error enriching article {i} with sentiment: {e}")
-                    # Add article with default sentiment
-                    article.update({
-                        'sentiment': 'neutral',
-                        'recommendation': 'HOLD',
-                        'confidence': 'low',
-                        'explanation': f'Enrichment error: {str(e)}',
-                        'analysis_time_ms': 0,
-                        'analyzed_at': datetime.now()
-                    })
-                    enriched_articles.append(article)
-            
-            logger.info(f"✅ SENTIMENT ANALYSIS COMPLETE ({mode}): {successful_analyses}/{len(articles)} successful analyses")
-            return enriched_articles
-            
-        except Exception as e:
-            logger.error(f"Error in batch sentiment analysis: {e}")
-            # Return articles with default sentiment
-            for article in articles:
+            # Enrich article with sentiment data immediately
+            if isinstance(sentiment_result, dict) and 'error' not in sentiment_result:
+                article.update({
+                    'sentiment': sentiment_result.get('sentiment', 'neutral'),
+                    'recommendation': sentiment_result.get('recommendation', 'HOLD'),
+                    'confidence': sentiment_result.get('confidence', 'low'),
+                    'explanation': sentiment_result.get('explanation', 'No explanation'),
+                    'analysis_time_ms': sentiment_result.get('analysis_time_ms', 0),
+                    'analyzed_at': sentiment_result.get('analyzed_at', datetime.now())
+                })
+                logger.debug(f"✅ #{index:2d} SUCCESS: {ticker} -> {sentiment_result.get('recommendation', 'HOLD')}")
+            else:
+                # Add default sentiment for failed analysis
                 article.update({
                     'sentiment': 'neutral',
                     'recommendation': 'HOLD',
                     'confidence': 'low',
-                    'explanation': f'Batch analysis error: {str(e)}',
+                    'explanation': f'Analysis failed: {sentiment_result.get("error", "Unknown error") if sentiment_result else "No response"}',
                     'analysis_time_ms': 0,
                     'analyzed_at': datetime.now()
                 })
-            return articles
+                logger.warning(f"⚠️ #{index:2d} FAILED: {ticker} -> Using default sentiment")
+            
+            return article
+            
+        except Exception as e:
+            logger.error(f"❌ Error in individual article processing: {e}")
+            return self._create_default_sentiment_article(article, str(e))
+    
+    def _create_default_sentiment_article(self, article: Dict[str, Any], error_msg: str) -> Dict[str, Any]:
+        """Create article with default sentiment for failed processing"""
+        article.update({
+            'sentiment': 'neutral',
+            'recommendation': 'HOLD',
+            'confidence': 'low',
+            'explanation': f'Processing error: {error_msg}',
+            'analysis_time_ms': 0,
+            'analyzed_at': datetime.now()
+        })
+        return article
     
     def get_stats(self) -> Dict[str, Any]:
         """Get sentiment analysis statistics including load balancing stats"""

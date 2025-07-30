@@ -563,91 +563,119 @@ class BenzingaWebSocketScraper:
                 logger.error(f"Error in buffer flusher: {e}")
 
     async def flush_articles_to_clickhouse(self, articles):
-        """Flush specific articles to ClickHouse WITH sentiment analysis"""
+        """Flush articles to ClickHouse with individual processing and immediate insertion"""
         if not articles:
             return
             
         try:
-            # STEP 1: Analyze articles with sentiment BEFORE inserting into database
-            logger.info(f"🧠 Starting sentiment analysis for {len(articles)} articles...")
-            enriched_articles = await analyze_articles_with_sentiment(articles)
+            logger.info(f"🧠 Starting individual processing for {len(articles)} articles...")
             
-            # STEP 2: Check for failed analyses and retry them (3 attempts, 2s delays)
-            failed_articles = []
+            # Process articles individually with immediate insertion
             successful_count = 0
             
-            for article in enriched_articles:
-                if hasattr(article, 'get') and article.get('sentiment') == 'neutral' and 'error' in str(article.get('explanation', '')):
-                    failed_articles.append(article)
-                else:
-                    successful_count += 1
+            # Process in smaller batches to avoid overwhelming the API
+            batch_size = 20
             
-            if failed_articles:
-                logger.info(f"🔄 RETRYING {len(failed_articles)} failed articles (3 attempts, 2s delays)...")
+            for i in range(0, len(articles), batch_size):
+                batch = articles[i:i + batch_size]
+                logger.info(f"📦 Processing batch {i//batch_size + 1}: {len(batch)} articles")
                 
-                # Retry failed articles with 3 attempts and 2-second delays
-                for i, failed_article in enumerate(failed_articles, 1):
-                    try:
-                        # Wait 2 seconds before each retry
-                        if i > 1:
-                            await asyncio.sleep(2.0)
-                        
-                        logger.info(f"🔄 Retry {i}/3: {failed_article.get('ticker', 'UNKNOWN')}")
-                        
-                        # Get sentiment service and retry single article
-                        from sentiment_service import get_sentiment_service
-                        sentiment_service = await get_sentiment_service()
-                        
-                        # Retry the analysis (3 attempts max)
-                        for attempt in range(3):
-                            sentiment_result = await sentiment_service.analyze_article_sentiment(failed_article)
-                            
-                            # Update article with retry result
-                            if isinstance(sentiment_result, dict) and 'error' not in sentiment_result:
-                                failed_article.update({
-                                    'sentiment': sentiment_result.get('sentiment', 'neutral'),
-                                    'recommendation': sentiment_result.get('recommendation', 'HOLD'),
-                                    'confidence': sentiment_result.get('confidence', 'low'),
-                                    'explanation': sentiment_result.get('explanation', 'No explanation'),
-                                    'analysis_time_ms': sentiment_result.get('analysis_time_ms', 0),
-                                    'analyzed_at': sentiment_result.get('analyzed_at', datetime.now())
-                                })
-                                successful_count += 1
-                                logger.info(f"✅ Retry successful: {failed_article.get('ticker', 'UNKNOWN')} - {sentiment_result.get('recommendation', 'HOLD')}")
-                                break
-                            else:
-                                if attempt < 2:  # Only wait if not the last attempt
-                                    await asyncio.sleep(2.0)
-                                else:
-                                    logger.warning(f"❌ All retries failed: {failed_article.get('ticker', 'UNKNOWN')} - {sentiment_result.get('error', 'Unknown error')}")
-                        
-                    except Exception as e:
-                        logger.error(f"Error retrying article {i}: {e}")
-                        continue
+                # Create tasks for individual processing and insertion
+                tasks = []
+                for j, article in enumerate(batch):
+                    task = asyncio.create_task(self._process_and_insert_individual_article(article, i + j + 1))
+                    tasks.append(task)
                 
-                logger.info(f"🔄 RETRY COMPLETE: {successful_count}/{len(articles)} total successful analyses")
-            else:
-                logger.info(f"✅ SENTIMENT ANALYSIS COMPLETE: {successful_count}/{len(articles)} successful analyses (no retries needed)")
+                # Execute batch concurrently
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Count successes
+                for result in results:
+                    if not isinstance(result, Exception) and result:
+                        successful_count += 1
+                
+                # Small delay between batches
+                if i + batch_size < len(articles):
+                    await asyncio.sleep(0.5)
             
-            # STEP 3: Insert articles WITH sentiment data into database
-            inserted_count = self.clickhouse_manager.insert_articles(enriched_articles)
-            self.stats['articles_inserted'] += inserted_count
-            
-            logger.info(f"✅ Flushed {inserted_count} articles with sentiment analysis to ClickHouse")
+            logger.info(f"✅ Individual processing complete: {successful_count}/{len(articles)} articles successfully processed and inserted")
+            self.stats['articles_inserted'] += successful_count
             
         except Exception as e:
-            logger.error(f"Error flushing articles to ClickHouse with sentiment analysis: {e}")
+            logger.error(f"Error in individual article processing: {e}")
             self.stats['errors'] = self.stats.get('errors', 0) + 1
+    
+    async def _process_and_insert_individual_article(self, article: Dict[str, Any], index: int) -> bool:
+        """Process a single article with sentiment analysis and immediately insert to database"""
+        ticker = article.get('ticker', 'UNKNOWN')
+        
+        try:
+            logger.debug(f"🧠 #{index:2d} ANALYZING: {ticker}")
             
-            # Fallback: Try to insert without sentiment analysis
+            # STEP 1: Analyze sentiment for this single article  
+            from sentiment_service import get_sentiment_service
+            sentiment_service = await get_sentiment_service()
+            sentiment_result = await sentiment_service.analyze_article_sentiment(article)
+            
+            # STEP 2: Enrich article with sentiment data
+            if isinstance(sentiment_result, dict) and 'error' not in sentiment_result:
+                article.update({
+                    'sentiment': sentiment_result.get('sentiment', 'neutral'),
+                    'recommendation': sentiment_result.get('recommendation', 'HOLD'),
+                    'confidence': sentiment_result.get('confidence', 'low'),
+                    'explanation': sentiment_result.get('explanation', 'No explanation'),
+                    'analysis_time_ms': sentiment_result.get('analysis_time_ms', 0),
+                    'analyzed_at': sentiment_result.get('analyzed_at', datetime.now())
+                })
+                logger.debug(f"✅ #{index:2d} SENTIMENT: {ticker} -> {sentiment_result.get('recommendation', 'HOLD')}")
+            else:
+                # Use default sentiment for failed analysis
+                error_msg = sentiment_result.get('error', 'Unknown error') if sentiment_result else 'No response'
+                article.update({
+                    'sentiment': 'neutral',
+                    'recommendation': 'HOLD',
+                    'confidence': 'low',
+                    'explanation': f'Analysis failed: {error_msg}',
+                    'analysis_time_ms': 0,
+                    'analyzed_at': datetime.now()
+                })
+                logger.warning(f"⚠️ #{index:2d} DEFAULT: {ticker} -> Using default sentiment")
+            
+            # STEP 3: Immediately insert to database
+            inserted_count = self.clickhouse_manager.insert_articles([article])
+            
+            if inserted_count > 0:
+                logger.debug(f"💾 #{index:2d} INSERTED: {ticker} -> Database")
+                return True
+            else:
+                logger.error(f"❌ #{index:2d} INSERT FAILED: {ticker}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ #{index:2d} EXCEPTION: {ticker} -> {str(e)}")
+            
+            # ZERO LOSS GUARANTEE: Insert with default sentiment even on exception
             try:
-                logger.warning("🔄 Attempting fallback insertion without sentiment analysis...")
-                inserted_count = self.clickhouse_manager.insert_articles(articles)
-                self.stats['articles_inserted'] += inserted_count
-                logger.info(f"✅ Fallback insertion successful: {inserted_count} articles")
+                article.update({
+                    'sentiment': 'neutral',
+                    'recommendation': 'HOLD',
+                    'confidence': 'low',
+                    'explanation': f'Processing exception: {str(e)}',
+                    'analysis_time_ms': 0,
+                    'analyzed_at': datetime.now()
+                })
+                
+                inserted_count = self.clickhouse_manager.insert_articles([article])
+                if inserted_count > 0:
+                    logger.warning(f"🛡️ #{index:2d} ZERO LOSS: {ticker} -> Inserted with default sentiment")
+                    return True
+                else:
+                    logger.error(f"❌ #{index:2d} ZERO LOSS FAILED: {ticker}")
+                    return False
+                    
             except Exception as fallback_error:
-                logger.error(f"❌ Fallback insertion also failed: {fallback_error}")
-                self.stats['errors'] = self.stats.get('errors', 0) + 1
+                logger.error(f"❌ #{index:2d} FALLBACK FAILED: {ticker} -> {str(fallback_error)}")
+                return False
 
     async def stats_reporter(self):
         """Report performance statistics (same as web_scraper.py)"""
