@@ -728,21 +728,21 @@ class FinvizHistoricalScraper:
             logger.debug(f"❌ Error in debug structure: {e}")
 
     async def scrape_ticker_news(self, ticker: str) -> List[Dict[str, Any]]:
-        """Scrape 6 months of news for a specific ticker using Crawl4AI - FINAL CORRECT approach"""
+        """Scrape news for a specific ticker using more precise article-by-article matching"""
         articles = []
         
-        # Construct ticker page URL - use the same format as shown in screenshot
+        # Construct ticker page URL
         ticker_url = f"https://elite.finviz.com/quote.ashx?t={ticker}&ty=c&ta=1&p=i1"
         
-        logger.info(f"📰 Scraping news for {ticker} with Crawl4AI...")
+        logger.info(f"📰 Scraping news for {ticker} with improved precision...")
         
         try:
-            # Use Crawl4AI instead of aiohttp
+            # Use Crawl4AI to get the page
             result: CrawlResult = await self.crawler.arun(
                 url=ticker_url,
                 wait_for="css:table",
-                delay_before_return_html=3.0,  # Wait for news content to load
-                timeout=30  # 30s timeout for ticker pages
+                delay_before_return_html=3.0,
+                timeout=30
             )
             
             if not result.success or not result.html:
@@ -751,156 +751,100 @@ class FinvizHistoricalScraper:
             
             soup = BeautifulSoup(result.html, 'html.parser')
             
-            # Debug: Log the page structure to understand the layout
-            logger.debug(f"Page title: {soup.title.string if soup.title else 'No title'}")
+            # NEW APPROACH: Look for individual news rows/containers
+            # Finviz typically structures news in table rows or similar containers
             
-            # FINAL CORRECT APPROACH: Look for table elements that contain both timestamps and multiple news links
+            # Find all potential news containers (table rows, divs, etc.)
+            potential_containers = []
+            
+            # Method 1: Look for table rows that might contain individual news items or small groups
+            for tr in soup.find_all('tr'):
+                tr_text = tr.get_text().strip()
+                if 20 < len(tr_text) < 2000:  # Skip very short rows and very large containers
+                    potential_containers.append(tr)
+            
+            # Method 2: Look for div containers that might group articles by date
+            for div in soup.find_all('div'):
+                div_text = div.get_text().strip()
+                if 50 < len(div_text) < 3000:  # Reasonable size for date-grouped containers
+                    # Check if this div contains timestamps (likely a news container)
+                    if re.search(r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M', div_text):
+                        potential_containers.append(div)
+            
+            # Method 3: Look for table cells that might contain individual articles
+            for td in soup.find_all('td'):
+                td_text = td.get_text().strip()
+                if 30 < len(td_text) < 1500:  # Good size for individual news items
+                    # Only include if it has links and potentially timestamps
+                    if td.find('a', href=True) and len(td.find_all('a', href=True)) <= 10:  # Not too many links
+                        potential_containers.append(td)
+            
+            logger.debug(f"Found {len(potential_containers)} potential news containers")
+            
+            processed_articles = set()
             timestamp_pattern = r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M'
-            newswires = ['GlobeNewswire', 'ACCESSWIRE', 'PRNewswire', 'BusinessWire', 'TipRanks']
+            target_newswires = ['GlobeNewswire', 'ACCESSWIRE', 'PRNewswire', 'BusinessWire', 'TipRanks']
             
-            # Find table elements (tr, td) that contain both timestamps and newswires
-            table_elements = soup.find_all(['tr', 'td'])
-            news_elements = []
-            
-            for element in table_elements:
-                element_text = element.get_text()
-                
-                # Must have at least one timestamp
-                timestamp_matches = re.findall(timestamp_pattern, element_text)
-                if not timestamp_matches:
-                    continue
-                
-                # Must have at least one newswire
-                has_newswire = any(nw in element_text for nw in newswires)
-                if not has_newswire:
-                    continue
-                
-                # Must have multiple news links (more than 5)
-                links = element.find_all('a', href=True)
-                valid_links = [link for link in links if link.get_text().strip() and len(link.get_text().strip()) > 10]
-                if len(valid_links) < 5:
-                    continue
-                
-                news_elements.append(element)
-                logger.debug(f"Found news element with {len(timestamp_matches)} timestamps and {len(valid_links)} links")
-            
-            logger.debug(f"Found {len(news_elements)} table elements containing news")
-            
-            processed_articles = set()  # To avoid duplicates
-            
-            for news_element in news_elements:
+            for container in potential_containers:
                 try:
-                    element_text = news_element.get_text()
+                    container_text = container.get_text()
                     
-                    # Extract all timestamps from this element
-                    timestamps = re.findall(timestamp_pattern, element_text)
+                    # Look for timestamps in this container
+                    timestamps_in_container = re.findall(timestamp_pattern, container_text)
                     
-                    # Get all valid links from this element
-                    links = news_element.find_all('a', href=True)
-                    valid_links = []
+                    # If no timestamps in immediate container, look in parent containers
+                    if not timestamps_in_container:
+                        current = container
+                        for level in range(3):  # Search up to 3 parent levels
+                            if current.parent:
+                                current = current.parent
+                                parent_text = current.get_text()
+                                parent_timestamps = re.findall(timestamp_pattern, parent_text)
+                                if parent_timestamps:
+                                    timestamps_in_container = parent_timestamps
+                                    logger.debug(f"Found {len(parent_timestamps)} timestamps in parent container (level {level+1})")
+                                    break
+                    
+                    if not timestamps_in_container:
+                        continue
+                    
+                    # Find all links in this container
+                    links = container.find_all('a', href=True)
+                    if not links:
+                        continue
+                    
+                    logger.debug(f"Processing container with {len(timestamps_in_container)} timestamps and {len(links)} links")
+                    
                     for link in links:
-                        link_text = link.get_text().strip()
-                        href = link.get('href', '')
-                        if link_text and len(link_text) > 10 and href:
-                            valid_links.append(link)
-                    
-                    logger.debug(f"Processing element with {len(timestamps)} timestamps and {len(valid_links)} valid links")
-                    
-                    # IMPROVED APPROACH: Find the timestamp closest to each article link
-                    # Instead of positional matching, find timestamps near each link in the text
-                    
-                    element_html = str(news_element)
-                    
-                    for link in valid_links:
                         try:
                             href = link.get('href', '')
                             headline_text = link.get_text().strip()
                             
-                            logger.debug(f"Processing link: {headline_text[:50]}...")
-                            
-                            if not href or not headline_text or len(headline_text) < 10:
-                                logger.debug(f"  ❌ Skipped: Invalid link or headline")
+                            # Skip if link is too short or invalid
+                            if not href or not headline_text or len(headline_text) < 15:
                                 continue
                             
-                            # Find the position of this link in the HTML
-                            link_html = str(link)
-                            link_position = element_html.find(link_html)
+                            logger.debug(f"  Analyzing link: '{headline_text[:50]}...'")
                             
-                            if link_position == -1:
-                                logger.debug(f"  ❌ Skipped: Could not find link position in HTML")
+                            # CRITICAL: Check if this specific link is associated with a newswire
+                            # Look for newswire indicators near this specific link
+                            newswire_type = self.find_newswire_for_link(link, container, target_newswires)
+                            
+                            if not newswire_type:
+                                logger.debug(f"    ❌ No newswire found for link: {headline_text[:30]}...")
                                 continue
                             
-                            # Find the closest timestamp to this link
-                            closest_timestamp = None
-                            min_distance = float('inf')
-                            
-                            for timestamp in timestamps:
-                                # Find all positions of this timestamp in the HTML
-                                timestamp_positions = []
-                                start = 0
-                                while True:
-                                    pos = element_html.find(timestamp, start)
-                                    if pos == -1:
-                                        break
-                                    timestamp_positions.append(pos)
-                                    start = pos + 1
-                                
-                                # Find the closest timestamp position to the link
-                                for ts_pos in timestamp_positions:
-                                    distance = abs(ts_pos - link_position)
-                                    if distance < min_distance:
-                                        min_distance = distance
-                                        closest_timestamp = timestamp
+                            # Find the most appropriate timestamp for this specific link
+                            closest_timestamp = self.find_timestamp_for_link(link, container, timestamps_in_container)
                             
                             if not closest_timestamp:
-                                logger.debug(f"  ❌ Skipped: No timestamp found near link")
+                                logger.debug(f"    ❌ No timestamp found for link: {headline_text[:30]}...")
                                 continue
                             
-                            logger.debug(f"  Found closest timestamp: {closest_timestamp}")
-                            
-                            # SIMPLE APPROACH: Just find ANY newswire in the element text
-                            # Since we know this element contains valid newswire articles
-                            element_text = news_element.get_text()
-                            newswire_type = None
-                            
-                            # Look for newswire labels - try to find one that makes sense for this article
-                            for newswire in newswires:
-                                if f'({newswire})' in element_text:
-                                    if newswire == 'ACCESSWIRE':
-                                        newswire_type = 'Accesswire'
-                                    elif newswire == 'PRNewswire':
-                                        newswire_type = 'PRNewswire'
-                                    elif newswire == 'BusinessWire':
-                                        newswire_type = 'BusinessWire'
-                                    elif newswire == 'GlobeNewswire':
-                                        newswire_type = 'GlobeNewswire'
-                                    elif newswire == 'TipRanks':
-                                        newswire_type = 'TipRanks'
-                                    break
-                            
-                            # If no parentheses format, try without parentheses
-                            if not newswire_type:
-                                for newswire in newswires:
-                                    if newswire in element_text:
-                                        if newswire == 'ACCESSWIRE':
-                                            newswire_type = 'Accesswire'
-                                        elif newswire == 'PRNewswire':
-                                            newswire_type = 'PRNewswire'
-                                        elif newswire == 'BusinessWire':
-                                            newswire_type = 'BusinessWire'
-                                        elif newswire == 'GlobeNewswire':
-                                            newswire_type = 'GlobeNewswire'
-                                        elif newswire == 'TipRanks':
-                                            newswire_type = 'TipRanks'
-                                        break
-                            
-                            # For now, accept any article from elements we know contain newswires
-                            # We can refine this later if needed
-                            if not newswire_type:
-                                newswire_type = 'GlobeNewswire'  # Default fallback since we know these are valid
-                                logger.debug(f"Using fallback newswire for: {headline_text[:50]}")
-                            
-                            logger.debug(f"  Newswire: {newswire_type}")
+                            # Additional filtering to avoid non-headlines
+                            if self.is_likely_non_headline(headline_text):
+                                logger.debug(f"    ❌ Appears to be non-headline: {headline_text[:30]}...")
+                                continue
                             
                             # Convert relative URLs to absolute
                             if href.startswith('/'):
@@ -908,23 +852,16 @@ class FinvizHistoricalScraper:
                             elif href.startswith('http'):
                                 article_url = href
                             else:
-                                logger.debug(f"  ❌ Skipped: Invalid URL format")
+                                logger.debug(f"    ❌ Invalid URL format: {href}")
                                 continue
                             
                             # Parse timestamp
                             published_utc = self.parse_finviz_timestamp(closest_timestamp)
-                            logger.debug(f"  Timestamp: {published_utc}")
-                            
-                            # Remove the 6-month filter - collect all articles
-                            # cutoff_date = datetime.now() - timedelta(days=180)
-                            # if published_utc < cutoff_date:
-                            #     logger.debug(f"  ❌ Skipped: Article too old ({published_utc})")
-                            #     continue
                             
                             # Create unique key to avoid duplicates
                             article_key = (headline_text, article_url)
                             if article_key in processed_articles:
-                                logger.debug(f"  ❌ Skipped: Duplicate article")
+                                logger.debug(f"    ❌ Duplicate article")
                                 continue
                             processed_articles.add(article_key)
                             
@@ -941,27 +878,353 @@ class FinvizHistoricalScraper:
                             articles.append(article)
                             self.stats['articles_found'] += 1
                             
-                            logger.debug(f"  ✅ ADDED: {headline_text[:50]}... ({newswire_type}) at {published_utc}")
+                            logger.debug(f"    ✅ ADDED: {headline_text[:40]}... ({newswire_type}) at {published_utc}")
                             
                         except Exception as e:
-                            logger.debug(f"  ❌ Error processing link: {e}")
+                            logger.debug(f"    ❌ Error processing link: {e}")
                             continue
-                    
+                
                 except Exception as e:
-                    logger.debug(f"Error processing news element: {e}")
+                    logger.debug(f"Error processing container: {e}")
                     continue
             
-            # Log progress
-            if len(articles) % 10 == 0 and len(articles) > 0:
-                logger.info(f"  📰 {ticker}: Found {len(articles)} qualifying articles...")
-            
-            logger.debug(f"Found {len(articles)} articles total")
+            logger.info(f"✅ {ticker}: Found {len(articles)} verified newswire articles")
+            return articles
             
         except Exception as e:
             logger.error(f"Error scraping news for {ticker}: {e}")
+            return articles
+
+    def find_newswire_for_link(self, link, container, target_newswires) -> str:
+        """Find the specific newswire type for a given link"""
+        try:
+            # Method 1: Look for newswire indicators in the immediate vicinity of the link
+            
+            # Get the parent elements to search for newswire indicators
+            search_elements = [link]
+            current = link
+            
+            # Go up the DOM tree to find newswire indicators
+            for level in range(3):  # Search up to 3 levels up
+                if current.parent:
+                    current = current.parent
+                    search_elements.append(current)
+            
+            # Also search siblings
+            if link.parent:
+                for sibling in link.parent.find_all(['span', 'div', 'td', 'a']):
+                    search_elements.append(sibling)
+            
+            # Look for newswire indicators in these elements
+            for element in search_elements:
+                element_text = element.get_text()
+                
+                # Check for parenthetical newswire indicators first (more reliable)
+                for newswire in target_newswires:
+                    if f'({newswire})' in element_text:
+                        return self.normalize_newswire_name(newswire)
+                
+                # Check for non-parenthetical newswire mentions
+                for newswire in target_newswires:
+                    if newswire in element_text:
+                        # Make sure it's not just part of another word
+                        if re.search(rf'\b{re.escape(newswire)}\b', element_text, re.IGNORECASE):
+                            return self.normalize_newswire_name(newswire)
+            
+            # Method 2: Check if the link URL itself indicates a newswire
+            href = link.get('href', '')
+            if 'globenewswire.com' in href.lower():
+                return 'GlobeNewswire'
+            elif 'prnewswire.com' in href.lower():
+                return 'PRNewswire'
+            elif 'businesswire.com' in href.lower():
+                return 'BusinessWire'
+            elif 'accesswire.com' in href.lower():
+                return 'Accesswire'
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error finding newswire for link: {e}")
+            return None
+
+    def find_timestamp_for_link(self, link, container, available_timestamps) -> str:
+        """Find the most appropriate timestamp for a specific link with improved accuracy"""
+        try:
+            if not available_timestamps:
+                return None
+            
+            # If only one timestamp, use it
+            if len(available_timestamps) == 1:
+                return available_timestamps[0]
+            
+            logger.debug(f"    Finding timestamp for link among {len(available_timestamps)} options")
+            
+            # Method 1: Look for time-only patterns near the specific article first
+            # This handles cases where time appears separately from date (like "07:00AM")
+            time_only_patterns = [
+                r'\b(\d{1,2}:\d{2}\s*[AP]M)\b',  # 07:00AM, 7:00 AM, etc.
+                r'\b(\d{1,2}:\d{2})\b'           # 07:00, 7:00 (without AM/PM)
+            ]
+            
+            # Search in progressively larger containers around the link
+            current = link
+            for level in range(4):  # Search up to 4 levels
+                if current.parent:
+                    current = current.parent
+                    current_text = current.get_text()
+                    
+                    # Only consider reasonably small containers for time-only matching
+                    if len(current_text) < 800:
+                        logger.debug(f"    Checking level {level} container for time-only patterns: '{current_text[:100]}...'")
+                        
+                        for pattern in time_only_patterns:
+                            matches = re.findall(pattern, current_text, re.IGNORECASE)
+                            if matches:
+                                found_time = matches[0]
+                                logger.debug(f"    Found time-only pattern: '{found_time}' at level {level}")
+                                
+                                # Now try to combine this time with the date from URL
+                                href = link.get('href', '')
+                                url_date_match = re.search(r'/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/', href)
+                                if url_date_match:
+                                    year = int(url_date_match.group(1))
+                                    month = int(url_date_match.group(2))
+                                    day = int(url_date_match.group(3))
+                                    
+                                    month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                                                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                                    if 1 <= month <= 12:
+                                        # Create the expected timestamp format
+                                        expected_timestamp = f"{month_names[month]}-{day:02d}-{str(year)[-2:]} {found_time}"
+                                        logger.debug(f"    Constructed timestamp from URL date + found time: '{expected_timestamp}'")
+                                        
+                                        # Look for this exact timestamp in available timestamps
+                                        for ts in available_timestamps:
+                                            if ts == expected_timestamp:
+                                                logger.debug(f"    Found exact match in available timestamps!")
+                                                return ts
+                                        
+                                        # If exact match not found, look for same date with any time
+                                        date_prefix = f"{month_names[month]}-{day:02d}-{str(year)[-2:]}"
+                                        matching_date_timestamps = [ts for ts in available_timestamps if ts.startswith(date_prefix)]
+                                        
+                                        if len(matching_date_timestamps) == 1:
+                                            # If only one timestamp for this date, but we found a specific time pattern,
+                                            # use the constructed timestamp instead of the potentially wrong available one
+                                            logger.debug(f"    Only one timestamp available for date {date_prefix}: '{matching_date_timestamps[0]}'")
+                                            logger.debug(f"    But we found specific time pattern: '{found_time}', using constructed: '{expected_timestamp}'")
+                                            return expected_timestamp
+                                        elif len(matching_date_timestamps) == 0:
+                                            # No timestamps for this date, use our constructed one
+                                            logger.debug(f"    No timestamps available for date {date_prefix}, using constructed: '{expected_timestamp}'")
+                                            return expected_timestamp
+                                        elif len(matching_date_timestamps) > 1:
+                                            # Multiple timestamps for same date - use proximity matching among them
+                                            logger.debug(f"    Multiple timestamps for date {date_prefix}: {matching_date_timestamps}")
+                                            logger.debug(f"    Expected time: '{found_time}' but will use proximity matching")
+                                            
+                                            # Use proximity matching among the same-date timestamps
+                                            container_html = str(current)
+                                            link_html = str(link)
+                                            link_position = container_html.find(link_html)
+                                            
+                                            if link_position != -1:
+                                                closest_ts = None
+                                                min_distance = float('inf')
+                                                
+                                                for ts in matching_date_timestamps:
+                                                    ts_positions = []
+                                                    start = 0
+                                                    while True:
+                                                        pos = container_html.find(ts, start)
+                                                        if pos == -1:
+                                                            break
+                                                        distance = abs(pos - link_position)
+                                                        ts_positions.append((distance, ts))
+                                                        start = pos + 1
+                                                    
+                                                    if ts_positions:
+                                                        min_dist_for_ts = min(ts_positions)[0]
+                                                        if min_dist_for_ts < min_distance:
+                                                            min_distance = min_dist_for_ts
+                                                            closest_ts = ts
+                                                
+                                                if closest_ts:
+                                                    logger.debug(f"    Selected closest timestamp by proximity: '{closest_ts}'")
+                                                    return closest_ts
+                                            
+                                            # Fallback: return first timestamp for the date
+                                            logger.debug(f"    Using fallback - first timestamp for date: '{matching_date_timestamps[0]}'")
+                                            return matching_date_timestamps[0]
+            
+            # Method 2: Check if we can extract date from the article URL itself (original logic)
+            href = link.get('href', '')
+            if href:
+                # Look for date patterns in URL like /2023/11/13/ or /2023-11-13/
+                url_date_match = re.search(r'/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/', href)
+                if url_date_match:
+                    year = int(url_date_match.group(1))
+                    month = int(url_date_match.group(2))
+                    day = int(url_date_match.group(3))
+                    
+                    # Convert to the format we expect in timestamps
+                    month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                    if 1 <= month <= 12:
+                        expected_date_prefix = f"{month_names[month]}-{day:02d}-{str(year)[-2:]}"
+                        
+                        # Look for timestamps that match this date
+                        matching_timestamps = [ts for ts in available_timestamps if ts.startswith(expected_date_prefix)]
+                        if matching_timestamps:
+                            # If multiple timestamps for the same date, pick the first one
+                            selected_timestamp = matching_timestamps[0]
+                            logger.debug(f"    Found timestamp by URL date matching: '{selected_timestamp}' (from URL date {year}-{month:02d}-{day:02d})")
+                            return selected_timestamp
+            
+            # Method 3: Look for timestamp in the immediate vicinity of the link (original logic continues...)
+            current = link
+            for level in range(3):  # Only search close levels for this method
+                if current.parent:
+                    current = current.parent
+                    current_text = current.get_text()
+                    
+                    # Only consider small containers (likely single article containers)
+                    if len(current_text) < 500:  # Much smaller threshold
+                        for timestamp in available_timestamps:
+                            if timestamp in current_text:
+                                logger.debug(f"    Found timestamp '{timestamp}' at close DOM level {level} (small container)")
+                                return timestamp
+            
+            # Method 4: Look for timestamp in table row structure
+            table_row = link.find_parent('tr')
+            if table_row:
+                row_text = table_row.get_text()
+                # Only consider rows that aren't too large (to avoid multi-article rows)
+                if len(row_text) < 1000:
+                    logger.debug(f"    Checking table row: '{row_text[:100]}...'")
+                    
+                    for timestamp in available_timestamps:
+                        if timestamp in row_text:
+                            logger.debug(f"    Found timestamp '{timestamp}' in table row")
+                            return timestamp
+            
+            # Method 5: Look for timestamp in same table cell or nearby cells
+            table_cell = link.find_parent('td')
+            if table_cell:
+                # Check current cell
+                cell_text = table_cell.get_text()
+                if len(cell_text) < 800:  # Reasonable size for a single article cell
+                    for timestamp in available_timestamps:
+                        if timestamp in cell_text:
+                            logger.debug(f"    Found timestamp '{timestamp}' in same table cell")
+                            return timestamp
+                
+                # Check sibling cells in the same row (but only if row isn't too large)
+                if table_cell.parent:
+                    row = table_cell.parent
+                    row_text = row.get_text()
+                    if len(row_text) < 1000:  # Avoid huge multi-article rows
+                        for sibling_cell in row.find_all('td'):
+                            sibling_text = sibling_cell.get_text()
+                            for timestamp in available_timestamps:
+                                if timestamp in sibling_text:
+                                    logger.debug(f"    Found timestamp '{timestamp}' in sibling table cell")
+                                    return timestamp
+            
+            # Method 6: Improved proximity-based matching with better logic
+            container_html = str(container)
+            link_html = str(link)
+            link_position = container_html.find(link_html)
+            
+            if link_position != -1:
+                logger.debug(f"    Using proximity matching - link at position {link_position}")
+                
+                # Create a list of (timestamp, distance, position) tuples
+                timestamp_distances = []
+                
+                for timestamp in available_timestamps:
+                    # Find all positions of this timestamp
+                    start = 0
+                    while True:
+                        pos = container_html.find(timestamp, start)
+                        if pos == -1:
+                            break
+                        
+                        distance = abs(pos - link_position)
+                        timestamp_distances.append((timestamp, distance, pos))
+                        start = pos + 1
+                
+                if timestamp_distances:
+                    # Sort by distance
+                    timestamp_distances.sort(key=lambda x: x[1])
+                    
+                    # Log the closest few for debugging
+                    logger.debug(f"    Closest timestamps by proximity:")
+                    for i, (ts, dist, pos) in enumerate(timestamp_distances[:5]):
+                        logger.debug(f"      {i+1}. '{ts}' at position {pos}, distance {dist}")
+                    
+                    # Return the closest timestamp
+                    closest_timestamp = timestamp_distances[0][0]
+                    logger.debug(f"    Selected closest timestamp: '{closest_timestamp}'")
+                    return closest_timestamp
+            
+            # Fallback: return the first timestamp (should rarely happen now)
+            logger.debug(f"    Using fallback timestamp: '{available_timestamps[0]}'")
+            return available_timestamps[0]
+            
+        except Exception as e:
+            logger.debug(f"Error finding timestamp for link: {e}")
+            return available_timestamps[0] if available_timestamps else None
+
+    def normalize_newswire_name(self, newswire: str) -> str:
+        """Normalize newswire names to consistent format"""
+        mapping = {
+            'ACCESSWIRE': 'Accesswire',
+            'PRNewswire': 'PRNewswire', 
+            'BusinessWire': 'BusinessWire',
+            'GlobeNewswire': 'GlobeNewswire',
+            'TipRanks': 'TipRanks'
+        }
+        return mapping.get(newswire, newswire)
+
+    def is_likely_non_headline(self, text: str) -> bool:
+        """Check if text is likely a non-headline (company name, navigation, etc.)"""
+        text_lower = text.lower().strip()
         
-        logger.info(f"✅ {ticker}: Found {len(articles)} newswire articles")
-        return articles
+        # Company/institutional patterns
+        institutional_patterns = [
+            r'^[a-z\s]+\s+(llc|inc|corp|ltd|lp|llp)$',
+            r'^[a-z\s]+\s+(capital|management|advisors|securities|partners|investments|group|bank|financial)\s*(llc|inc|corp|ltd|lp|llp)?$',
+            r'^[a-z\s]+\s+(ag|sa|plc|nv|bv)$',
+        ]
+        
+        for pattern in institutional_patterns:
+            if re.match(pattern, text_lower):
+                return True
+        
+        # Navigation/UI patterns
+        navigation_keywords = [
+            'open in', 'view', 'see more', 'details', 'chart', 'quote', 'profile',
+            'top midday', 'top gainers', 'top losers', 'earnings call', 'transcript'
+        ]
+        
+        for keyword in navigation_keywords:
+            if keyword in text_lower:
+                return True
+        
+        # Very short or generic text
+        words = text.split()
+        if len(words) <= 2:
+            return True
+        
+        # All caps without news indicators (likely company names)
+        if text.isupper() and len(words) > 1:
+            news_words = ['announces', 'reports', 'completes', 'receives', 'launches', 'signs', 'acquires']
+            if not any(word in text_lower for word in news_words):
+                return True
+        
+        return False
 
     async def store_ticker_list(self, tickers: List[Dict[str, Any]]):
         """Store ticker list in ClickHouse"""
