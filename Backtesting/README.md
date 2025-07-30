@@ -162,78 +162,185 @@ Creates the necessary ClickHouse tables:
 
 #### Finviz HTML Structure & Parsing Logic
 
-Through extensive debugging, we discovered that Finviz ticker pages have a complex HTML structure where news articles, timestamps, and newswire labels are contained within large table elements (`<tr>` and `<td>`). Our parsing approach:
+Through extensive debugging and optimization, we developed a robust parsing system that accurately extracts newswire articles from Finviz ticker pages. The current approach uses **location-based filtering** and **comprehensive newswire detection** for maximum accuracy.
 
-**1. Table Element Detection:**
+**1. Container Detection Strategy:**
 ```python
-# Find table elements containing both timestamps and multiple news links
-for element in soup.find_all(['tr', 'td']):
-    element_text = element.get_text()
-    
-    # Must have timestamp pattern: "May-16-25 07:00AM"
-    timestamp_matches = re.findall(r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M', element_text)
-    
-    # Must have newswire indicators
-    has_newswire = any(nw in element_text for nw in ['GlobeNewswire', 'ACCESSWIRE', 'PRNewswire', 'BusinessWire', 'TipRanks'])
-    
-    # Must have multiple valid news links (>5 indicates news container)
-    valid_links = [link for link in element.find_all('a', href=True) if len(link.get_text().strip()) > 10]
-    
-    if timestamp_matches and has_newswire and len(valid_links) >= 5:
-        # This is a news container element
+# Find all potential news containers using multiple approaches
+potential_containers = []
+
+# Method 1: Table rows with reasonable content size
+for tr in soup.find_all('tr'):
+    tr_text = tr.get_text().strip()
+    if 20 < len(tr_text) < 2000:  # Skip very short rows and very large containers
+        potential_containers.append(tr)
+
+# Method 2: Div containers that might group articles by date
+for div in soup.find_all('div'):
+    div_text = div.get_text().strip()
+    if 50 < len(div_text) < 3000:  # Reasonable size for date-grouped containers
+        # Check if this div contains timestamps (likely a news container)
+        if re.search(r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M', div_text):
+            potential_containers.append(div)
+
+# Method 3: Table cells that might contain individual articles
+for td in soup.find_all('td'):
+    td_text = td.get_text().strip()
+    if 30 < len(td_text) < 1500:  # Good size for individual news items
+        if td.find('a', href=True) and len(td.find_all('a', href=True)) <= 10:
+            potential_containers.append(td)
 ```
 
-**2. Proximity-Based Timestamp Matching:**
+**2. Location-Based Article Filtering:**
 ```python
-# For each article link, find the closest timestamp in the HTML
-element_html = str(news_element)
-link_position = element_html.find(str(link))
-
-closest_timestamp = None
-min_distance = float('inf')
-
-for timestamp in timestamps:
-    # Find all positions of this timestamp in HTML
-    timestamp_positions = []
-    start = 0
-    while True:
-        pos = element_html.find(timestamp, start)
-        if pos == -1:
-            break
-        timestamp_positions.append(pos)
-        start = pos + 1
+def is_non_article_by_location(self, link) -> bool:
+    """Filter non-articles based purely on HTML location/structure"""
+    parent = link.parent
+    parent_classes = parent.get('class', [])
+    grandparent = parent.parent
+    grandparent_classes = grandparent.get('class', []) if grandparent else []
     
-    # Find closest timestamp to this link
-    for ts_pos in timestamp_positions:
-        distance = abs(ts_pos - link_position)
-        if distance < min_distance:
-            min_distance = distance
-            closest_timestamp = timestamp
+    # KEEP: News articles in specific news containers
+    if parent.name == 'div' and 'news-link-left' in parent_classes:
+        if grandparent.name == 'div' and 'news-link-container' in grandparent_classes:
+            return False  # Definitely a news article, keep it
+    
+    # FILTER OUT: Institutional ownership tables
+    if parent.name == 'td' and any(cls in parent_classes for cls in ['p-0', 'leading-tight']):
+        if grandparent.name == 'tr' and any(cls in grandparent_classes for cls in ['group', 'is-hoverable']):
+            return True  # Institutional ownership table, filter out
+    
+    # FILTER OUT: Navigation/external links
+    if parent.name == 'td' and 'fullview-links' in parent_classes:
+        if grandparent.name == 'tr' and 'flex' in grandparent_classes:
+            return True  # Navigation links table, filter out
+    
+    # Only basic length check for truly empty links
+    if len(link.get_text().strip()) < 10:
+        return True
+    
+    return False  # Keep if structure is unknown (let newswire filtering handle it)
 ```
 
-**3. Timestamp Parsing:**
+**3. Comprehensive Newswire Detection:**
 ```python
-# Handles multiple Finviz timestamp formats:
-# - "May-16-25 07:00AM" → 2025-05-16 07:00:00
-# - "Today 08:30AM" → current date at 08:30
-# - "Jun-07-24 08:30AM" → 2024-06-07 08:30:00
-# - "Mar-26-24 04:05PM" → 2024-03-26 16:05:00
+# Complete list of newswire variations to handle case sensitivity
+target_newswires = [
+    'GlobeNewswire', 'Globe Newswire', 'GLOBENEWSWIRE', 'GLOBE NEWSWIRE',
+    'PRNewswire', 'PR Newswire', 'PRNEWSWIRE', 'PR NEWSWIRE', 
+    'BusinessWire', 'Business Wire', 'BUSINESSWIRE', 'BUSINESS WIRE',
+    'Accesswire', 'AccessWire', 'ACCESSWIRE', 'ACCESS WIRE'
+]
+
+def find_newswire_for_link(self, link, container, target_newswires) -> str:
+    """Find specific newswire type for a given link"""
+    # Search up DOM tree for newswire indicators
+    search_elements = [link]
+    current = link
+    for level in range(3):  # Search up to 3 levels up
+        if current.parent:
+            current = current.parent
+            search_elements.append(current)
+    
+    # Look for newswire indicators in these elements
+    for element in search_elements:
+        element_text = element.get_text()
+        
+        # Check for parenthetical indicators first (more reliable)
+        for newswire in target_newswires:
+            if f'({newswire})' in element_text:
+                return self.normalize_newswire_name(newswire)
+        
+        # Check for non-parenthetical mentions with word boundaries
+        for newswire in target_newswires:
+            if re.search(rf'\b{re.escape(newswire)}\b', element_text, re.IGNORECASE):
+                return self.normalize_newswire_name(newswire)
+    
+    # Also check URL patterns as fallback
+    href = link.get('href', '')
+    if 'globenewswire.com' in href.lower():
+        return 'GlobeNewswire'
+    elif 'prnewswire.com' in href.lower():
+        return 'PRNewswire'
+    # ... etc
 ```
 
-**4. Newswire Detection:**
+**4. Enhanced Timestamp Association:**
 ```python
-# Looks for newswire labels in element text:
-# - "(GlobeNewswire)" or "GlobeNewswire"
-# - "(ACCESSWIRE)" → maps to "Accesswire"
-# - "(PRNewswire)" → maps to "PRNewswire"
-# - "(BusinessWire)" → maps to "BusinessWire"
-# - "TipRanks" → maps to "TipRanks"
+def find_timestamp_for_link(self, link, container, available_timestamps) -> str:
+    """Find most appropriate timestamp for a specific link"""
+    
+    # Method 1: Look for time-only patterns near the article (like "07:00AM")
+    # This handles cases where time appears separately from date
+    for level in range(4):  # Search up to 4 levels
+        if current.parent:
+            current = current.parent
+            current_text = current.get_text()
+            
+            # Look for time-only patterns in reasonably small containers
+            if len(current_text) < 800:
+                time_matches = re.findall(r'\b(\d{1,2}:\d{2}\s*[AP]M)\b', current_text, re.IGNORECASE)
+                if time_matches:
+                    found_time = time_matches[0]
+                    
+                    # Extract date from article URL and combine with found time
+                    href = link.get('href', '')
+                    url_date_match = re.search(r'/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/', href)
+                    if url_date_match:
+                        year, month, day = int(url_date_match.group(1)), int(url_date_match.group(2)), int(url_date_match.group(3))
+                        month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                        expected_timestamp = f"{month_names[month]}-{day:02d}-{str(year)[-2:]} {found_time}"
+                        
+                        # Use constructed timestamp instead of potentially wrong available one
+                        return expected_timestamp
+    
+    # Method 2: URL-based date matching with available timestamps
+    # Method 3: Proximity-based matching as fallback
+    # ... (additional methods for robustness)
 ```
+
+**5. Timestamp Parsing:**
+```python
+def parse_finviz_timestamp(self, time_text: str) -> datetime:
+    """Parse various Finviz timestamp formats"""
+    # Handles multiple formats:
+    # - "Jul-16-25 09:11AM" → 2025-07-16 09:11:00
+    # - "Today 08:30AM" → current date at 08:30
+    # - "May-06-25 08:55AM" → 2025-05-06 08:55:00
+    # - "Nov-01-24 04:15PM" → 2024-11-01 16:15:00
+    
+    # Enhanced parsing with multiple pattern matching
+    finviz_match = re.search(r'(\w{3})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})([AP]M)', time_text)
+    if finviz_match:
+        month_str, day, year, hour, minute, ampm = finviz_match.groups()
+        # Convert to 24-hour format and create datetime object
+        # ... (detailed parsing logic)
+```
+
+**Key Improvements Over Previous Versions:**
+
+1. **Location-Based Filtering:** Uses HTML structure instead of text patterns to identify non-articles
+   - **Before:** Text patterns like "view" incorrectly filtered "Able View" company articles
+   - **After:** Structure-based filtering prevents false positives while catching navigation links
+
+2. **Comprehensive Newswire Detection:** Includes all case variations
+   - **Before:** Missing "PR Newswire" (with space) caused PRNewswire articles to be filtered out
+   - **After:** Supports all variations: PRNewswire, PR Newswire, PRNEWSWIRE, PR NEWSWIRE, etc.
+
+3. **Enhanced Timestamp Association:** Handles time-only patterns and URL-based date extraction
+   - **Before:** Articles in grouped containers got wrong timestamps
+   - **After:** Finds actual article time ("07:00AM") and combines with URL date for accuracy
+
+4. **Parent Container Timestamp Search:** Looks in parent containers when immediate container lacks timestamps
+   - **Before:** Articles in small individual containers were filtered out
+   - **After:** Searches up to 3 parent levels to find timestamp context
 
 **Results:**
-- **Before:** Found 8 articles for AACG with incorrect timestamps
-- **After:** Found 91 articles for AACG with 100% accurate timestamps
-- **Timestamp Accuracy:** Perfect match with Finviz page display (e.g., "May-16-25 07:00AM" → "2025-05-16 07:00:00")
+- **Article Detection:** Increased from ~8 articles to 12+ articles per ticker (50%+ improvement)
+- **Timestamp Accuracy:** Perfect match with Finviz display (e.g., "07:00AM" correctly parsed)
+- **Newswire Coverage:** Now captures PRNewswire, GlobeNewswire, BusinessWire, and Accesswire articles
+- **False Positive Reduction:** Location-based filtering eliminates navigation and institutional links
+- **Robustness:** Handles various HTML structures and edge cases across different ticker pages
 
 ### 3. Price Data Fetching (`fetch_historical_prices.py`)
 

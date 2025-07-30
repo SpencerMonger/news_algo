@@ -783,7 +783,12 @@ class FinvizHistoricalScraper:
             
             processed_articles = set()
             timestamp_pattern = r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M'
-            target_newswires = ['GlobeNewswire', 'ACCESSWIRE', 'PRNewswire', 'BusinessWire', 'TipRanks']
+            target_newswires = [
+                'GlobeNewswire', 'Globe Newswire', 'GLOBENEWSWIRE', 'GLOBE NEWSWIRE',
+                'PRNewswire', 'PR Newswire', 'PRNEWSWIRE', 'PR NEWSWIRE', 
+                'BusinessWire', 'Business Wire', 'BUSINESSWIRE', 'BUSINESS WIRE',
+                'Accesswire', 'AccessWire', 'ACCESSWIRE', 'ACCESS WIRE'
+            ]
             
             for container in potential_containers:
                 try:
@@ -842,7 +847,7 @@ class FinvizHistoricalScraper:
                                 continue
                             
                             # Additional filtering to avoid non-headlines
-                            if self.is_likely_non_headline(headline_text):
+                            if self.is_non_article_by_location(link):
                                 logger.debug(f"    ❌ Appears to be non-headline: {headline_text[:30]}...")
                                 continue
                             
@@ -1188,43 +1193,64 @@ class FinvizHistoricalScraper:
         }
         return mapping.get(newswire, newswire)
 
-    def is_likely_non_headline(self, text: str) -> bool:
-        """Check if text is likely a non-headline (company name, navigation, etc.)"""
-        text_lower = text.lower().strip()
-        
-        # Company/institutional patterns
-        institutional_patterns = [
-            r'^[a-z\s]+\s+(llc|inc|corp|ltd|lp|llp)$',
-            r'^[a-z\s]+\s+(capital|management|advisors|securities|partners|investments|group|bank|financial)\s*(llc|inc|corp|ltd|lp|llp)?$',
-            r'^[a-z\s]+\s+(ag|sa|plc|nv|bv)$',
-        ]
-        
-        for pattern in institutional_patterns:
-            if re.match(pattern, text_lower):
+    def is_non_article_by_location(self, link) -> bool:
+        """Check if link is a non-article based purely on its HTML location/structure"""
+        try:
+            parent = link.parent
+            if not parent:
                 return True
-        
-        # Navigation/UI patterns
-        navigation_keywords = [
-            'open in', 'view', 'see more', 'details', 'chart', 'quote', 'profile',
-            'top midday', 'top gainers', 'top losers', 'earnings call', 'transcript'
-        ]
-        
-        for keyword in navigation_keywords:
-            if keyword in text_lower:
+            
+            parent_tag = parent.name
+            parent_classes = parent.get('class', [])
+            
+            # Get grandparent context
+            grandparent = parent.parent
+            grandparent_tag = grandparent.name if grandparent else None
+            grandparent_classes = grandparent.get('class', []) if grandparent else []
+            
+            # KEEP: News articles in specific news containers (highest priority)
+            if parent_tag == 'div' and 'news-link-left' in parent_classes:
+                if grandparent_tag == 'div' and 'news-link-container' in grandparent_classes:
+                    return False  # Definitely a news article, keep it
+            
+            # FILTER OUT: Institutional ownership tables
+            if parent_tag == 'td':
+                # Check if this is in an institutional ownership table
+                if any(cls in parent_classes for cls in ['p-0', 'leading-tight']):
+                    if grandparent_tag == 'tr' and any(cls in grandparent_classes for cls in ['group', 'is-hoverable']):
+                        return True  # Institutional ownership table, filter out
+                
+                # Check if this is a navigation table
+                if 'fullview-links' in parent_classes:
+                    if grandparent_tag == 'tr' and 'flex' in grandparent_classes:
+                        return True  # Navigation links table, filter out
+            
+            # FILTER OUT: Links in clearly non-news sections by structure
+            if parent_tag in ['th', 'thead']:
+                return True  # Table headers, not news
+            
+            # FILTER OUT: Links with navigation-specific parent classes
+            nav_parent_classes = ['nav', 'navbar', 'menu', 'sidebar', 'header', 'footer', 'navigation']
+            if any(cls in parent_classes for cls in nav_parent_classes):
                 return True
-        
-        # Very short or generic text
-        words = text.split()
-        if len(words) <= 2:
-            return True
-        
-        # All caps without news indicators (likely company names)
-        if text.isupper() and len(words) > 1:
-            news_words = ['announces', 'reports', 'completes', 'receives', 'launches', 'signs', 'acquires']
-            if not any(word in text_lower for word in news_words):
+            
+            # Check grandparent for navigation classes too
+            if grandparent and any(cls in grandparent_classes for cls in nav_parent_classes):
                 return True
-        
-        return False
+            
+            # Basic size check to avoid empty or very short links (likely UI elements)
+            text = link.get_text().strip()
+            if len(text) < 10:  # Very minimal threshold, just to avoid empty links
+                return True
+            
+            # KEEP: If we get here, the link is in a neutral/unknown container
+            # Since we can't definitively classify it by structure alone, 
+            # we'll err on the side of keeping it (let newswire filtering handle it)
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Error in location-based filtering: {e}")
+            return True  # Filter out if we can't determine structure safely
 
     async def store_ticker_list(self, tickers: List[Dict[str, Any]]):
         """Store ticker list in ClickHouse"""
