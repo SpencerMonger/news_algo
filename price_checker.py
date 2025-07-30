@@ -827,34 +827,29 @@ class ContinuousPriceMonitor:
             # 1. Price moves 5%+ within 2 minutes (existing logic)
             # 2. AND sentiment is 'BUY' with 'high' confidence (from price_tracking table)
             query = f"""
-            SELECT 
-                p.ticker,
-                p.current_price,
-                p.first_price,
-                ((p.current_price - p.first_price) / p.first_price) * 100 as change_pct,
-                p.price_count,
-                p.first_timestamp,
-                p.current_timestamp,
-                dateDiff('second', p.first_timestamp, p.current_timestamp) as seconds_elapsed,
-                p.existing_alerts,
-                -- Sentiment analysis data from price_tracking table
-                p.sentiment,
-                p.recommendation,
-                p.confidence
-            FROM (
+            WITH ticker_first_timestamps AS (
                 SELECT 
-                    pt.ticker,
+                    ticker,
+                    min(timestamp) as first_timestamp,
+                    min(timestamp) + INTERVAL 40 SECOND as cutoff_timestamp
+                FROM News.price_tracking
+                WHERE ticker IN ({ticker_placeholders})
+                GROUP BY ticker
+            ),
+            price_data AS (
+                SELECT 
+                    pt.ticker as ticker,
                     argMax(pt.price, pt.timestamp) as current_price,
                     argMin(pt.price, pt.timestamp) as first_price,
                     max(pt.timestamp) as current_timestamp,
                     min(pt.timestamp) as first_timestamp,
                     count() as price_count,
                     COALESCE(a.alert_count, 0) as existing_alerts,
-                    -- Get the most recent sentiment from price_tracking (no need to query breaking_news)
                     argMax(pt.sentiment, pt.timestamp) as sentiment,
                     argMax(pt.recommendation, pt.timestamp) as recommendation,
                     argMax(pt.confidence, pt.timestamp) as confidence
                 FROM News.price_tracking pt
+                INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
                 LEFT JOIN (
                     SELECT ticker, count() as alert_count
                     FROM News.news_alert
@@ -863,23 +858,28 @@ class ContinuousPriceMonitor:
                 ) a ON pt.ticker = a.ticker
                 WHERE pt.ticker IN ({ticker_placeholders})
                 AND COALESCE(a.alert_count, 0) < 8
-                -- Only look at data within 40 seconds of each ticker's first timestamp
-                AND pt.timestamp <= (
-                    SELECT min(pt2.timestamp) + INTERVAL 40 SECOND 
-                    FROM News.price_tracking pt2 
-                    WHERE pt2.ticker = pt.ticker
-                )
+                AND pt.timestamp <= tft.cutoff_timestamp
                 GROUP BY pt.ticker, a.alert_count
                 HAVING first_price > 0 AND price_count >= 2
-            ) p
-            WHERE ((p.current_price - p.first_price) / p.first_price) * 100 >= 5.0 
-            AND dateDiff('second', p.first_timestamp, p.current_timestamp) <= 40
-            AND p.current_price < 20.0
-            -- SENTIMENT CONDITIONS: Only trigger if sentiment supports the price movement (from price_tracking)
-            AND (
-                -- ONLY High confidence BUY recommendation
-                (p.recommendation = 'BUY' AND p.confidence = 'high')
             )
+            SELECT 
+                ticker,
+                current_price,
+                first_price,
+                ((current_price - first_price) / first_price) * 100 as change_pct,
+                price_count,
+                first_timestamp,
+                current_timestamp,
+                dateDiff('second', first_timestamp, current_timestamp) as seconds_elapsed,
+                existing_alerts,
+                sentiment,
+                recommendation,
+                confidence
+            FROM price_data
+            WHERE ((current_price - first_price) / first_price) * 100 >= 5.0 
+            AND dateDiff('second', first_timestamp, current_timestamp) <= 40
+            AND current_price < 20.0
+            AND (recommendation = 'BUY' AND confidence = 'high')
             ORDER BY change_pct DESC
             """
             
