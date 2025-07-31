@@ -433,17 +433,20 @@ class SentimentService:
         # Return country mapping for requested tickers
         return {ticker: self.country_cache.get(ticker, 'UNKNOWN') for ticker in tickers}
     
-    def scrape_article_content(self, url: str, max_chars: int = 6000) -> str:
-        """Scrape article content from URL, limited to max_chars"""
+    async def scrape_article_content_async(self, url: str, max_chars: int = 6000) -> str:
+        """Asynchronous article content scraping - MATCHES TEST LOGIC for concurrent processing"""
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
             
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
+            # Use aiohttp for async scraping instead of blocking requests
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    response.raise_for_status()
+                    html_content = await response.text()
             
-            soup = BeautifulSoup(response.text, 'html.parser')
+            soup = BeautifulSoup(html_content, 'html.parser')
             
             # Remove script and style elements
             for script in soup(["script", "style"]):
@@ -506,12 +509,94 @@ class SentimentService:
             if len(clean_content) > max_chars:
                 clean_content = clean_content[:max_chars]
                 
-            logger.info(f"Scraped content: {len(clean_content)} characters")
+            logger.debug(f"Async scraped content: {len(clean_content)} characters")
             return clean_content
             
         except Exception as e:
-            logger.error(f"Error scraping content from {url}: {e}")
+            logger.error(f"Error async scraping content from {url}: {e}")
             return ""
+
+    # DEPRECATED: Old synchronous scraping method - replaced with scrape_article_content_async()
+    # This method was blocking concurrent processing and has been replaced
+    # def scrape_article_content(self, url: str, max_chars: int = 6000) -> str:
+    #     """Scrape article content from URL, limited to max_chars"""
+    #     try:
+    #         headers = {
+    #             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    #         }
+    #         
+    #         response = requests.get(url, headers=headers, timeout=10)
+    #         response.raise_for_status()
+    #         
+    #         soup = BeautifulSoup(response.text, 'html.parser')
+    #         
+    #         # Remove script and style elements
+    #         for script in soup(["script", "style"]):
+    #             script.decompose()
+    #         
+    #         # Try to extract article content specifically for Benzinga
+    #         article_content = ""
+    #         
+    #         if 'benzinga.com' in url:
+    #             # Target Benzinga's article paragraph structure
+    #             article_paragraphs = soup.find_all('p')
+    #             content_paragraphs = []
+    #             
+    #             for p in article_paragraphs:
+    #                 # Check if paragraph is in article content container
+    #                 if p.parent and p.parent.get('class'):
+    #                     parent_classes = p.parent.get('class', [])
+    #                     # Look for the specific classes that contain article content
+    #                     if any('cAazyy' in str(cls) or 'dIYChw' in str(cls) for cls in parent_classes):
+    #                         text = p.get_text().strip()
+    #                         if len(text) > 20:  # Only substantial paragraphs
+    #                             content_paragraphs.append(text)
+    #             
+    #             article_content = ' '.join(content_paragraphs)
+    #         
+    #         # Fallback to general content extraction if specific method fails
+    #         if not article_content or len(article_content) < 100:
+    #             # Try common article selectors
+    #             selectors_to_try = [
+    #                 'article',
+    #                 '.article-content',
+    #                 '.story-body',
+    #                 '.post-content',
+    #                 '.content',
+    #                 '.article-body',
+    #                 '[data-module="ArticleBody"]',
+    #                 '.article-wrap',
+    #                 '.entry-content'
+    #             ]
+    #             
+    #             for selector in selectors_to_try:
+    #                 elements = soup.select(selector)
+    #                 if elements:
+    #                     article_content = elements[0].get_text()
+    #                     break
+    #             
+    #             # Final fallback to full page text (original method)
+    #             if not article_content:
+    #                 text = soup.get_text()
+    #                 lines = (line.strip() for line in text.splitlines())
+    #                 chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    #                 article_content = ' '.join(chunk for chunk in chunks if chunk)
+    #         
+    #         # Clean up the content
+    #         lines = (line.strip() for line in article_content.splitlines())
+    #         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    #         clean_content = ' '.join(chunk for chunk in chunks if chunk)
+    #         
+    #         # Limit to max_chars
+    #         if len(clean_content) > max_chars:
+    #             clean_content = clean_content[:max_chars]
+    #             
+    #         logger.info(f"Scraped content: {len(clean_content)} characters")
+    #         return clean_content
+    #         
+    #     except Exception as e:
+    #         logger.error(f"Error scraping content from {url}: {e}")
+    #         return ""
 
     async def initialize(self):
         """Initialize the sentiment service with native load balancing"""
@@ -613,7 +698,7 @@ class SentimentService:
         # Always scrape full content from URL if available
         if article_url:
             logger.info(f"Scraping full content from URL: {article_url}")
-            scraped_content = self.scrape_article_content(article_url, max_chars=6000)
+            scraped_content = await self.scrape_article_content_async(article_url, max_chars=6000)
             if scraped_content:
                 content_to_analyze = scraped_content
                 logger.info(f"Using scraped content: {len(content_to_analyze)} characters")
@@ -819,16 +904,19 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
         
         return {"error": "Max retries exceeded"}
     
-    async def analyze_batch_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def analyze_batch_articles_with_immediate_insertion(self, articles: List[Dict[str, Any]], table_name: str = 'breaking_news') -> Dict[str, Any]:
         """
-        Analyze sentiment for articles individually with immediate processing
-        Each article is processed and returned as soon as its analysis completes
+        Analyze sentiment for articles individually with IMMEDIATE processing and DATABASE INSERTION
+        Each article is processed and inserted as soon as its analysis completes
+        CONCURRENT PROCESSING - matches test logic exactly
+        This is the NEW method that matches the test code pattern
         """
         if not articles:
-            return articles
+            return {'successful_count': 0, 'total_articles': 0, 'processing_time': 0}
         
+        start_time = time.time()
         mode = "LOAD BALANCED" if self.stats['load_balancing_enabled'] else "SINGLE KEY"
-        logger.info(f"🧠 SENTIMENT ANALYSIS ({mode}): Processing {len(articles)} articles individually")
+        logger.info(f"🧠 SENTIMENT + INSERTION ({mode}): Processing {len(articles)} articles INDIVIDUALLY with IMMEDIATE DATABASE INSERTION")
         
         # Pre-load country data for all tickers in batch for efficiency
         tickers = [article.get('ticker', '') for article in articles if article.get('ticker')]
@@ -836,24 +924,170 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             await self.get_batch_ticker_countries(tickers)
             logger.debug(f"Pre-loaded country data for {len(tickers)} tickers")
         
-        # Process articles individually with immediate completion
+        # Initialize database connection
+        try:
+            from clickhouse_setup import ClickHouseManager
+            clickhouse_manager = ClickHouseManager()
+            clickhouse_manager.connect()
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize database connection: {e}")
+            return {'successful_count': 0, 'total_articles': len(articles), 'processing_time': 0, 'error': str(e)}
+        
+        # Process articles concurrently in batches - MATCHES TEST LOGIC EXACTLY
+        successful_count = 0
+        
+        # Process in smaller batches to avoid overwhelming the API - EXACTLY like test
+        batch_size = 20
+        
+        try:
+            for i in range(0, len(articles), batch_size):
+                batch = articles[i:i + batch_size]
+                logger.info(f"📦 Processing batch {i//batch_size + 1}: {len(batch)} articles CONCURRENTLY with IMMEDIATE INSERTION")
+                
+                # Create tasks for this batch - EXACTLY like test
+                tasks = []
+                for j, article in enumerate(batch):
+                    task = asyncio.create_task(self._process_single_article_with_immediate_insertion(article, clickhouse_manager, table_name, i + j + 1))
+                    tasks.append(task)
+                
+                # Execute batch concurrently - EXACTLY like test
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Count successes
+                for result in results:
+                    if not isinstance(result, Exception) and result:
+                        successful_count += 1
+                
+                # Small delay between batches to avoid rate limits - like test
+                if i + batch_size < len(articles):
+                    await asyncio.sleep(0.5)
+            
+            processing_time = time.time() - start_time
+            logger.info(f"✅ INDIVIDUAL PROCESSING + INSERTION COMPLETE ({mode}): {successful_count}/{len(articles)} successful analyses and insertions in {processing_time:.1f}s")
+            
+            return {
+                'successful_count': successful_count,
+                'total_articles': len(articles),
+                'processing_time': processing_time,
+                'success_rate': (successful_count / len(articles) * 100) if articles else 0
+            }
+            
+        finally:
+            # Clean up database connection
+            try:
+                clickhouse_manager.close()
+            except:
+                pass
+    
+    async def _process_single_article_with_immediate_insertion(self, article: Dict[str, Any], clickhouse_manager, table_name: str, index: int) -> bool:
+        """
+        Process a single article with sentiment analysis and IMMEDIATE database insertion
+        MATCHES TEST LOGIC EXACTLY - each article is fully processed (analysis + insertion) immediately
+        """
+        ticker = article.get('ticker', 'UNKNOWN')
+        
+        try:
+            logger.debug(f"🧠 #{index:2d} ANALYZING + INSERTING: {ticker}")
+            
+            # STEP 1: IMMEDIATE sentiment analysis - matches test logic
+            analysis_start = time.time()
+            sentiment_result = await self.analyze_article_sentiment(article)
+            analysis_time = time.time() - analysis_start
+            
+            # STEP 2: Enrich article with sentiment data immediately
+            if isinstance(sentiment_result, dict) and 'error' not in sentiment_result:
+                article.update({
+                    'sentiment': sentiment_result.get('sentiment', 'neutral'),
+                    'recommendation': sentiment_result.get('recommendation', 'HOLD'),
+                    'confidence': sentiment_result.get('confidence', 'low'),
+                    'explanation': sentiment_result.get('explanation', 'No explanation'),
+                    'analysis_time_ms': sentiment_result.get('analysis_time_ms', 0),
+                    'analyzed_at': sentiment_result.get('analyzed_at', datetime.now())
+                })
+                logger.debug(f"✅ #{index:2d} SENTIMENT: {ticker} -> {sentiment_result.get('recommendation', 'HOLD')}")
+            else:
+                # Add default sentiment for failed analysis
+                error_msg = sentiment_result.get('error', 'Unknown error') if sentiment_result else 'No response'
+                article.update({
+                    'sentiment': 'neutral',
+                    'recommendation': 'HOLD',
+                    'confidence': 'low',
+                    'explanation': f'Analysis failed: {error_msg}',
+                    'analysis_time_ms': int(analysis_time * 1000),
+                    'analyzed_at': datetime.now()
+                })
+                logger.warning(f"⚠️ #{index:2d} DEFAULT SENTIMENT: {ticker} -> Using default sentiment")
+            
+            # STEP 3: IMMEDIATE database insertion - MATCHES TEST LOGIC EXACTLY
+            insert_start = time.time()
+            inserted_count = clickhouse_manager.insert_articles_to_table([article], table_name)
+            insert_time = time.time() - insert_start
+            
+            if inserted_count > 0:
+                logger.debug(f"💾 #{index:2d} INSERTED: {ticker} -> {table_name} table ({insert_time:.2f}s)")
+                return True
+            else:
+                logger.error(f"❌ #{index:2d} INSERT FAILED: {ticker} -> {table_name} table")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ #{index:2d} EXCEPTION: {ticker} -> {str(e)}")
+            
+            # Even on exception, try to insert with default sentiment (ZERO LOSS GUARANTEE like test)
+            try:
+                article.update({
+                    'sentiment': 'neutral',
+                    'recommendation': 'HOLD',
+                    'confidence': 'low',
+                    'explanation': f'Processing error: {str(e)}',
+                    'analysis_time_ms': 0,
+                    'analyzed_at': datetime.now()
+                })
+                inserted_count = clickhouse_manager.insert_articles_to_table([article], table_name)
+                if inserted_count > 0:
+                    logger.warning(f"🛡️ #{index:2d} ZERO LOSS: {ticker} -> Inserted with default sentiment")
+                    return True
+            except Exception as insert_error:
+                logger.error(f"❌ #{index:2d} ZERO LOSS FAILED: {ticker} -> {str(insert_error)}")
+            
+            return False
+    
+    async def analyze_batch_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Analyze sentiment for articles individually with IMMEDIATE processing
+        Each article is processed and returned as soon as its analysis completes
+        CONCURRENT PROCESSING - matches test logic exactly
+        """
+        if not articles:
+            return articles
+        
+        mode = "LOAD BALANCED" if self.stats['load_balancing_enabled'] else "SINGLE KEY"
+        logger.info(f"🧠 SENTIMENT ANALYSIS ({mode}): Processing {len(articles)} articles INDIVIDUALLY (CONCURRENT)")
+        
+        # Pre-load country data for all tickers in batch for efficiency
+        tickers = [article.get('ticker', '') for article in articles if article.get('ticker')]
+        if tickers:
+            await self.get_batch_ticker_countries(tickers)
+            logger.debug(f"Pre-loaded country data for {len(tickers)} tickers")
+        
+        # Process articles concurrently in batches - MATCHES TEST LOGIC
         enriched_articles = []
         successful_analyses = 0
         
-        # Process in smaller concurrent batches to avoid overwhelming the API
+        # Process in smaller batches to avoid overwhelming the API - EXACTLY like test
         batch_size = 20
         
         for i in range(0, len(articles), batch_size):
             batch = articles[i:i + batch_size]
-            logger.info(f"📦 Processing batch {i//batch_size + 1}: {len(batch)} articles")
+            logger.info(f"📦 Processing batch {i//batch_size + 1}: {len(batch)} articles CONCURRENTLY")
             
-            # Create tasks for this batch
+            # Create tasks for this batch - EXACTLY like test
             tasks = []
             for j, article in enumerate(batch):
-                task = asyncio.create_task(self._process_single_article_individually(article, i + j + 1))
+                task = asyncio.create_task(self._process_single_article_immediately(article, i + j + 1))
                 tasks.append(task)
             
-            # Execute batch concurrently and collect results as they complete
+            # Execute batch concurrently - EXACTLY like test
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
             # Process results
@@ -867,20 +1101,20 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                     if result.get('sentiment') != 'neutral' or 'error' not in str(result.get('explanation', '')):
                         successful_analyses += 1
             
-            # Small delay between batches to avoid rate limits
+            # Small delay between batches to avoid rate limits - like test
             if i + batch_size < len(articles):
                 await asyncio.sleep(0.5)
         
         logger.info(f"✅ INDIVIDUAL PROCESSING COMPLETE ({mode}): {successful_analyses}/{len(articles)} successful analyses")
         return enriched_articles
     
-    async def _process_single_article_individually(self, article: Dict[str, Any], index: int) -> Dict[str, Any]:
-        """Process a single article individually and return enriched article immediately"""
+    async def _process_single_article_immediately(self, article: Dict[str, Any], index: int) -> Dict[str, Any]:
+        """Process a single article immediately with concurrent execution - MATCHES TEST LOGIC"""
         try:
             ticker = article.get('ticker', 'UNKNOWN')
-            logger.debug(f"🧠 #{index:2d} ANALYZING: {ticker}")
+            logger.debug(f"🧠 #{index:2d} ANALYZING CONCURRENTLY: {ticker}")
             
-            # Analyze sentiment for this single article
+            # IMMEDIATE sentiment analysis - matches test logic
             sentiment_result = await self.analyze_article_sentiment(article)
             
             # Enrich article with sentiment data immediately
@@ -986,6 +1220,62 @@ async def clear_sentiment_cache():
     else:
         logger.info("🧹 CACHE CLEAR: No global sentiment service instance exists")
 
+async def analyze_articles_with_sentiment_and_immediate_insertion(articles: List[Dict[str, Any]], table_name: str = 'breaking_news') -> Dict[str, Any]:
+    """
+    MATCHES TEST LOGIC: Analyze articles with sentiment AND immediate database insertion
+    This is the new integration point that follows the test code pattern
+    Each article gets sentiment analysis + immediate database insertion concurrently
+    No article waits for another - true individual processing
+    """
+    if not articles:
+        return {'successful_count': 0, 'total_articles': 0, 'processing_time': 0}
+    
+    try:
+        service = await get_sentiment_service()
+        return await service.analyze_batch_articles_with_immediate_insertion(articles, table_name)
+    except Exception as e:
+        logger.error(f"Error in sentiment analysis + insertion integration: {e}")
+        
+        # Try to insert articles with default sentiment (ZERO LOSS GUARANTEE like test)
+        try:
+            from clickhouse_setup import ClickHouseManager
+            clickhouse_manager = ClickHouseManager()
+            clickhouse_manager.connect()
+            
+            default_articles = []
+            for article in articles:
+                article.update({
+                    'sentiment': 'neutral',
+                    'recommendation': 'HOLD',
+                    'confidence': 'low',
+                    'explanation': f'Integration error: {str(e)}',
+                    'analysis_time_ms': 0,
+                    'analyzed_at': datetime.now()
+                })
+                default_articles.append(article)
+            
+            inserted_count = clickhouse_manager.insert_articles_to_table(default_articles, table_name)
+            clickhouse_manager.close()
+            
+            logger.warning(f"🛡️ ZERO LOSS FALLBACK: Inserted {inserted_count}/{len(articles)} articles with default sentiment")
+            
+            return {
+                'successful_count': inserted_count,
+                'total_articles': len(articles),
+                'processing_time': 0,
+                'error': str(e),
+                'fallback_used': True
+            }
+            
+        except Exception as fallback_error:
+            logger.error(f"❌ Zero loss fallback also failed: {fallback_error}")
+            return {
+                'successful_count': 0,
+                'total_articles': len(articles),
+                'processing_time': 0,
+                'error': f'Primary error: {str(e)}, Fallback error: {str(fallback_error)}'
+            }
+
 async def analyze_articles_with_sentiment(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Convenience function to analyze articles with sentiment
@@ -1049,15 +1339,27 @@ if __name__ == "__main__":
         else:
             print("🔑 Load Balancing: DISABLED (using single API key)")
         
-        # Test batch analysis
+        # Test batch analysis (original method)
         enriched_articles = await service.analyze_batch_articles(test_articles)
         
-        print(f"\n📊 Analysis Results:")
+        print(f"\n📊 Analysis Results (Original Method):")
         for article in enriched_articles:
             ticker = article['ticker']
             recommendation = article.get('recommendation', 'UNKNOWN')
             confidence = article.get('confidence', 'unknown')
             print(f"   {ticker}: {recommendation} ({confidence} confidence)")
+        
+        # Test NEW immediate insertion method (matches test logic)
+        print(f"\n🧠 Testing NEW IMMEDIATE INSERTION method (matches test logic)...")
+        try:
+            result = await service.analyze_batch_articles_with_immediate_insertion(test_articles, 'news_testing')
+            print(f"✅ NEW METHOD RESULTS:")
+            print(f"   Total Articles: {result.get('total_articles', 0)}")
+            print(f"   Successful: {result.get('successful_count', 0)}")
+            print(f"   Processing Time: {result.get('processing_time', 0):.1f}s")
+            print(f"   Success Rate: {result.get('success_rate', 0):.1f}%")
+        except Exception as e:
+            print(f"⚠️ NEW METHOD TEST: {e} (This is expected if no database connection)")
         
         # Show final stats
         final_stats = service.get_stats()
@@ -1072,6 +1374,10 @@ if __name__ == "__main__":
             print(f"   Key Switches: {lb_stats['key_switches']}")
         
         print("\n✅ Test completed!")
+        print("\n🎯 NEW FEATURE: analyze_batch_articles_with_immediate_insertion() now matches test logic!")
+        print("   - Each article gets sentiment analysis + immediate database insertion")
+        print("   - No article waits for another (true concurrent processing)")
+        print("   - Zero loss guarantee with default sentiment fallback")
         
         await service.cleanup()
     

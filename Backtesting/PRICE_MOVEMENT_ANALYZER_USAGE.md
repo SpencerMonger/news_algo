@@ -2,26 +2,58 @@
 
 ## Overview
 
-The **Price Movement Analyzer** is a standalone script that analyzes historical news articles to identify those that preceded significant price movements (30%+ increase). It adds a new column `price_movement_30pct` to the `historical_news` table with the following values:
+The **Price Movement Analyzer** is a standalone script that analyzes historical news articles to identify those that preceded significant price movements and detect "false pump" scenarios. It creates a new table `News.price_movement_analysis` with comprehensive price movement data including:
 
-- `1` (True) - Article was followed by a 30%+ price increase
-- `0` (False) - Article was NOT followed by a 30%+ price increase  
-- `NULL` - No price data available for analysis
+- **30% Sustained Increases**: Articles followed by 30%+ price increase maintained until 9:28 AM EST
+- **False Pumps**: Articles where price increased 20%+ but then fell back to within 10% of initial price by 9:28 AM EST
+- **Complete Price Tracking**: Entry price, exit price, and maximum price reached during the analysis period
 
 ## Algorithm
 
-For each article published between **6:00 AM to 9:00 AM EST** in **2025 onwards** (matching price data availability):
+For each article published between **6:00 AM to 9:01 AM UTC** in the **last 6 months**:
 
 1. **Entry Price**: Get stock price at `published_utc + 30 seconds`
-2. **Exit Price**: Get stock price at `9:28 AM EST` on the same date
-3. **Calculate**: Check if `exit_price >= 1.30 × entry_price` (30%+ increase)
-4. **Label**: Store `True`/`False`/`NULL` in the `price_movement_30pct` column
+2. **Exit Price**: Get stock price at `9:28 AM EST` on the same date  
+3. **Max Price**: Track highest price reached during the entire analysis period
+4. **Calculate Ratios**: 
+   - `price_increase_ratio = exit_price / entry_price`
+   - `max_price_ratio = max_price / entry_price`
+5. **Classify Movement**:
+   - `has_30pct_increase = 1` if exit price ≥ 130% of entry price
+   - `is_false_pump = 1` if max price ≥ 120% of entry price BUT exit price fell back to 90-110% of entry price
+
+## Enhanced Database Schema
+
+The analyzer creates a new table `News.price_movement_analysis` with these columns:
+
+```sql
+CREATE TABLE News.price_movement_analysis (
+    ticker String,
+    headline String,
+    article_url String,
+    published_utc DateTime,
+    newswire_type String,
+    content_hash String,
+    entry_time DateTime,
+    exit_time DateTime,
+    entry_price Float64,
+    exit_price Float64,
+    max_price Float64,
+    price_increase_ratio Float64,
+    max_price_ratio Float64,
+    has_30pct_increase UInt8,
+    is_false_pump UInt8,
+    analysis_date DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY (ticker, published_utc)
+PARTITION BY toYYYYMM(published_utc)
+```
 
 ## Prerequisites
 
 1. **Database Tables**: Ensure these tables exist and have data:
-   - `News.historical_news` - Contains scraped news articles (2025+ for analysis)
-   - `News.historical_price` - Contains 10-second price bars from Polygon API (6 months back)
+   - `News.historical_news` - Contains scraped news articles (last 6 months)
+   - `News.historical_price` - Contains 10-second price bars from Polygon API
 
 2. **Dependencies**: Same as other backtesting scripts (ClickHouse, pytz, etc.)
 
@@ -35,37 +67,25 @@ python price_movement_analyzer.py
 ```
 
 This will:
-- Add the new column to `historical_news` table (if it doesn't exist)
-- Process all articles that don't have price movement labels yet
-- Update the database with calculated results
+- Create a fresh `News.price_movement_analysis` table
+- Process all articles from the last 6 months published between 6:00-9:01 AM UTC
+- Track sustained increases and false pump scenarios
 - Provide comprehensive statistics
-
-### Test with Limited Articles
-
-```bash
-# Test with dry run (no database updates)
-python test_price_movement.py --dry-run --limit 100
-
-# Test with small batch size
-python test_price_movement.py --batch-size 10 --limit 50
-
-# Run actual analysis with smaller batches
-python test_price_movement.py --batch-size 25
-```
 
 ## Expected Output
 
 ### During Processing
 ```
-2024-01-15 10:30:00 - INFO - 🚀 Starting Price Movement Analysis...
+2024-01-15 10:30:00 - INFO - 🚀 Starting Price Movement Analysis with False Pump Detection...
 2024-01-15 10:30:01 - INFO - ✅ Price Movement Analyzer initialized successfully
-2024-01-15 10:30:01 - INFO - 📊 price_movement_30pct column already exists
-2024-01-15 10:30:02 - INFO - 📄 Found 1,250 articles needing analysis (2025+ only, filtered for 6:00-9:00 AM EST)
-2024-01-15 10:30:02 - INFO - 📊 Processing batch of 50 articles...
-2024-01-15 10:30:05 - INFO - 📈 30%+ increase found: AAPL - Apple Announces Revolutionary New Product...
-2024-01-15 10:30:10 - INFO - 📈 PROGRESS: 100 articles analyzed
+2024-01-15 10:30:01 - INFO - ✅ Created fresh price_movement_analysis table with false pump detection
+2024-01-15 10:30:02 - INFO - 📄 Found 1,250 articles to analyze (last 6 months, 6:00-9:01 AM)
+2024-01-15 10:30:05 - INFO - 📈 30%+ increase found: AAPL - Apple Announces Revolutionary New Product... (1.45x)
+2024-01-15 10:30:08 - INFO - 🎢 False pump detected: TSLA - Tesla Reports Strong Q4... (max: 1.35x, final: 1.05x)
+2024-01-15 10:30:10 - INFO - 📈 PROGRESS: 100/1250 articles analyzed
 2024-01-15 10:30:10 - INFO -   • With price data: 87
 2024-01-15 10:30:10 - INFO -   • With 30%+ increase: 12
+2024-01-15 10:30:10 - INFO -   • With false pumps: 8
 2024-01-15 10:30:10 - INFO -   • No price data: 13
 ```
 
@@ -76,131 +96,140 @@ python test_price_movement.py --batch-size 25
   • Total articles analyzed: 1,250
   • Articles with price data: 1,089
   • Articles with 30%+ increase: 87
+  • Articles with false pumps: 156
   • Articles without price data: 161
   • 30%+ increase rate: 7.99%
+  • False pump rate: 14.32%
   • Time elapsed: 0:15:32
-```
-
-## Database Schema Changes
-
-The script automatically adds this column to `historical_news`:
-
-```sql
-ALTER TABLE News.historical_news 
-ADD COLUMN price_movement_30pct Nullable(UInt8) DEFAULT NULL
 ```
 
 ## Querying Results
 
-After running the analyzer, you can query the results:
+After running the analyzer, you can query the comprehensive results:
+
+### Basic Queries
 
 ```sql
--- Get articles with 30%+ price increases
-SELECT ticker, headline, published_utc, price_movement_30pct
-FROM News.historical_news 
-WHERE price_movement_30pct = 1
-ORDER BY published_utc DESC;
+-- Get articles with sustained 30%+ increases
+SELECT ticker, headline, published_utc, entry_price, exit_price, price_increase_ratio
+FROM News.price_movement_analysis 
+WHERE has_30pct_increase = 1
+ORDER BY price_increase_ratio DESC;
 
--- Get summary statistics
+-- Get articles with false pumps
+SELECT ticker, headline, published_utc, entry_price, max_price, exit_price, 
+       max_price_ratio, price_increase_ratio
+FROM News.price_movement_analysis 
+WHERE is_false_pump = 1
+ORDER BY max_price_ratio DESC;
+
+-- Get comprehensive summary statistics
 SELECT 
-    price_movement_30pct,
+    has_30pct_increase,
+    is_false_pump,
     COUNT(*) as article_count,
     COUNT(*) * 100.0 / SUM(COUNT(*)) OVER() as percentage
-FROM News.historical_news 
-WHERE price_movement_30pct IS NOT NULL
-GROUP BY price_movement_30pct;
+FROM News.price_movement_analysis
+GROUP BY has_30pct_increase, is_false_pump
+ORDER BY has_30pct_increase DESC, is_false_pump DESC;
+```
 
--- Get results by ticker
+### Advanced Analysis Queries
+
+```sql
+-- Compare false pumps vs sustained increases by ticker
 SELECT 
     ticker,
     COUNT(*) as total_articles,
-    SUM(price_movement_30pct) as articles_with_30pct_increase,
-    AVG(price_movement_30pct) * 100 as success_rate_percent
-FROM News.historical_news 
-WHERE price_movement_30pct IS NOT NULL
+    SUM(has_30pct_increase) as sustained_increases,
+    SUM(is_false_pump) as false_pumps,
+    AVG(has_30pct_increase) * 100 as sustained_rate_percent,
+    AVG(is_false_pump) * 100 as false_pump_rate_percent
+FROM News.price_movement_analysis
 GROUP BY ticker
 HAVING total_articles >= 10
-ORDER BY success_rate_percent DESC;
+ORDER BY sustained_rate_percent DESC;
+
+-- Analyze false pump characteristics
+SELECT 
+    ticker,
+    headline,
+    entry_price,
+    max_price,
+    exit_price,
+    max_price_ratio,
+    price_increase_ratio,
+    (max_price - entry_price) as max_gain_dollars,
+    (exit_price - entry_price) as final_gain_dollars
+FROM News.price_movement_analysis
+WHERE is_false_pump = 1
+ORDER BY max_price_ratio DESC
+LIMIT 20;
+
+-- Time-based analysis of movement patterns
+SELECT 
+    EXTRACT(HOUR FROM published_utc) as hour,
+    COUNT(*) as total_articles,
+    AVG(has_30pct_increase) * 100 as sustained_rate,
+    AVG(is_false_pump) * 100 as false_pump_rate,
+    AVG(max_price_ratio) as avg_max_ratio
+FROM News.price_movement_analysis
+GROUP BY hour
+ORDER BY hour;
 ```
 
 ## Time Filtering Logic
 
-The script only analyzes articles published between **6:00 AM to 9:00 AM EST** in **2025 onwards** because:
+The script analyzes articles published between **6:00 AM to 9:01 AM UTC** in the **last 6 months** because:
 
-1. **Price Data Availability**: Only 6 months of historical price data is available (2025 onwards)
-2. **Market Context**: This is the pre-market period when news can significantly impact opening prices
-3. **Analysis Window**: Ensures there's enough time between publication (+ 30 seconds) and market open (9:30 AM EST)
-4. **Realistic Trading**: Aligns with the backtesting system's focus on early morning newswire articles
+1. **Price Data Availability**: Uses 6 months of historical price data
+2. **Pre-Market Context**: Captures the critical pre-market period when news impacts opening prices
+3. **Analysis Window**: Ensures sufficient time between publication (+30 seconds) and market open (9:30 AM EST)
+4. **Extended Coverage**: Now includes articles published up to 9:01 AM UTC for comprehensive analysis
+
+## False Pump Detection Logic
+
+The enhanced analyzer identifies **false pump scenarios** using these criteria:
+
+1. **Initial Pump**: Stock price must reach at least **120% of entry price** during the analysis period
+2. **Subsequent Fall**: Final price (at 9:28 AM EST) must fall back to **90-110% of entry price**
+3. **Classification**: This indicates initial excitement/momentum that ultimately failed before market open
+
+**Example False Pump**:
+- Entry Price: $10.00
+- Max Price Reached: $13.50 (135% of entry = pump detected)
+- Exit Price: $10.50 (105% of entry = fell back to initial range)
+- Result: `is_false_pump = 1`
 
 ## Performance Considerations
 
-- **Batch Processing**: Processes articles in batches (default 50) to manage memory usage
+- **Batch Processing**: Processes articles in batches (default 20) to manage memory usage
 - **Rate Limiting**: 100ms delay between articles to avoid overwhelming the database
-- **Incremental**: Only processes articles without existing labels (resumable)
-- **Efficient Queries**: Uses indexed columns (ticker, timestamp) for fast price lookups
-
-## Troubleshooting
-
-### No Articles Found
-```
-📄 Found 0 articles needing analysis (2025+ only, filtered for 6:00-9:00 AM EST)
-```
-**Solution**: Check that `historical_news` table has articles published in the 6:00-9:00 AM EST window from 2025 onwards.
-
-### No Price Data
-```
-• Articles without price data: 500
-```
-**Solution**: Ensure `historical_price` table has 10-second bars for the relevant tickers and dates.
-
-### Column Already Exists Error
-The script handles this automatically by checking if the column exists before adding it.
-
-### Database Connection Issues
-Verify ClickHouse is running and `clickhouse_setup.py` is configured correctly.
+- **Fresh Analysis**: Creates new table each run for clean, up-to-date results
+- **Efficient Queries**: Uses indexed columns for fast price lookups
 
 ## Integration with Backtesting System
 
-This analyzer complements the existing backtesting pipeline:
+This analyzer provides valuable pre-filtering data for the backtesting pipeline:
 
 1. **Step 1-2**: Run normal backtesting (scrape news, fetch prices)
 2. **Step 2.5**: Run price movement analyzer → `python price_movement_analyzer.py`
 3. **Step 3-6**: Continue with sentiment analysis and trade simulation
 
-The price movement labels can be used to:
-- Pre-filter articles for sentiment analysis (focus on high-potential articles)
-- Validate trading strategy performance
-- Research correlation between news sentiment and actual price movements
-- Identify the most effective newswire sources
-
-## Advanced Usage
-
-### Custom Batch Sizes
-```bash
-# Larger batches (faster, more memory)
-python price_movement_analyzer.py --batch-size 100
-
-# Smaller batches (slower, less memory)
-python test_price_movement.py --batch-size 10
-```
-
-### Integration with Other Scripts
-```python
-from price_movement_analyzer import PriceMovementAnalyzer
-
-# Use within other scripts
-analyzer = PriceMovementAnalyzer()
-await analyzer.initialize()
-result = await analyzer.analyze_article(article_data)
-await analyzer.cleanup()
-```
+The enhanced price movement data can be used to:
+- **Pre-filter articles**: Focus sentiment analysis on high-potential articles
+- **Avoid false pumps**: Exclude articles that historically showed false pump patterns
+- **Strategy validation**: Compare predicted vs actual price movements
+- **Source analysis**: Identify which newswires produce the most reliable signals
+- **Risk management**: Understand false pump frequency for better position sizing
 
 ## Expected Results
 
-Based on financial markets research, typical results might show:
-- **Overall 30%+ Rate**: 2-8% of pre-market news articles
-- **High-Impact Sources**: Certain newswires may show higher success rates
-- **Sector Variations**: Biotech, small-cap stocks may show higher rates
-- **Seasonal Patterns**: Earnings seasons may show different patterns
+Based on enhanced analysis, typical results might show:
+- **Overall 30%+ Sustained Rate**: 2-8% of pre-market news articles
+- **False Pump Rate**: 10-20% of articles (more common than sustained increases)
+- **High-Impact Sources**: Certain newswires may show higher sustained rates and lower false pump rates
+- **Sector Variations**: Biotech, small-cap stocks may show higher rates of both patterns
+- **Risk Insights**: False pumps provide crucial risk management data
 
-This data provides valuable insights into which news articles historically preceded significant price movements, helping improve trading strategy development and backtesting accuracy. 
+This comprehensive analysis provides deep insights into both successful price movements and failed momentum, enabling more sophisticated trading strategies and risk management approaches. 

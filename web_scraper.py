@@ -22,13 +22,15 @@ from crawl4ai.extraction_strategy import LLMExtractionStrategy
 import aiohttp
 import feedparser
 from bs4 import BeautifulSoup
-from sentiment_service import analyze_articles_with_sentiment
+from sentiment_service import analyze_articles_with_sentiment, analyze_articles_with_sentiment_and_immediate_insertion
 
 # Load environment variables
 load_dotenv()
 
-# SENTIMENT ANALYSIS INTEGRATION
-from sentiment_service import analyze_articles_with_sentiment
+# SENTIMENT ANALYSIS INTEGRATION  
+from sentiment_service import analyze_articles_with_sentiment, analyze_articles_with_sentiment_and_immediate_insertion
+
+# Additional imports
 
 # Configure logging
 logging.basicConfig(
@@ -489,37 +491,61 @@ class Crawl4AIScraper:
         return articles
 
     async def flush_buffer_to_clickhouse(self):
-        """Flush article buffer to ClickHouse with sentiment analysis"""
+        """Flush article buffer to ClickHouse using NEW concurrent processing with immediate insertion"""
         if not self.batch_queue:
             return
             
         try:
-            logger.info(f"🧠 Processing {len(self.batch_queue)} articles with sentiment analysis...")
+            logger.info(f"🧠 Processing {len(self.batch_queue)} articles with CONCURRENT sentiment analysis + immediate insertion (MATCHES TEST LOGIC)...")
             
-            # STEP 1: Analyze sentiment for all articles BEFORE database insertion
-            enriched_articles = await analyze_articles_with_sentiment(self.batch_queue)
+            # Use the NEW method that matches test logic - concurrent processing with immediate insertion
+            start_time = time.time()
+            result = await analyze_articles_with_sentiment_and_immediate_insertion(self.batch_queue, 'breaking_news')
+            processing_time = time.time() - start_time
             
-            # STEP 2: Insert articles WITH sentiment data into database
-            inserted_count = self.clickhouse_manager.insert_articles(enriched_articles)
-            self.stats['articles_inserted'] += inserted_count
+            successful_count = result.get('successful_count', 0)
+            total_articles = result.get('total_articles', len(self.batch_queue))
             
-            logger.info(f"✅ Flushed {inserted_count} articles with sentiment analysis to ClickHouse")
+            logger.info(f"✅ CONCURRENT PROCESSING COMPLETE: {successful_count}/{total_articles} articles processed and inserted in {processing_time:.1f}s")
+            logger.info(f"⚡ AVERAGE TIME PER ARTICLE: {processing_time/max(1, total_articles):.1f}s (MUCH FASTER)")
+            
+            self.stats['articles_inserted'] += successful_count
             self.batch_queue.clear()
             
-        except Exception as e:
-            logger.error(f"Error flushing buffer to ClickHouse with sentiment analysis: {e}")
-            self.stats['errors'] = self.stats.get('errors', 0) + 1
+            # Log any errors from the result
+            if 'error' in result:
+                logger.warning(f"⚠️ Some articles used fallback processing: {result['error']}")
             
-            # Fallback: Try to insert without sentiment analysis
+        except Exception as e:
+            logger.error(f"❌ Error in concurrent processing: {e}")
+            logger.info(f"🔄 Falling back to old method...")
+            
+            # Fallback to old method if new method fails
             try:
-                logger.warning("🔄 Attempting fallback insertion without sentiment analysis...")
-                inserted_count = self.clickhouse_manager.insert_articles(self.batch_queue)
+                # STEP 1: Analyze sentiment for all articles BEFORE database insertion (OLD METHOD)
+                enriched_articles = await analyze_articles_with_sentiment(self.batch_queue)
+                
+                # STEP 2: Insert articles WITH sentiment data into database
+                inserted_count = self.clickhouse_manager.insert_articles(enriched_articles)
                 self.stats['articles_inserted'] += inserted_count
-                logger.info(f"✅ Fallback insertion successful: {inserted_count} articles")
+                
+                logger.info(f"✅ FALLBACK: Flushed {inserted_count} articles with sentiment analysis to ClickHouse")
                 self.batch_queue.clear()
+                
             except Exception as fallback_error:
-                logger.error(f"❌ Fallback insertion also failed: {fallback_error}")
+                logger.error(f"❌ Fallback sentiment analysis also failed: {fallback_error}")
                 self.stats['errors'] = self.stats.get('errors', 0) + 1
+                
+                # Final fallback: Try to insert without sentiment analysis
+                try:
+                    logger.warning("🔄 Attempting final fallback insertion without sentiment analysis...")
+                    inserted_count = self.clickhouse_manager.insert_articles(self.batch_queue)
+                    self.stats['articles_inserted'] += inserted_count
+                    logger.info(f"✅ Final fallback insertion successful: {inserted_count} articles")
+                    self.batch_queue.clear()
+                except Exception as final_fallback_error:
+                    logger.error(f"❌ All methods failed: {final_fallback_error}")
+                    self.stats['errors'] = self.stats.get('errors', 0) + 1
 
     async def monitor_all_newswires(self):
         """Monitor ALL newswire sources for exact ticker matches with SPEED-OPTIMIZED efficiency"""

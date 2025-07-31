@@ -20,7 +20,7 @@ from clickhouse_setup import ClickHouseManager
 from bs4 import BeautifulSoup
 
 # SENTIMENT ANALYSIS INTEGRATION
-from sentiment_service import analyze_articles_with_sentiment
+from sentiment_service import analyze_articles_with_sentiment_and_immediate_insertion
 
 # Load environment variables
 load_dotenv()
@@ -563,54 +563,74 @@ class BenzingaWebSocketScraper:
                 logger.error(f"Error in buffer flusher: {e}")
 
     async def flush_articles_to_clickhouse(self, articles):
-        """Flush articles to ClickHouse with individual processing and immediate insertion"""
+        """Flush articles to ClickHouse using NEW concurrent batch processing with immediate insertion"""
         if not articles:
             return
             
         try:
-            logger.info(f"🧠 Starting individual processing for {len(articles)} articles...")
+            logger.info(f"🧠 Starting CONCURRENT batch processing for {len(articles)} articles (MATCHES TEST LOGIC)...")
             
-            # Process articles individually with immediate insertion
-            successful_count = 0
+            # Use the NEW sentiment service method that matches test logic
+            start_time = time.time()
+            result = await analyze_articles_with_sentiment_and_immediate_insertion(articles, 'breaking_news')
+            processing_time = time.time() - start_time
             
-            # Process in smaller batches to avoid overwhelming the API
-            batch_size = 20
+            successful_count = result.get('successful_count', 0)
+            total_articles = result.get('total_articles', len(articles))
             
-            for i in range(0, len(articles), batch_size):
-                batch = articles[i:i + batch_size]
-                logger.info(f"📦 Processing batch {i//batch_size + 1}: {len(batch)} articles")
-                
-                # Create tasks for individual processing and insertion
-                tasks = []
-                for j, article in enumerate(batch):
-                    task = asyncio.create_task(self._process_and_insert_individual_article(article, i + j + 1))
-                    tasks.append(task)
-                
-                # Execute batch concurrently
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # Count successes
-                for result in results:
-                    if not isinstance(result, Exception) and result:
-                        successful_count += 1
-                
-                # Small delay between batches
-                if i + batch_size < len(articles):
-                    await asyncio.sleep(0.5)
+            logger.info(f"✅ CONCURRENT BATCH PROCESSING COMPLETE: {successful_count}/{total_articles} articles successfully processed and inserted in {processing_time:.1f}s")
+            logger.info(f"⚡ AVERAGE TIME PER ARTICLE: {processing_time/max(1, total_articles):.1f}s (MUCH FASTER than individual calls)")
             
-            logger.info(f"✅ Individual processing complete: {successful_count}/{len(articles)} articles successfully processed and inserted")
             self.stats['articles_inserted'] += successful_count
             
+            # Log any errors from the result
+            if 'error' in result:
+                logger.warning(f"⚠️ Some articles used fallback processing: {result['error']}")
+            
         except Exception as e:
-            logger.error(f"Error in individual article processing: {e}")
-            self.stats['errors'] = self.stats.get('errors', 0) + 1
+            logger.error(f"❌ Error in concurrent batch processing: {e}")
+            logger.info(f"🔄 Falling back to old individual processing method...")
+            
+            # Fallback to old method if new method fails
+            await self._fallback_individual_processing(articles)
+    
+    async def _fallback_individual_processing(self, articles):
+        """Fallback to old individual processing method if new method fails"""
+        successful_count = 0
+        batch_size = 20
+        
+        for i in range(0, len(articles), batch_size):
+            batch = articles[i:i + batch_size]
+            logger.info(f"📦 FALLBACK Processing batch {i//batch_size + 1}: {len(batch)} articles")
+            
+            # Create tasks for individual processing and insertion
+            tasks = []
+            for j, article in enumerate(batch):
+                task = asyncio.create_task(self._process_and_insert_individual_article(article, i + j + 1))
+                tasks.append(task)
+            
+            # Execute batch concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Count successes
+            for result in results:
+                if not isinstance(result, Exception) and result:
+                    successful_count += 1
+            
+            # Small delay between batches
+            if i + batch_size < len(articles):
+                await asyncio.sleep(0.5)
+        
+        logger.info(f"✅ FALLBACK processing complete: {successful_count}/{len(articles)} articles")
+        self.stats['articles_inserted'] += successful_count
+        self.stats['errors'] = self.stats.get('errors', 0) + 1
     
     async def _process_and_insert_individual_article(self, article: Dict[str, Any], index: int) -> bool:
-        """Process a single article with sentiment analysis and immediately insert to database"""
+        """Process a single article with sentiment analysis and immediately insert to database (FALLBACK METHOD)"""
         ticker = article.get('ticker', 'UNKNOWN')
         
         try:
-            logger.debug(f"🧠 #{index:2d} ANALYZING: {ticker}")
+            logger.debug(f"🧠 #{index:2d} ANALYZING (FALLBACK): {ticker}")
             
             # STEP 1: Analyze sentiment for this single article  
             from sentiment_service import get_sentiment_service
@@ -627,7 +647,7 @@ class BenzingaWebSocketScraper:
                     'analysis_time_ms': sentiment_result.get('analysis_time_ms', 0),
                     'analyzed_at': sentiment_result.get('analyzed_at', datetime.now())
                 })
-                logger.debug(f"✅ #{index:2d} SENTIMENT: {ticker} -> {sentiment_result.get('recommendation', 'HOLD')}")
+                logger.debug(f"✅ #{index:2d} SENTIMENT (FALLBACK): {ticker} -> {sentiment_result.get('recommendation', 'HOLD')}")
             else:
                 # Use default sentiment for failed analysis
                 error_msg = sentiment_result.get('error', 'Unknown error') if sentiment_result else 'No response'
@@ -639,20 +659,20 @@ class BenzingaWebSocketScraper:
                     'analysis_time_ms': 0,
                     'analyzed_at': datetime.now()
                 })
-                logger.warning(f"⚠️ #{index:2d} DEFAULT: {ticker} -> Using default sentiment")
+                logger.warning(f"⚠️ #{index:2d} DEFAULT (FALLBACK): {ticker} -> Using default sentiment")
             
             # STEP 3: Immediately insert to database
             inserted_count = self.clickhouse_manager.insert_articles([article])
             
             if inserted_count > 0:
-                logger.debug(f"💾 #{index:2d} INSERTED: {ticker} -> Database")
+                logger.debug(f"💾 #{index:2d} INSERTED (FALLBACK): {ticker} -> Database")
                 return True
             else:
-                logger.error(f"❌ #{index:2d} INSERT FAILED: {ticker}")
+                logger.error(f"❌ #{index:2d} INSERT FAILED (FALLBACK): {ticker}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ #{index:2d} EXCEPTION: {ticker} -> {str(e)}")
+            logger.error(f"❌ #{index:2d} EXCEPTION (FALLBACK): {ticker} -> {str(e)}")
             
             # ZERO LOSS GUARANTEE: Insert with default sentiment even on exception
             try:
@@ -667,10 +687,10 @@ class BenzingaWebSocketScraper:
                 
                 inserted_count = self.clickhouse_manager.insert_articles([article])
                 if inserted_count > 0:
-                    logger.warning(f"🛡️ #{index:2d} ZERO LOSS: {ticker} -> Inserted with default sentiment")
+                    logger.warning(f"🛡️ #{index:2d} ZERO LOSS (FALLBACK): {ticker} -> Inserted with default sentiment")
                     return True
                 else:
-                    logger.error(f"❌ #{index:2d} ZERO LOSS FAILED: {ticker}")
+                    logger.error(f"❌ #{index:2d} ZERO LOSS FAILED (FALLBACK): {ticker}")
                     return False
                     
             except Exception as fallback_error:
