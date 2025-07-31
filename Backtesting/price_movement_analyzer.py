@@ -79,7 +79,7 @@ class PriceMovementAnalyzer:
                 ticker String,
                 headline String,
                 article_url String,
-                published_utc DateTime,
+                published_est DateTime,
                 newswire_type String,
                 content_hash String,
                 entry_time DateTime,
@@ -93,8 +93,8 @@ class PriceMovementAnalyzer:
                 is_false_pump UInt8,
                 analysis_date DateTime DEFAULT now()
             ) ENGINE = MergeTree()
-            ORDER BY (ticker, published_utc)
-            PARTITION BY toYYYYMM(published_utc)
+            ORDER BY (ticker, published_est)
+            PARTITION BY toYYYYMM(published_est)
             """
             
             self.ch_manager.client.command(create_table_sql)
@@ -111,23 +111,22 @@ class PriceMovementAnalyzer:
             six_months_ago = datetime.now() - timedelta(days=180)
             cutoff_date = six_months_ago.strftime('%Y-%m-%d %H:%M:%S')
             
-            # Get all articles in the time window - no need to check for existing analysis
+            # Get all articles in the time window - removed artificial limit to capture all months
             query = """
             SELECT 
                 ticker, 
                 headline, 
                 article_url, 
-                published_utc,
+                published_est,
                 newswire_type,
                 content_hash
             FROM News.historical_news 
-            WHERE published_utc >= %s
-            AND EXTRACT(HOUR FROM published_utc) BETWEEN 6 AND 9
-            ORDER BY published_utc DESC
-            LIMIT %s
+            WHERE published_est >= %s
+            AND EXTRACT(HOUR FROM published_est) BETWEEN 6 AND 9
+            ORDER BY published_est ASC
             """
             
-            result = self.ch_manager.client.query(query, parameters=[cutoff_date, batch_size])
+            result = self.ch_manager.client.query(query, parameters=[cutoff_date])
             
             articles = []
             for row in result.result_rows:
@@ -135,34 +134,46 @@ class PriceMovementAnalyzer:
                     'ticker': row[0],
                     'headline': row[1],
                     'article_url': row[2],
-                    'published_utc': row[3],
+                    'published_est': row[3],
                     'newswire_type': row[4],
                     'content_hash': row[5]
                 })
             
             logger.info(f"📄 Found {len(articles)} articles to analyze (last 6 months, 6:00-8:59 AM)")
+            
+            # Log distribution by month for better visibility
+            from collections import defaultdict
+            monthly_counts = defaultdict(int)
+            for article in articles:
+                month_key = article['published_est'].strftime('%Y-%m')
+                monthly_counts[month_key] += 1
+            
+            logger.info("📊 Articles by month:")
+            for month in sorted(monthly_counts.keys()):
+                logger.info(f"  • {month}: {monthly_counts[month]} articles")
+            
             return articles
             
         except Exception as e:
             logger.error(f"Error getting articles for analysis: {e}")
             return []
     
-    async def get_price_data_for_analysis(self, ticker: str, published_utc: datetime) -> Optional[Dict[str, Any]]:
+    async def get_price_data_for_analysis(self, ticker: str, published_est: datetime) -> Optional[Dict[str, Any]]:
         """Get price data needed for movement analysis including all bars for max price tracking"""
         try:
             # Calculate key timestamps
-            published_est = published_utc.replace(tzinfo=pytz.UTC).astimezone(self.est_tz)
+            published_est_tz = published_est.replace(tzinfo=pytz.UTC).astimezone(self.est_tz)
             
-            # Price at published_utc + 30 seconds
-            entry_time = published_utc + timedelta(seconds=30)
+            # Price at published_est + 30 seconds
+            entry_time = published_est + timedelta(seconds=30)
             
             # Price at 9:28 AM EST on the same date
-            exit_time_est = published_est.replace(hour=9, minute=28, second=0, microsecond=0)
+            exit_time_est = published_est_tz.replace(hour=9, minute=28, second=0, microsecond=0)
             exit_time_utc = exit_time_est.astimezone(pytz.UTC)
             
             # Query price data from published time to 9:30 AM EST
-            start_time = published_utc
-            end_time = published_est.replace(hour=9, minute=30, second=0, microsecond=0).astimezone(pytz.UTC)
+            start_time = published_est
+            end_time = published_est_tz.replace(hour=9, minute=30, second=0, microsecond=0).astimezone(pytz.UTC)
             
             query = f"""
             SELECT timestamp, open, high, low, close, volume
@@ -176,7 +187,7 @@ class PriceMovementAnalyzer:
             result = self.ch_manager.client.query(query)
             
             if len(result.result_rows) == 0:
-                logger.debug(f"No price data found for {ticker} at {published_utc}")
+                logger.debug(f"No price data found for {ticker} at {published_est}")
                 return None
             
             bars = []
@@ -277,7 +288,7 @@ class PriceMovementAnalyzer:
         Calculate price movement ratios and detect both 30% increases and false pumps
         
         Args:
-            entry_price: Price at entry time (published_utc + 30 seconds)
+            entry_price: Price at entry time (published_est + 30 seconds)
             exit_price: Price at exit time (9:28 AM EST)
             max_price: Maximum price reached during the period
         
@@ -307,10 +318,10 @@ class PriceMovementAnalyzer:
         """Analyze a single article for price movement including false pump detection"""
         try:
             ticker = article['ticker']
-            published_utc = article['published_utc']
+            published_est = article['published_est']
             
             # Get price data
-            price_data = await self.get_price_data_for_analysis(ticker, published_utc)
+            price_data = await self.get_price_data_for_analysis(ticker, published_est)
             
             if price_data is None:
                 self.stats['articles_no_price_data'] += 1
@@ -337,7 +348,7 @@ class PriceMovementAnalyzer:
                 'ticker': ticker,
                 'headline': article['headline'],
                 'article_url': article['article_url'],
-                'published_utc': published_utc,
+                'published_est': published_est,
                 'newswire_type': article['newswire_type'],
                 'content_hash': article['content_hash'],
                 'entry_time': price_data['entry_time'],
@@ -368,7 +379,7 @@ class PriceMovementAnalyzer:
                     result['ticker'],
                     result['headline'],
                     result['article_url'],
-                    result['published_utc'],
+                    result['published_est'],
                     result['newswire_type'],
                     result['content_hash'],
                     result['entry_time'],
@@ -388,7 +399,7 @@ class PriceMovementAnalyzer:
                 'News.price_movement_analysis',
                 result_data,
                 column_names=[
-                    'ticker', 'headline', 'article_url', 'published_utc', 'newswire_type', 
+                    'ticker', 'headline', 'article_url', 'published_est', 'newswire_type', 
                     'content_hash', 'entry_time', 'exit_time', 'entry_price', 'exit_price', 
                     'max_price', 'price_increase_ratio', 'max_price_ratio', 'has_30pct_increase', 
                     'is_false_pump', 'analysis_date'
@@ -410,8 +421,8 @@ class PriceMovementAnalyzer:
                 logger.error("Failed to initialize analyzer")
                 return False
             
-            # Get all articles to analyze
-            articles = await self.get_articles_for_analysis(1000)  # Get all articles
+            # Get all articles to analyze (removed hardcoded limit)
+            articles = await self.get_articles_for_analysis()
             
             if not articles:
                 logger.info("No articles found to analyze")
@@ -431,9 +442,10 @@ class PriceMovementAnalyzer:
                     
                     self.stats['articles_analyzed'] += 1
                     
-                    # Progress logging
-                    if (i + 1) % 50 == 0:
-                        logger.info(f"📈 PROGRESS: {i + 1}/{len(articles)} articles analyzed")
+                    # Progress logging every 100 articles and show current month being processed
+                    if (i + 1) % 100 == 0:
+                        current_month = article['published_est'].strftime('%Y-%m')
+                        logger.info(f"📈 PROGRESS: {i + 1}/{len(articles)} articles analyzed (currently processing {current_month})")
                         logger.info(f"  • With price data: {self.stats['articles_with_data']}")
                         logger.info(f"  • With 30%+ increase: {self.stats['articles_with_30pct_increase']}")
                         logger.info(f"  • With false pumps: {self.stats['articles_with_false_pump']}")
