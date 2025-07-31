@@ -419,11 +419,11 @@ class FinvizHistoricalScraper:
         
         return None
 
-    def filter_by_time(self, published_utc: datetime) -> bool:
+    def filter_by_time(self, published_est: datetime) -> bool:
         """Filter articles to only 5am-9am EST"""
         try:
             # Convert UTC to EST
-            est_time = published_utc.replace(tzinfo=pytz.UTC).astimezone(self.est_tz)
+            est_time = published_est.replace(tzinfo=pytz.UTC).astimezone(self.est_tz)
             
             # Check if time is between 5am and 9am EST
             return 5 <= est_time.hour < 9
@@ -785,13 +785,13 @@ class FinvizHistoricalScraper:
             logger.debug(f"❌ Error in debug structure: {e}")
 
     async def scrape_ticker_news(self, ticker: str) -> List[Dict[str, Any]]:
-        """Scrape news for a specific ticker using more precise article-by-article matching"""
+        """Scrape news for a specific ticker using proper cell-pairing logic"""
         articles = []
         
         # Construct ticker page URL
         ticker_url = f"https://elite.finviz.com/quote.ashx?t={ticker}&ty=c&ta=1&p=i1"
         
-        logger.info(f"📰 Scraping news for {ticker} with improved precision...")
+        logger.info(f"📰 Scraping news for {ticker} with cell-pairing logic...")
         
         try:
             # Use Crawl4AI to get the page
@@ -808,38 +808,10 @@ class FinvizHistoricalScraper:
             
             soup = BeautifulSoup(result.html, 'html.parser')
             
-            # NEW APPROACH: Look for individual news rows/containers
-            # Finviz typically structures news in table rows or similar containers
+            # Find the news table - it's the table with both timestamps and newswire links
+            news_table = None
+            tables = soup.find_all('table')
             
-            # Find all potential news containers (table rows, divs, etc.)
-            potential_containers = []
-            
-            # Method 1: Look for table rows that might contain individual news items or small groups
-            for tr in soup.find_all('tr'):
-                tr_text = tr.get_text().strip()
-                if 20 < len(tr_text) < 2000:  # Skip very short rows and very large containers
-                    potential_containers.append(tr)
-            
-            # Method 2: Look for div containers that might group articles by date
-            for div in soup.find_all('div'):
-                div_text = div.get_text().strip()
-                if 50 < len(div_text) < 3000:  # Reasonable size for date-grouped containers
-                    # Check if this div contains timestamps (likely a news container)
-                    if re.search(r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M', div_text):
-                        potential_containers.append(div)
-            
-            # Method 3: Look for table cells that might contain individual articles
-            for td in soup.find_all('td'):
-                td_text = td.get_text().strip()
-                if 30 < len(td_text) < 1500:  # Good size for individual news items
-                    # Only include if it has links and potentially timestamps
-                    if td.find('a', href=True) and len(td.find_all('a', href=True)) <= 10:  # Not too many links
-                        potential_containers.append(td)
-            
-            logger.debug(f"Found {len(potential_containers)} potential news containers")
-            
-            processed_articles = set()
-            timestamp_pattern = r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M'
             target_newswires = [
                 'GlobeNewswire', 'Globe Newswire', 'GLOBENEWSWIRE', 'GLOBE NEWSWIRE',
                 'PRNewswire', 'PR Newswire', 'PRNEWSWIRE', 'PR NEWSWIRE', 
@@ -847,37 +819,74 @@ class FinvizHistoricalScraper:
                 'Accesswire', 'AccessWire', 'ACCESSWIRE', 'ACCESS WIRE'
             ]
             
-            for container in potential_containers:
+            timestamp_pattern = r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M'
+            time_only_pattern = r'^\d{1,2}:\d{2}[AP]M$'
+            
+            for table in tables:
+                table_text = table.get_text()
+                has_timestamps = bool(re.search(timestamp_pattern, table_text))
+                has_newswires = any(wire in table_text for wire in target_newswires)
+                
+                if has_timestamps and has_newswires:
+                    news_table = table
+                    logger.debug(f"Found news table with {len(table.find_all('tr'))} rows")
+                    break
+            
+            if not news_table:
+                logger.warning(f"No news table found for {ticker}")
+                return articles
+            
+            # Process table rows: each row has timestamp cell and article cell
+            processed_articles = set()
+            last_full_date = None  # Keep track of last full date for time-only timestamps
+            
+            news_rows = news_table.find_all('tr')
+            logger.debug(f"Found {len(news_rows)} news rows to process")
+            
+            for row in news_rows:
                 try:
-                    container_text = container.get_text()
+                    cells = row.find_all(['td', 'th'])
                     
-                    # Look for timestamps in this container
-                    timestamps_in_container = re.findall(timestamp_pattern, container_text)
-                    
-                    # If no timestamps in immediate container, look in parent containers
-                    if not timestamps_in_container:
-                        current = container
-                        for level in range(3):  # Search up to 3 parent levels
-                            if current.parent:
-                                current = current.parent
-                                parent_text = current.get_text()
-                                parent_timestamps = re.findall(timestamp_pattern, parent_text)
-                                if parent_timestamps:
-                                    timestamps_in_container = parent_timestamps
-                                    logger.debug(f"Found {len(parent_timestamps)} timestamps in parent container (level {level+1})")
-                                    break
-                    
-                    if not timestamps_in_container:
+                    # Skip rows that don't have exactly 2 cells (timestamp + article)
+                    if len(cells) != 2:
                         continue
                     
-                    # Find all links in this container
-                    links = container.find_all('a', href=True)
-                    if not links:
+                    timestamp_cell = cells[0]
+                    article_cell = cells[1]
+                    
+                    timestamp_text = timestamp_cell.get_text().strip()
+                    article_links = article_cell.find_all('a', href=True)
+                    
+                    # Skip rows without article links
+                    if not article_links:
                         continue
                     
-                    logger.debug(f"Processing container with {len(timestamps_in_container)} timestamps and {len(links)} links")
+                    # Check if timestamp cell contains a timestamp
+                    is_full_timestamp = bool(re.search(timestamp_pattern, timestamp_text))
+                    is_time_only = bool(re.match(time_only_pattern, timestamp_text))
                     
-                    for link in links:
+                    current_timestamp = None
+                    
+                    if is_full_timestamp:
+                        # Extract the full timestamp and remember the date part
+                        timestamp_match = re.search(timestamp_pattern, timestamp_text)
+                        if timestamp_match:
+                            current_timestamp = timestamp_match.group()
+                            last_full_date = current_timestamp.split()[0]  # Extract date part (e.g., "Jul-08-25")
+                            logger.debug(f"Row with full timestamp: {current_timestamp}")
+                            
+                    elif is_time_only and last_full_date:
+                        # Combine time-only with last known date
+                        current_timestamp = f"{last_full_date} {timestamp_text}"
+                        logger.debug(f"Row with time-only '{timestamp_text}' combined with date '{last_full_date}' -> '{current_timestamp}'")
+                    
+                    else:
+                        # Not a timestamp row, skip
+                        logger.debug(f"Skipping row - no valid timestamp: '{timestamp_text}'")
+                        continue
+                    
+                    # Process all links in this article cell
+                    for link in article_links:
                         try:
                             href = link.get('href', '')
                             headline_text = link.get_text().strip()
@@ -886,26 +895,11 @@ class FinvizHistoricalScraper:
                             if not href or not headline_text or len(headline_text) < 15:
                                 continue
                             
-                            logger.debug(f"  Analyzing link: '{headline_text[:50]}...'")
-                            
-                            # CRITICAL: Check if this specific link is associated with a newswire
-                            # Look for newswire indicators near this specific link
-                            newswire_type = self.find_newswire_for_link(link, container, target_newswires)
+                            # Check if this specific link is associated with a newswire
+                            newswire_type = self.find_newswire_for_link(link, article_cell, target_newswires)
                             
                             if not newswire_type:
                                 logger.debug(f"    ❌ No newswire found for link: {headline_text[:30]}...")
-                                continue
-                            
-                            # Find the most appropriate timestamp for this specific link
-                            closest_timestamp = self.find_timestamp_for_link(link, container, timestamps_in_container)
-                            
-                            if not closest_timestamp:
-                                logger.debug(f"    ❌ No timestamp found for link: {headline_text[:30]}...")
-                                continue
-                            
-                            # Additional filtering to avoid non-headlines
-                            if self.is_non_article_by_location(link):
-                                logger.debug(f"    ❌ Appears to be non-headline: {headline_text[:30]}...")
                                 continue
                             
                             # Convert relative URLs to absolute
@@ -918,7 +912,7 @@ class FinvizHistoricalScraper:
                                 continue
                             
                             # Parse timestamp
-                            published_utc = self.parse_finviz_timestamp(closest_timestamp)
+                            published_est = self.parse_finviz_timestamp(current_timestamp)
                             
                             # Create unique key to avoid duplicates
                             article_key = (headline_text, article_url)
@@ -932,7 +926,7 @@ class FinvizHistoricalScraper:
                                 'ticker': ticker,
                                 'headline': headline_text,
                                 'article_url': article_url,
-                                'published_utc': published_utc,
+                                'published_est': published_est,
                                 'newswire_type': newswire_type,
                                 'content_hash': self.generate_content_hash(headline_text, article_url)
                             }
@@ -940,17 +934,17 @@ class FinvizHistoricalScraper:
                             articles.append(article)
                             self.stats['articles_found'] += 1
                             
-                            logger.debug(f"    ✅ ADDED: {headline_text[:40]}... ({newswire_type}) at {published_utc}")
+                            logger.debug(f"    ✅ ROW PAIRED: {current_timestamp} → {headline_text[:40]}... ({newswire_type})")
                             
                         except Exception as e:
                             logger.debug(f"    ❌ Error processing link: {e}")
                             continue
                 
                 except Exception as e:
-                    logger.debug(f"Error processing container: {e}")
+                    logger.debug(f"Error processing row: {e}")
                     continue
             
-            logger.info(f"✅ {ticker}: Found {len(articles)} verified newswire articles")
+            logger.info(f"✅ {ticker}: Found {len(articles)} properly paired newswire articles")
             return articles
             
         except Exception as e:
@@ -1010,235 +1004,6 @@ class FinvizHistoricalScraper:
             logger.debug(f"Error finding newswire for link: {e}")
             return None
 
-    def find_timestamp_for_link(self, link, container, available_timestamps) -> str:
-        """Find the most appropriate timestamp for a specific link with improved accuracy"""
-        try:
-            if not available_timestamps:
-                return None
-            
-            # If only one timestamp, use it
-            if len(available_timestamps) == 1:
-                return available_timestamps[0]
-            
-            logger.debug(f"    Finding timestamp for link among {len(available_timestamps)} options")
-            
-            # Method 1: Look for time-only patterns near the specific article first
-            # This handles cases where time appears separately from date (like "07:00AM")
-            time_only_patterns = [
-                r'\b(\d{1,2}:\d{2}\s*[AP]M)\b',  # 07:00AM, 7:00 AM, etc.
-                r'\b(\d{1,2}:\d{2})\b'           # 07:00, 7:00 (without AM/PM)
-            ]
-            
-            # Search in progressively larger containers around the link
-            current = link
-            for level in range(4):  # Search up to 4 levels
-                if current.parent:
-                    current = current.parent
-                    current_text = current.get_text()
-                    
-                    # Only consider reasonably small containers for time-only matching
-                    if len(current_text) < 800:
-                        logger.debug(f"    Checking level {level} container for time-only patterns: '{current_text[:100]}...'")
-                        
-                        for pattern in time_only_patterns:
-                            matches = re.findall(pattern, current_text, re.IGNORECASE)
-                            if matches:
-                                found_time = matches[0]
-                                logger.debug(f"    Found time-only pattern: '{found_time}' at level {level}")
-                                
-                                # Now try to combine this time with the date from URL
-                                href = link.get('href', '')
-                                url_date_match = re.search(r'/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/', href)
-                                if url_date_match:
-                                    year = int(url_date_match.group(1))
-                                    month = int(url_date_match.group(2))
-                                    day = int(url_date_match.group(3))
-                                    
-                                    month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                                                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                                    if 1 <= month <= 12:
-                                        # Create the expected timestamp format
-                                        expected_timestamp = f"{month_names[month]}-{day:02d}-{str(year)[-2:]} {found_time}"
-                                        logger.debug(f"    Constructed timestamp from URL date + found time: '{expected_timestamp}'")
-                                        
-                                        # Look for this exact timestamp in available timestamps
-                                        for ts in available_timestamps:
-                                            if ts == expected_timestamp:
-                                                logger.debug(f"    Found exact match in available timestamps!")
-                                                return ts
-                                        
-                                        # If exact match not found, look for same date with any time
-                                        date_prefix = f"{month_names[month]}-{day:02d}-{str(year)[-2:]}"
-                                        matching_date_timestamps = [ts for ts in available_timestamps if ts.startswith(date_prefix)]
-                                        
-                                        if len(matching_date_timestamps) == 1:
-                                            # If only one timestamp for this date, but we found a specific time pattern,
-                                            # use the constructed timestamp instead of the potentially wrong available one
-                                            logger.debug(f"    Only one timestamp available for date {date_prefix}: '{matching_date_timestamps[0]}'")
-                                            logger.debug(f"    But we found specific time pattern: '{found_time}', using constructed: '{expected_timestamp}'")
-                                            return expected_timestamp
-                                        elif len(matching_date_timestamps) == 0:
-                                            # No timestamps for this date, use our constructed one
-                                            logger.debug(f"    No timestamps available for date {date_prefix}, using constructed: '{expected_timestamp}'")
-                                            return expected_timestamp
-                                        elif len(matching_date_timestamps) > 1:
-                                            # Multiple timestamps for same date - use proximity matching among them
-                                            logger.debug(f"    Multiple timestamps for date {date_prefix}: {matching_date_timestamps}")
-                                            logger.debug(f"    Expected time: '{found_time}' but will use proximity matching")
-                                            
-                                            # Use proximity matching among the same-date timestamps
-                                            container_html = str(current)
-                                            link_html = str(link)
-                                            link_position = container_html.find(link_html)
-                                            
-                                            if link_position != -1:
-                                                closest_ts = None
-                                                min_distance = float('inf')
-                                                
-                                                for ts in matching_date_timestamps:
-                                                    ts_positions = []
-                                                    start = 0
-                                                    while True:
-                                                        pos = container_html.find(ts, start)
-                                                        if pos == -1:
-                                                            break
-                                                        distance = abs(pos - link_position)
-                                                        ts_positions.append((distance, ts))
-                                                        start = pos + 1
-                                                    
-                                                    if ts_positions:
-                                                        min_dist_for_ts = min(ts_positions)[0]
-                                                        if min_dist_for_ts < min_distance:
-                                                            min_distance = min_dist_for_ts
-                                                            closest_ts = ts
-                                                
-                                                if closest_ts:
-                                                    logger.debug(f"    Selected closest timestamp by proximity: '{closest_ts}'")
-                                                    return closest_ts
-                                            
-                                            # Fallback: return first timestamp for the date
-                                            logger.debug(f"    Using fallback - first timestamp for date: '{matching_date_timestamps[0]}'")
-                                            return matching_date_timestamps[0]
-            
-            # Method 2: Check if we can extract date from the article URL itself (original logic)
-            href = link.get('href', '')
-            if href:
-                # Look for date patterns in URL like /2023/11/13/ or /2023-11-13/
-                url_date_match = re.search(r'/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/', href)
-                if url_date_match:
-                    year = int(url_date_match.group(1))
-                    month = int(url_date_match.group(2))
-                    day = int(url_date_match.group(3))
-                    
-                    # Convert to the format we expect in timestamps
-                    month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                    if 1 <= month <= 12:
-                        expected_date_prefix = f"{month_names[month]}-{day:02d}-{str(year)[-2:]}"
-                        
-                        # Look for timestamps that match this date
-                        matching_timestamps = [ts for ts in available_timestamps if ts.startswith(expected_date_prefix)]
-                        if matching_timestamps:
-                            # If multiple timestamps for the same date, pick the first one
-                            selected_timestamp = matching_timestamps[0]
-                            logger.debug(f"    Found timestamp by URL date matching: '{selected_timestamp}' (from URL date {year}-{month:02d}-{day:02d})")
-                            return selected_timestamp
-            
-            # Method 3: Look for timestamp in the immediate vicinity of the link (original logic continues...)
-            current = link
-            for level in range(3):  # Only search close levels for this method
-                if current.parent:
-                    current = current.parent
-                    current_text = current.get_text()
-                    
-                    # Only consider small containers (likely single article containers)
-                    if len(current_text) < 500:  # Much smaller threshold
-                        for timestamp in available_timestamps:
-                            if timestamp in current_text:
-                                logger.debug(f"    Found timestamp '{timestamp}' at close DOM level {level} (small container)")
-                                return timestamp
-            
-            # Method 4: Look for timestamp in table row structure
-            table_row = link.find_parent('tr')
-            if table_row:
-                row_text = table_row.get_text()
-                # Only consider rows that aren't too large (to avoid multi-article rows)
-                if len(row_text) < 1000:
-                    logger.debug(f"    Checking table row: '{row_text[:100]}...'")
-                    
-                    for timestamp in available_timestamps:
-                        if timestamp in row_text:
-                            logger.debug(f"    Found timestamp '{timestamp}' in table row")
-                            return timestamp
-            
-            # Method 5: Look for timestamp in same table cell or nearby cells
-            table_cell = link.find_parent('td')
-            if table_cell:
-                # Check current cell
-                cell_text = table_cell.get_text()
-                if len(cell_text) < 800:  # Reasonable size for a single article cell
-                    for timestamp in available_timestamps:
-                        if timestamp in cell_text:
-                            logger.debug(f"    Found timestamp '{timestamp}' in same table cell")
-                            return timestamp
-                
-                # Check sibling cells in the same row (but only if row isn't too large)
-                if table_cell.parent:
-                    row = table_cell.parent
-                    row_text = row.get_text()
-                    if len(row_text) < 1000:  # Avoid huge multi-article rows
-                        for sibling_cell in row.find_all('td'):
-                            sibling_text = sibling_cell.get_text()
-                            for timestamp in available_timestamps:
-                                if timestamp in sibling_text:
-                                    logger.debug(f"    Found timestamp '{timestamp}' in sibling table cell")
-                                    return timestamp
-            
-            # Method 6: Improved proximity-based matching with better logic
-            container_html = str(container)
-            link_html = str(link)
-            link_position = container_html.find(link_html)
-            
-            if link_position != -1:
-                logger.debug(f"    Using proximity matching - link at position {link_position}")
-                
-                # Create a list of (timestamp, distance, position) tuples
-                timestamp_distances = []
-                
-                for timestamp in available_timestamps:
-                    # Find all positions of this timestamp
-                    start = 0
-                    while True:
-                        pos = container_html.find(timestamp, start)
-                        if pos == -1:
-                            break
-                        
-                        distance = abs(pos - link_position)
-                        timestamp_distances.append((timestamp, distance, pos))
-                        start = pos + 1
-                
-                if timestamp_distances:
-                    # Sort by distance
-                    timestamp_distances.sort(key=lambda x: x[1])
-                    
-                    # Log the closest few for debugging
-                    logger.debug(f"    Closest timestamps by proximity:")
-                    for i, (ts, dist, pos) in enumerate(timestamp_distances[:5]):
-                        logger.debug(f"      {i+1}. '{ts}' at position {pos}, distance {dist}")
-                    
-                    # Return the closest timestamp
-                    closest_timestamp = timestamp_distances[0][0]
-                    logger.debug(f"    Selected closest timestamp: '{closest_timestamp}'")
-                    return closest_timestamp
-            
-            # Fallback: return the first timestamp (should rarely happen now)
-            logger.debug(f"    Using fallback timestamp: '{available_timestamps[0]}'")
-            return available_timestamps[0]
-            
-        except Exception as e:
-            logger.debug(f"Error finding timestamp for link: {e}")
-            return available_timestamps[0] if available_timestamps else None
-
     def normalize_newswire_name(self, newswire: str) -> str:
         """Normalize newswire names to consistent format"""
         mapping = {
@@ -1249,65 +1014,6 @@ class FinvizHistoricalScraper:
             'TipRanks': 'TipRanks'
         }
         return mapping.get(newswire, newswire)
-
-    def is_non_article_by_location(self, link) -> bool:
-        """Check if link is a non-article based purely on its HTML location/structure"""
-        try:
-            parent = link.parent
-            if not parent:
-                return True
-            
-            parent_tag = parent.name
-            parent_classes = parent.get('class', [])
-            
-            # Get grandparent context
-            grandparent = parent.parent
-            grandparent_tag = grandparent.name if grandparent else None
-            grandparent_classes = grandparent.get('class', []) if grandparent else []
-            
-            # KEEP: News articles in specific news containers (highest priority)
-            if parent_tag == 'div' and 'news-link-left' in parent_classes:
-                if grandparent_tag == 'div' and 'news-link-container' in grandparent_classes:
-                    return False  # Definitely a news article, keep it
-            
-            # FILTER OUT: Institutional ownership tables
-            if parent_tag == 'td':
-                # Check if this is in an institutional ownership table
-                if any(cls in parent_classes for cls in ['p-0', 'leading-tight']):
-                    if grandparent_tag == 'tr' and any(cls in grandparent_classes for cls in ['group', 'is-hoverable']):
-                        return True  # Institutional ownership table, filter out
-                
-                # Check if this is a navigation table
-                if 'fullview-links' in parent_classes:
-                    if grandparent_tag == 'tr' and 'flex' in grandparent_classes:
-                        return True  # Navigation links table, filter out
-            
-            # FILTER OUT: Links in clearly non-news sections by structure
-            if parent_tag in ['th', 'thead']:
-                return True  # Table headers, not news
-            
-            # FILTER OUT: Links with navigation-specific parent classes
-            nav_parent_classes = ['nav', 'navbar', 'menu', 'sidebar', 'header', 'footer', 'navigation']
-            if any(cls in parent_classes for cls in nav_parent_classes):
-                return True
-            
-            # Check grandparent for navigation classes too
-            if grandparent and any(cls in grandparent_classes for cls in nav_parent_classes):
-                return True
-            
-            # Basic size check to avoid empty or very short links (likely UI elements)
-            text = link.get_text().strip()
-            if len(text) < 10:  # Very minimal threshold, just to avoid empty links
-                return True
-            
-            # KEEP: If we get here, the link is in a neutral/unknown container
-            # Since we can't definitively classify it by structure alone, 
-            # we'll err on the side of keeping it (let newswire filtering handle it)
-            return False
-            
-        except Exception as e:
-            logger.debug(f"Error in location-based filtering: {e}")
-            return True  # Filter out if we can't determine structure safely
 
     async def store_ticker_list(self, tickers: List[Dict[str, Any]]):
         """Store ticker list in ClickHouse"""
@@ -1359,7 +1065,7 @@ class FinvizHistoricalScraper:
                     article['ticker'],
                     article['headline'],
                     article['article_url'],
-                    article['published_utc'],
+                    article['published_est'],
                     datetime.now(),
                     'finviz',
                     article['newswire_type'],
@@ -1371,7 +1077,7 @@ class FinvizHistoricalScraper:
             self.ch_manager.client.insert(
                 'News.historical_news',
                 article_data,
-                column_names=['ticker', 'headline', 'article_url', 'published_utc', 'scraped_at', 'source', 'newswire_type', 'article_content', 'content_hash']
+                column_names=['ticker', 'headline', 'article_url', 'published_est', 'scraped_at', 'source', 'newswire_type', 'article_content', 'content_hash']
             )
             
             self.stats['articles_stored'] += len(article_data)

@@ -36,15 +36,15 @@ def create_backtesting_tables():
             ticker String,
             headline String,
             article_url String,
-            published_utc DateTime,
+            published_est DateTime,
             scraped_at DateTime DEFAULT now(),
             source String DEFAULT 'finviz',
             newswire_type String,
             article_content String DEFAULT '',
             content_hash String DEFAULT ''
         ) ENGINE = MergeTree()
-        ORDER BY (ticker, published_utc)
-        PARTITION BY toYYYYMM(published_utc)
+        ORDER BY (ticker, published_est)
+        PARTITION BY toYYYYMM(published_est)
         """
         
         ch_manager.client.command(historical_news_sql)
@@ -59,7 +59,7 @@ def create_backtesting_tables():
             ticker String,
             headline String,
             article_url String,
-            published_utc DateTime,
+            published_est DateTime,
             sentiment String,
             recommendation String,
             confidence String,
@@ -69,8 +69,8 @@ def create_backtesting_tables():
             content_hash String DEFAULT '',
             country String DEFAULT 'UNKNOWN'
         ) ENGINE = MergeTree()
-        ORDER BY (ticker, published_utc)
-        PARTITION BY toYYYYMM(published_utc)
+        ORDER BY (ticker, published_est)
+        PARTITION BY toYYYYMM(published_est)
         """
         
         ch_manager.client.command(historical_sentiment_sql)
@@ -85,7 +85,7 @@ def create_backtesting_tables():
             trade_id String,
             ticker String,
             article_url String,
-            published_utc DateTime,
+            published_est DateTime,
             entry_time DateTime,
             exit_time DateTime,
             entry_price Float64,
@@ -102,8 +102,8 @@ def create_backtesting_tables():
             explanation String,
             created_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
-        ORDER BY (ticker, published_utc)
-        PARTITION BY toYYYYMM(published_utc)
+        ORDER BY (ticker, published_est)
+        PARTITION BY toYYYYMM(published_est)
         """
         
         ch_manager.client.command(backtest_trades_sql)
