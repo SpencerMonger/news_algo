@@ -105,15 +105,22 @@ class BacktestOrchestrator:
             self.log_step_complete(1, "CREATE TABLES", False, step_duration)
             return False
 
-    async def step_2_scrape_news(self, ticker_limit: int = None) -> bool:
+    async def step_2_scrape_news(self, ticker_limit: int = None, single_ticker: str = None) -> bool:
         """STEP 2: Scrape historical news from Finviz"""
         step_start = time.time()
-        limit_desc = f" (limited to {ticker_limit} tickers)" if ticker_limit else ""
+        
+        if single_ticker:
+            limit_desc = f" (single ticker: {single_ticker})"
+        elif ticker_limit:
+            limit_desc = f" (limited to {ticker_limit} tickers)"
+        else:
+            limit_desc = ""
+            
         self.log_step_start(2, "SCRAPE NEWS", f"Scraping 6 months of newswire articles from Finviz (5am-9am EST only){limit_desc}")
         
         try:
             self.finviz_scraper = FinvizHistoricalScraper()
-            success = await self.finviz_scraper.run_historical_scrape(ticker_limit=ticker_limit)
+            success = await self.finviz_scraper.run_historical_scrape(ticker_limit=ticker_limit, single_ticker=single_ticker)
             self.stats['news_scraped'] = success
             
             step_duration = time.time() - step_start
@@ -265,7 +272,7 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         
         return report
 
-    async def run_complete_backtest(self, start_step: int = 1, end_step: int = 5, csv_filename: str = None, ticker_limit: int = None) -> bool:
+    async def run_complete_backtest(self, start_step: int = 1, end_step: int = 5, csv_filename: str = None, ticker_limit: int = None, single_ticker: str = None) -> bool:
         """Run the complete backtesting pipeline"""
         try:
             logger.info("🎯 STARTING NEWSHEAD BACKTESTING SYSTEM")
@@ -282,7 +289,7 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             
             # Step 2: Scrape news
             if start_step <= 2 <= end_step:
-                if not await self.step_2_scrape_news(ticker_limit=ticker_limit):
+                if not await self.step_2_scrape_news(ticker_limit=ticker_limit, single_ticker=single_ticker):
                     logger.error("❌ Step 2 failed")
                     success = False
             
@@ -331,6 +338,7 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='Show what would be executed without running')
     parser.add_argument('--limit', type=int, help='Limit number of ticker pages to scrape (e.g., --limit 30)')
     parser.add_argument('--skip-sentiment-check', action='store_true', help='Skip sentiment analysis and use default values for trade simulation')
+    parser.add_argument('--ticker', help='Scrape news for a single specific ticker (e.g., --ticker AAPL)')
     
     args = parser.parse_args()
     
@@ -363,6 +371,7 @@ def main():
     print(f"Ticker Limit: {args.limit or 'No limit (all tickers)'}")
     print(f"Dry Run: {'Yes' if args.dry_run else 'No'}")
     print(f"Skip Sentiment Check: {'Yes' if args.skip_sentiment_check else 'No'}")
+    print(f"Single Ticker: {args.ticker or 'No single ticker specified'}")
     
     if args.dry_run:
         print("\n✅ Dry run completed - no actual execution performed")
@@ -392,7 +401,8 @@ def main():
             start_step=args.start_step,
             end_step=args.end_step,
             csv_filename=args.csv_filename,
-            ticker_limit=args.limit
+            ticker_limit=args.limit,
+            single_ticker=args.ticker
         ))
         
         if success:

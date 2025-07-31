@@ -156,21 +156,34 @@ class HistoricalPriceFetcher:
             logger.error(f"❌ Polygon API test failed: {e}")
             return False
 
-    async def get_ticker_list(self, limit: int = None) -> List[str]:
+    async def get_tickers_from_database(self, ticker_limit: int = None, single_ticker: str = None) -> List[str]:
         """Get ticker list from float_list table"""
         try:
-            query = "SELECT DISTINCT ticker FROM News.float_list WHERE ticker != ''"
-            if limit:
-                query += f" LIMIT {limit}"
+            if single_ticker:
+                # If single ticker specified, just return that one
+                logger.info(f"📊 Processing single ticker: {single_ticker}")
+                return [single_ticker.upper()]
+            
+            # Original logic for getting all tickers
+            query = """
+            SELECT DISTINCT ticker 
+            FROM News.float_list 
+            WHERE ticker IS NOT NULL 
+            AND ticker != ''
+            ORDER BY ticker
+            """
+            
+            if ticker_limit:
+                query += f" LIMIT {ticker_limit}"
             
             result = self.ch_manager.client.query(query)
             tickers = [row[0] for row in result.result_rows]
             
-            logger.info(f"📊 Found {len(tickers)} tickers to process")
+            logger.info(f"📊 Found {len(tickers)} tickers from float_list table")
             return tickers
             
         except Exception as e:
-            logger.error(f"Error getting ticker list: {e}")
+            logger.error(f"Error getting tickers from database: {e}")
             return []
 
     def get_trading_date_range(self) -> List[date]:
@@ -406,21 +419,24 @@ class HistoricalPriceFetcher:
             logger.error(f"❌ FAILED: {ticker} - {e}")
             self.stats['tickers_failed'] += 1
 
-    async def run_historical_price_fetch(self, ticker_limit: int = None):
+    async def run_historical_price_fetch(self, ticker_limit: int = None, single_ticker: str = None):
         """Run the complete historical price fetching process"""
         try:
-            logger.info("📈 Starting Historical Price Data Fetching...")
+            logger.info("🚀 Starting Historical Price Data Fetching...")
             
-            # Initialize
+            # Initialize 
             if not await self.initialize():
                 logger.error("Failed to initialize price fetcher")
                 return False
             
             # Get ticker list
-            tickers = await self.get_ticker_list(limit=ticker_limit)
+            tickers = await self.get_tickers_from_database(ticker_limit=ticker_limit, single_ticker=single_ticker)
             if not tickers:
                 logger.error("No tickers found to process")
                 return False
+            
+            # Process all tickers
+            logger.info(f"📊 Processing {len(tickers)} tickers for {self.days_back} days of data...")
             
             # Get trading date range
             trading_dates = self.get_trading_date_range()
@@ -428,7 +444,7 @@ class HistoricalPriceFetcher:
                 logger.error("No trading dates found")
                 return False
             
-            logger.info(f"🚀 Processing {len(tickers)} tickers for {len(trading_dates)} trading days")
+            logger.info(f"📊 Processing {len(tickers)} tickers for {len(trading_dates)} trading days")
             logger.info(f"📊 Expected API calls: ~{len(tickers) * len(trading_dates)}")
             
             # Process tickers with controlled concurrency
@@ -442,9 +458,8 @@ class HistoricalPriceFetcher:
             ticker_tasks = [process_with_semaphore(ticker) for ticker in tickers]
             await asyncio.gather(*ticker_tasks, return_exceptions=True)
             
-            # Final stats
+            # Final statistics
             elapsed = time.time() - self.stats['start_time']
-            
             logger.info("🎉 HISTORICAL PRICE FETCHING COMPLETE!")
             logger.info(f"📊 FINAL STATS:")
             logger.info(f"  • Tickers processed: {self.stats['tickers_processed']}")
@@ -479,11 +494,23 @@ async def main():
     parser = argparse.ArgumentParser(description='Fetch Historical Price Data for Backtesting')
     parser.add_argument('--limit', type=int, help='Limit number of tickers to process (for testing)')
     parser.add_argument('--days', type=int, default=180, help='Number of days back to fetch data (default: 180)')
+    parser.add_argument('--ticker', type=str, help='Process a single ticker (e.g., AAPL)')
     
     args = parser.parse_args()
     
+    # Show what will be processed
+    if args.ticker:
+        print(f"🎯 Processing single ticker: {args.ticker.upper()}")
+    elif args.limit:
+        print(f"🎯 Processing up to {args.limit} tickers")
+    else:
+        print("🎯 Processing all tickers from float_list table")
+    
+    print(f"📅 Fetching {args.days} days of historical data")
+    print()
+    
     fetcher = HistoricalPriceFetcher(days_back=args.days)
-    success = await fetcher.run_historical_price_fetch(ticker_limit=args.limit)
+    success = await fetcher.run_historical_price_fetch(ticker_limit=args.limit, single_ticker=args.ticker)
     
     if success:
         print("\n✅ Historical price data fetching completed successfully!")

@@ -290,45 +290,97 @@ class FinvizHistoricalScraper:
         logger.info(f"📊 Total unique tickers found: {len(final_tickers)}")
         return final_tickers
 
-    async def get_ticker_list_from_database(self) -> List[Dict[str, Any]]:
+    async def get_ticker_list_from_database(self, single_ticker: str = None) -> List[Dict[str, Any]]:
         """Get ticker list from existing float_list table instead of scraping screeners"""
         try:
-            logger.info("📊 Getting ticker list from existing float_list table...")
-            
-            # Query the existing float_list table
-            query = """
-            SELECT 
-                ticker,
-                company_name,
-                sector,
-                industry,
-                country,
-                market_cap,
-                price,
-                volume,
-                float_shares
-            FROM News.float_list 
-            WHERE ticker IS NOT NULL 
-            AND ticker != ''
-            ORDER BY ticker
-            """
-            
-            result = self.ch_manager.client.query(query)
-            tickers = []
-            
-            for row in result.result_rows:
-                ticker_data = {
-                    'ticker': row[0],
-                    'company_name': row[1] or '',
-                    'sector': row[2] or '',
-                    'industry': row[3] or '',
-                    'country': row[4] or '',
-                    'market_cap': float(row[5]) if row[5] else 0.0,
-                    'price': float(row[6]) if row[6] else 0.0,
-                    'volume': int(row[7]) if row[7] else 0,
-                    'float_shares': float(row[8]) if row[8] else 0.0
-                }
-                tickers.append(ticker_data)
+            if single_ticker:
+                logger.info(f"📊 Getting data for single ticker: {single_ticker}")
+                
+                # Query for specific ticker
+                query = """
+                SELECT 
+                    ticker,
+                    company_name,
+                    sector,
+                    industry,
+                    country,
+                    market_cap,
+                    price,
+                    volume,
+                    float_shares
+                FROM News.float_list 
+                WHERE ticker = %s
+                """
+                
+                result = self.ch_manager.client.query(query, parameters=[single_ticker.upper()])
+                
+                if not result.result_rows:
+                    logger.warning(f"Ticker {single_ticker} not found in float_list table, creating default entry")
+                    # Create a default entry for the ticker
+                    tickers = [{
+                        'ticker': single_ticker.upper(),
+                        'company_name': '',
+                        'sector': '',
+                        'industry': '',
+                        'country': '',
+                        'market_cap': 0.0,
+                        'price': 0.0,
+                        'volume': 0,
+                        'float_shares': 0.0
+                    }]
+                else:
+                    # Process the found ticker
+                    tickers = []
+                    for row in result.result_rows:
+                        ticker_data = {
+                            'ticker': row[0],
+                            'company_name': row[1] or '',
+                            'sector': row[2] or '',
+                            'industry': row[3] or '',
+                            'country': row[4] or '',
+                            'market_cap': float(row[5]) if row[5] else 0.0,
+                            'price': float(row[6]) if row[6] else 0.0,
+                            'volume': int(row[7]) if row[7] else 0,
+                            'float_shares': float(row[8]) if row[8] else 0.0
+                        }
+                        tickers.append(ticker_data)
+            else:
+                logger.info("📊 Getting ticker list from existing float_list table...")
+                
+                # Query the existing float_list table
+                query = """
+                SELECT 
+                    ticker,
+                    company_name,
+                    sector,
+                    industry,
+                    country,
+                    market_cap,
+                    price,
+                    volume,
+                    float_shares
+                FROM News.float_list 
+                WHERE ticker IS NOT NULL 
+                AND ticker != ''
+                ORDER BY ticker
+                """
+                
+                result = self.ch_manager.client.query(query)
+                
+                tickers = []
+                for row in result.result_rows:
+                    ticker_data = {
+                        'ticker': row[0],
+                        'company_name': row[1] or '',
+                        'sector': row[2] or '',
+                        'industry': row[3] or '',
+                        'country': row[4] or '',
+                        'market_cap': float(row[5]) if row[5] else 0.0,
+                        'price': float(row[6]) if row[6] else 0.0,
+                        'volume': int(row[7]) if row[7] else 0,
+                        'float_shares': float(row[8]) if row[8] else 0.0
+                    }
+                    tickers.append(ticker_data)
             
             self.stats['tickers_found'] = len(tickers)
             logger.info(f"📊 Found {len(tickers)} tickers from float_list table")
@@ -337,8 +389,13 @@ class FinvizHistoricalScraper:
             
         except Exception as e:
             logger.error(f"Error getting tickers from database: {e}")
-            logger.info("Falling back to screener scraping...")
-            return await self.get_ticker_list_from_screeners()
+            if single_ticker:
+                # For single ticker, don't fall back to screener scraping
+                logger.error(f"Cannot proceed with single ticker {single_ticker}")
+                return []
+            else:
+                logger.info("Falling back to screener scraping...")
+                return await self.get_ticker_list_from_screeners()
 
     def is_newswire_article(self, article_text: str, article_url: str) -> str:
         """Check if article is from target newswires and return the type"""
@@ -1323,10 +1380,16 @@ class FinvizHistoricalScraper:
         except Exception as e:
             logger.error(f"Error storing articles: {e}")
 
-    async def run_historical_scrape(self, ticker_limit: int = None):
+    async def run_historical_scrape(self, ticker_limit: int = None, single_ticker: str = None):
         """Run the complete historical scraping process"""
         try:
-            limit_desc = f" (limited to {ticker_limit} tickers)" if ticker_limit else ""
+            if single_ticker:
+                limit_desc = f" (single ticker: {single_ticker})"
+            elif ticker_limit:
+                limit_desc = f" (limited to {ticker_limit} tickers)"
+            else:
+                limit_desc = ""
+                
             logger.info(f"🚀 Starting Finviz Historical News Scraping with Crawl4AI{limit_desc}...")
             
             # Initialize
@@ -1336,14 +1399,14 @@ class FinvizHistoricalScraper:
             
             # Step 1: Get ticker list from database (much faster than scraping)
             logger.info("📊 STEP 1: Getting ticker list from database...")
-            tickers = await self.get_ticker_list_from_database()
+            tickers = await self.get_ticker_list_from_database(single_ticker=single_ticker)
             
             if not tickers:
                 logger.error("No tickers found from database")
                 return False
             
-            # Apply ticker limit if specified
-            if ticker_limit and ticker_limit < len(tickers):
+            # Apply ticker limit if specified (but not if single ticker is specified)
+            if not single_ticker and ticker_limit and ticker_limit < len(tickers):
                 logger.info(f"🔢 Limiting tickers from {len(tickers)} to {ticker_limit} for testing")
                 tickers = tickers[:ticker_limit]
             
@@ -1373,7 +1436,7 @@ class FinvizHistoricalScraper:
                         all_articles = []
                     
                     # Progress logging
-                    if processed % 10 == 0:
+                    if processed % 10 == 0 or single_ticker:  # Always log for single ticker
                         logger.info(f"📈 PROGRESS: {processed}/{len(tickers)} tickers processed, {self.stats['articles_stored']} articles stored")
                     
                     # Rate limiting for respectful scraping

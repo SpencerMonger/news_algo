@@ -69,6 +69,27 @@ python run_backtest.py --start-step 5 --end-step 5
 
 # Limit ticker processing for testing (e.g., first 10 tickers)
 python run_backtest.py --limit 10
+
+# Process a single specific ticker
+python run_backtest.py --ticker AAPL
+```
+
+### Single Ticker Processing
+
+You can run the complete pipeline or individual steps for a single ticker:
+
+```bash
+# Complete pipeline for single ticker
+python run_backtest.py --ticker AAPL
+
+# Just scrape news for single ticker
+python run_backtest.py --start-step 2 --end-step 2 --ticker TSLA
+
+# Fetch price data for single ticker
+python fetch_historical_prices.py --ticker NVDA
+
+# Run sentiment analysis and trading simulation for single ticker
+python run_backtest.py --start-step 3 --end-step 4 --ticker MSFT
 ```
 
 ### Custom Options
@@ -85,6 +106,9 @@ python run_backtest.py --dry-run
 
 # Combine options for comprehensive testing
 python run_backtest.py --limit 10 --skip-sentiment-check
+
+# Single ticker with custom options
+python run_backtest.py --ticker AAPL --skip-sentiment-check --csv-filename aapl_backtest.csv
 ```
 
 ## Testing Mode
@@ -482,6 +506,18 @@ python create_tables.py
 
 # Test news scraping
 python finviz_pages.py
+
+# Test news scraping for single ticker
+python finviz_pages.py --ticker AAPL
+
+# Test price data fetching
+python fetch_historical_prices.py
+
+# Test price data fetching for single ticker
+python fetch_historical_prices.py --ticker TSLA
+
+# Test price data fetching with custom parameters
+python fetch_historical_prices.py --ticker NVDA --days 90
 
 # Test sentiment analysis
 python sentiment_historical.py
