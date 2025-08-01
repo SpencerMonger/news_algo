@@ -43,8 +43,8 @@ class TrainTestSplitter:
         self.ch_manager.connect()
         logger.info("✅ Splitter initialized successfully")
     
-    def get_balanced_articles_by_outcome(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Get all articles grouped by outcome type for balanced splitting"""
+    def get_all_articles_chronologically(self) -> List[Dict[str, Any]]:
+        """Get all articles in chronological order for proper splitting"""
         try:
             query = """
             SELECT 
@@ -59,18 +59,12 @@ class TrainTestSplitter:
                 published_est,
                 selection_priority
             FROM News.rag_training_dataset
-            ORDER BY outcome_type, selection_priority DESC, ticker
+            ORDER BY published_est ASC
             """
             
             result = self.ch_manager.client.query(query)
             
-            # Group by outcome type
-            articles_by_outcome = {
-                'TRUE_BULLISH': [],
-                'FALSE_PUMP': [],
-                'NEUTRAL': []
-            }
-            
+            articles = []
             for row in result.result_rows:
                 article = {
                     'ticker': row[0],
@@ -84,52 +78,93 @@ class TrainTestSplitter:
                     'published_est': row[8],
                     'selection_priority': float(row[9]) if row[9] else 0.0
                 }
+                articles.append(article)
+            
+            # Log overall distribution and date ranges
+            if articles:
+                earliest = articles[0]['published_est']
+                latest = articles[-1]['published_est']
+                logger.info(f"📊 Total dataset: {len(articles)} articles ({earliest} to {latest})")
                 
-                articles_by_outcome[article['outcome_type']].append(article)
+                # Show distribution by outcome
+                outcome_counts = {}
+                for article in articles:
+                    outcome = article['outcome_type']
+                    outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+                
+                logger.info("📊 Distribution by outcome:")
+                for outcome, count in outcome_counts.items():
+                    logger.info(f"  • {outcome}: {count} articles")
             
-            # Log distribution
-            logger.info("📊 Dataset distribution by outcome:")
-            for outcome, articles in articles_by_outcome.items():
-                logger.info(f"  • {outcome}: {len(articles)} articles")
-            
-            return articles_by_outcome
+            return articles
             
         except Exception as e:
             logger.error(f"Error retrieving articles: {e}")
-            return {}
+            return []
     
-    def create_balanced_split(self, articles_by_outcome: Dict[str, List[Dict[str, Any]]]) -> tuple:
-        """Create balanced train/test split maintaining outcome proportions"""
+    def create_balanced_split(self, articles: List[Dict[str, Any]]) -> tuple:
+        """Create chronological train/test split maintaining outcome proportions"""
         
-        train_articles = []
-        test_articles = []
+        if not articles:
+            logger.error("No articles provided for splitting")
+            return [], []
         
-        # Set random seed for reproducibility
-        random.seed(42)
+        # Chronological split: earlier articles for training, later for testing
+        logger.info("📅 Creating CHRONOLOGICAL split (train=early, test=later)")
         
-        for outcome_type, articles in articles_by_outcome.items():
-            # Shuffle articles within each outcome type
-            shuffled_articles = articles.copy()
-            random.shuffle(shuffled_articles)
-            
-            # Calculate split point
-            test_count = max(1, int(len(shuffled_articles) * self.test_ratio))
-            train_count = len(shuffled_articles) - test_count
-            
-            # Split
-            test_split = shuffled_articles[:test_count]
-            train_split = shuffled_articles[test_count:]
-            
-            train_articles.extend(train_split)
-            test_articles.extend(test_split)
-            
-            logger.info(f"📋 {outcome_type} split:")
-            logger.info(f"  • Training: {len(train_split)} articles")
-            logger.info(f"  • Testing: {len(test_split)} articles")
+        # Calculate split point globally
+        test_count = max(1, int(len(articles) * self.test_ratio))
+        train_count = len(articles) - test_count
         
-        logger.info(f"📊 Overall split:")
-        logger.info(f"  • Training set: {len(train_articles)} articles ({(1-self.test_ratio)*100:.0f}%)")
-        logger.info(f"  • Test set: {len(test_articles)} articles ({self.test_ratio*100:.0f}%)")
+        # Global chronological split: first articles go to training, last articles go to test
+        train_articles = articles[:train_count]  # Earlier articles
+        test_articles = articles[train_count:]   # Later articles
+        
+        # Log date ranges for verification
+        if train_articles:
+            train_start = train_articles[0]['published_est']
+            train_end = train_articles[-1]['published_est']
+        else:
+            train_start = train_end = "N/A"
+            
+        if test_articles:
+            test_start = test_articles[0]['published_est']
+            test_end = test_articles[-1]['published_est']
+        else:
+            test_start = test_end = "N/A"
+        
+        logger.info(f"📋 CHRONOLOGICAL split:")
+        logger.info(f"  • Training: {len(train_articles)} articles ({train_start} to {train_end})")
+        logger.info(f"  • Testing: {len(test_articles)} articles ({test_start} to {test_end})")
+        
+        # Ensure balanced representation in both sets
+        logger.info("🔄 Checking outcome distribution in both sets...")
+        train_outcome_counts = {}
+        test_outcome_counts = {}
+        
+        for article in train_articles:
+            outcome = article['outcome_type']
+            train_outcome_counts[outcome] = train_outcome_counts.get(outcome, 0) + 1
+            
+        for article in test_articles:
+            outcome = article['outcome_type']
+            test_outcome_counts[outcome] = test_outcome_counts.get(outcome, 0) + 1
+            
+        logger.info("📊 Outcome distribution in TRAINING set:")
+        for outcome in ['TRUE_BULLISH', 'FALSE_PUMP', 'NEUTRAL']:
+            count = train_outcome_counts.get(outcome, 0)
+            logger.info(f"  • {outcome}: {count} articles")
+            
+        logger.info("📊 Outcome distribution in TESTING set:")
+        for outcome in ['TRUE_BULLISH', 'FALSE_PUMP', 'NEUTRAL']:
+            count = test_outcome_counts.get(outcome, 0)
+            logger.info(f"  • {outcome}: {count} articles")
+        
+        # Overall summary
+        logger.info(f"📊 Overall CHRONOLOGICAL split:")
+        logger.info(f"  • Training set: {len(train_articles)} articles ({train_start} to {train_end})")
+        logger.info(f"  • Test set: {len(test_articles)} articles ({test_start} to {test_end})")
+        logger.info(f"🔒 Data integrity: Training data is from EARLIER dates, Test data is from LATER dates")
         
         return train_articles, test_articles
     
@@ -238,14 +273,18 @@ class TrainTestSplitter:
         try:
             # Check training set
             train_query = """
-            SELECT outcome_type, COUNT(*) as count
+            SELECT outcome_type, COUNT(*) as count, 
+                   MIN(published_est) as earliest_date,
+                   MAX(published_est) as latest_date
             FROM News.rag_training_set
             GROUP BY outcome_type
             ORDER BY outcome_type
             """
             
             test_query = """
-            SELECT outcome_type, COUNT(*) as count
+            SELECT outcome_type, COUNT(*) as count,
+                   MIN(published_est) as earliest_date,
+                   MAX(published_est) as latest_date
             FROM News.rag_test_set
             GROUP BY outcome_type
             ORDER BY outcome_type
@@ -257,18 +296,24 @@ class TrainTestSplitter:
             logger.info("📊 Final Train/Test Split Verification:")
             logger.info("  Training Set:")
             train_total = 0
+            train_latest_date = None
             for row in train_result.result_rows:
-                outcome, count = row
+                outcome, count, earliest, latest = row
                 train_total += count
-                logger.info(f"    • {outcome}: {count}")
+                if train_latest_date is None or latest > train_latest_date:
+                    train_latest_date = latest
+                logger.info(f"    • {outcome}: {count} articles ({earliest} to {latest})")
             logger.info(f"    • Total: {train_total}")
             
             logger.info("  Test Set:")
             test_total = 0
+            test_earliest_date = None
             for row in test_result.result_rows:
-                outcome, count = row
+                outcome, count, earliest, latest = row
                 test_total += count
-                logger.info(f"    • {outcome}: {count}")
+                if test_earliest_date is None or earliest < test_earliest_date:
+                    test_earliest_date = earliest
+                logger.info(f"    • {outcome}: {count} articles ({earliest} to {latest})")
             logger.info(f"    • Total: {test_total}")
             
             # Check for data leakage (should be 0)
@@ -282,13 +327,33 @@ class TrainTestSplitter:
             leakage_result = self.ch_manager.client.query(leakage_query)
             leakage_count = leakage_result.result_rows[0][0]
             
-            if leakage_count == 0:
-                logger.info("✅ No data leakage detected - training and test sets are properly separated")
-            else:
-                logger.error(f"❌ Data leakage detected: {leakage_count} articles appear in both sets")
+            # CRITICAL: Check chronological integrity
+            chronological_integrity = True
+            if train_latest_date and test_earliest_date:
+                if train_latest_date >= test_earliest_date:
+                    logger.error("🚨 CHRONOLOGICAL INTEGRITY VIOLATION!")
+                    logger.error(f"   Training latest date: {train_latest_date}")
+                    logger.error(f"   Test earliest date: {test_earliest_date}")
+                    logger.error("   Some training articles are newer than test articles!")
+                    chronological_integrity = False
+                else:
+                    logger.info("✅ Chronological integrity verified:")
+                    logger.info(f"   Training ends: {train_latest_date}")
+                    logger.info(f"   Test starts: {test_earliest_date}")
+                    logger.info("   ✅ All training data is from EARLIER dates than test data")
             
+            if leakage_count == 0 and chronological_integrity:
+                logger.info("✅ Data integrity verified - no content leakage and proper chronological split")
+            else:
+                if leakage_count > 0:
+                    logger.error(f"🚨 CONTENT LEAKAGE DETECTED: {leakage_count} overlapping articles!")
+                if not chronological_integrity:
+                    logger.error("🚨 CHRONOLOGICAL LEAKAGE DETECTED: Training data contains future information!")
+                raise Exception("Data integrity check failed")
+                
         except Exception as e:
             logger.error(f"Error verifying split: {e}")
+            raise
     
     def cleanup(self):
         """Cleanup resources"""
@@ -315,14 +380,14 @@ def main():
         if args.verify_only:
             splitter.verify_split()
         else:
-            # Get all articles grouped by outcome
-            articles_by_outcome = splitter.get_balanced_articles_by_outcome()
-            if not articles_by_outcome:
+            # Get all articles in chronological order
+            articles = splitter.get_all_articles_chronologically()
+            if not articles:
                 logger.error("No articles found!")
                 return
             
             # Create balanced split
-            train_articles, test_articles = splitter.create_balanced_split(articles_by_outcome)
+            train_articles, test_articles = splitter.create_balanced_split(articles)
             
             # Create tables
             splitter.create_train_test_tables()

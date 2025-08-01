@@ -132,7 +132,7 @@ class E5VectorGenerator:
                 price_increase_ratio,
                 original_content_hash,
                 published_est
-            FROM News.rag_training_dataset
+            FROM News.rag_training_set
             ORDER BY outcome_type, ticker
             LIMIT %s OFFSET %s
             """
@@ -299,23 +299,26 @@ class E5VectorGenerator:
         # Create the training vectors table
         await self.create_training_vectors_table()
         
-        # Process articles in batches
-        offset = 0
+        # Process articles in balanced batches to ensure even coverage
         batch_num = 1
         total_processed = 0
         start_time = datetime.now()
+        processed_counts = {'TRUE_BULLISH': 0, 'FALSE_PUMP': 0, 'NEUTRAL': 0}
         
         while True:
-            logger.info(f"📦 Processing batch {batch_num} (offset: {offset})...")
+            logger.info(f"📦 Processing balanced batch {batch_num}...")
             
-            # Get next batch of training articles
-            articles = await self.get_training_articles(offset=offset, limit=self.batch_size)
+            # Get next balanced batch of training articles (uses correct rag_training_set)
+            articles = await self.get_training_articles_balanced(
+                batch_size=self.batch_size, 
+                processed_counts=processed_counts
+            )
             
             if not articles:
                 logger.info("✅ No more articles to process")
                 break
             
-            logger.info(f"📄 Retrieved {len(articles)} articles for batch {batch_num}")
+            logger.info(f"📄 Retrieved {len(articles)} articles for balanced batch {batch_num}")
             
             # Process the batch and generate E5 embeddings
             articles_with_vectors = await self.process_articles_batch(articles)
@@ -329,12 +332,12 @@ class E5VectorGenerator:
                 logger.warning(f"⚠️ Batch {batch_num} produced no valid vectors")
             
             # Update for next batch
-            offset += self.batch_size
             batch_num += 1
             
             # Progress update
             elapsed_time = (datetime.now() - start_time).total_seconds()
             logger.info(f"⏱️ Progress: {total_processed} articles processed in {elapsed_time:.1f}s")
+            logger.info(f"📊 Processed counts: {processed_counts}")
         
         total_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"🎉 E5 vector generation completed! Processed {total_processed} articles in {total_time:.1f}s")
@@ -389,45 +392,79 @@ class E5VectorGenerator:
     
     async def verify_vectors(self):
         """Verify that TRAINING vectors were stored correctly"""
-        logger.info("🔍 Verifying stored TRAINING vectors...")
-        
-        # Check total count
-        count_query = 'SELECT COUNT(*) FROM News.rag_training_vectors'
-        vector_count = self.ch_manager.client.query(count_query).result_rows[0][0]
-        
-        # Check distribution by outcome
-        dist_query = '''
-        SELECT 
-            outcome_type,
-            COUNT(*) as count,
-            AVG(arraySum(feature_vector)) as avg_feature_sum
-        FROM News.rag_training_vectors
-        GROUP BY outcome_type
-        ORDER BY outcome_type
-        '''
-        
-        result = self.ch_manager.client.query(dist_query)
-        
-        logger.info(f"📊 TRAINING Vector Storage Verification:")
-        logger.info(f"  • Total vectors: {vector_count}")
-        
-        for row in result.result_rows:
-            outcome, count, avg_sum = row
-            logger.info(f"  • {outcome}: {count} vectors (avg feature sum: {avg_sum:.2f})")
-        
-        # Sample a few vectors
-        sample_query = '''
-        SELECT ticker, outcome_type, arraySum(feature_vector) as feature_sum
-        FROM News.rag_training_vectors
-        ORDER BY outcome_type, ticker
-        LIMIT 5
-        '''
-        
-        sample_result = self.ch_manager.client.query(sample_query)
-        logger.info("📋 Sample TRAINING vectors:")
-        for row in sample_result.result_rows:
-            ticker, outcome, feature_sum = row
-            logger.info(f"  • {ticker} ({outcome}): feature sum = {feature_sum:.2f}")
+        try:
+            # Check total count
+            count_query = "SELECT COUNT(*) FROM News.rag_training_vectors"
+            count_result = self.ch_manager.client.query(count_query)
+            total_vectors = count_result.result_rows[0][0]
+            
+            # Check distribution by outcome type
+            distribution_query = """
+            SELECT outcome_type, COUNT(*) as count
+            FROM News.rag_training_vectors
+            GROUP BY outcome_type
+            ORDER BY outcome_type
+            """
+            
+            dist_result = self.ch_manager.client.query(distribution_query)
+            
+            logger.info("📊 TRAINING Vector Generation Summary:")
+            logger.info(f"  • Total vectors stored: {total_vectors}")
+            logger.info("  • Distribution by outcome:")
+            
+            for row in dist_result.result_rows:
+                outcome, count = row
+                logger.info(f"    - {outcome}: {count}")
+            
+            # SECURITY CHECK: Verify no test data leaked into training vectors
+            await self.verify_no_test_data_leakage()
+            
+            logger.info("✅ Training vector verification completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error verifying vectors: {e}")
+            raise
+    
+    async def verify_no_test_data_leakage(self):
+        """Verify that no test set articles were included in training vectors"""
+        try:
+            # Check if test set exists
+            test_check_query = "SELECT COUNT(*) FROM News.rag_test_set"
+            try:
+                test_result = self.ch_manager.client.query(test_check_query)
+                test_count = test_result.result_rows[0][0]
+                
+                if test_count == 0:
+                    logger.warning("⚠️ No test set found - skipping leakage check")
+                    return
+                    
+                logger.info(f"🔍 Checking for data leakage against {test_count} test articles...")
+                
+            except Exception:
+                logger.warning("⚠️ Test set table not found - skipping leakage check")
+                return
+            
+            # Check for overlapping articles between training vectors and test set
+            leakage_query = """
+            SELECT COUNT(*) as leakage_count
+            FROM News.rag_training_vectors tv
+            INNER JOIN News.rag_test_set ts ON tv.original_content_hash = ts.original_content_hash
+            """
+            
+            result = self.ch_manager.client.query(leakage_query)
+            leakage_count = result.result_rows[0][0]
+            
+            if leakage_count > 0:
+                logger.error(f"🚨 CRITICAL: DATA LEAKAGE DETECTED!")
+                logger.error(f"   {leakage_count} test articles found in training vectors!")
+                logger.error("   This will invalidate test results - regenerate vectors from training set only")
+                raise Exception(f"Data leakage detected: {leakage_count} overlapping articles")
+            else:
+                logger.info("🔒 Security check passed - no test data in training vectors")
+                
+        except Exception as e:
+            logger.error(f"Error checking for data leakage: {e}")
+            raise
     
     async def cleanup(self):
         """Cleanup resources"""

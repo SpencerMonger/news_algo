@@ -197,6 +197,9 @@ class OptimizedRAGTester:
                 if vector_count > 0:
                     logger.info(f"✅ Found {vector_count} training vectors for RAG system")
                     self.vectors_table = 'News.rag_training_vectors'
+                    
+                    # SECURITY CHECK: Verify no data leakage
+                    await self.verify_no_data_leakage()
                     return
             except:
                 logger.info("ℹ️ Training vectors table not found, checking for existing vectors...")
@@ -213,6 +216,8 @@ class OptimizedRAGTester:
                     logger.info(f"✅ Found {vector_count} existing vectors that match training set")
                     self.vectors_table = 'News.rag_article_vectors'
                     self.use_training_filter = True
+                    
+                    # This approach is inherently safe from leakage due to the JOIN
                     return
             except:
                 pass
@@ -223,6 +228,28 @@ class OptimizedRAGTester:
                 
         except Exception as e:
             logger.error(f"Error verifying training vectors: {e}")
+            raise
+    
+    async def verify_no_data_leakage(self):
+        """Verify that training vectors don't contain any test set articles"""
+        try:
+            leakage_query = """
+            SELECT COUNT(*) as leakage_count
+            FROM News.rag_training_vectors tv
+            INNER JOIN News.rag_test_set ts ON tv.original_content_hash = ts.original_content_hash
+            """
+            
+            result = self.ch_manager.client.query(leakage_query)
+            leakage_count = result.result_rows[0][0]
+            
+            if leakage_count > 0:
+                logger.error(f"🚨 DATA LEAKAGE DETECTED: {leakage_count} test articles found in training vectors!")
+                raise Exception(f"Data leakage detected: {leakage_count} overlapping articles")
+            else:
+                logger.info("🔒 Data leakage check passed - no test articles in training vectors")
+                
+        except Exception as e:
+            logger.error(f"Error checking for data leakage: {e}")
             raise
     
     async def get_test_articles(self, limit: int = 50) -> List[Dict[str, Any]]:
