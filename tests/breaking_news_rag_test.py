@@ -3,7 +3,7 @@
 Breaking News RAG Sentiment Analysis Test
 
 This script reads articles from the breaking_news table and analyzes them
-using the RAG-enhanced sentiment analysis system.
+using the optimized RAG-enhanced sentiment analysis system with local embeddings.
 
 Usage:
     python3 tests/breaking_news_rag_test.py --limit 20
@@ -24,6 +24,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from clickhouse_setup import ClickHouseManager
 from sentiment_service import get_sentiment_service
 
+# Try to import sentence-transformers for local embeddings
+try:
+    from sentence_transformers import SentenceTransformer
+    HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    HAS_SENTENCE_TRANSFORMERS = False
+    logging.warning("sentence-transformers not available. Install with: pip install sentence-transformers")
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -31,18 +39,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class BreakingNewsRAGTester:
-    """Test RAG sentiment analysis on breaking news articles"""
+class OptimizedBreakingNewsRAGTester:
+    """Test optimized RAG sentiment analysis on breaking news articles"""
     
     def __init__(self, buy_high_threshold: float = 0.8):
         self.ch_manager = ClickHouseManager()
         self.sentiment_service = None
+        self.embedding_model = None
         self.buy_high_threshold = buy_high_threshold
         self.confidence_map = {'low': 0.55, 'medium': 0.7, 'high': 0.95}
         
     async def initialize(self):
-        """Initialize the breaking news tester"""
-        logger.info("🧪 Initializing Breaking News RAG Test Framework...")
+        """Initialize the optimized breaking news tester"""
+        logger.info("🚀 Initializing Optimized Breaking News RAG Test Framework...")
         
         # Initialize ClickHouse connection
         self.ch_manager.connect()
@@ -50,10 +59,55 @@ class BreakingNewsRAGTester:
         # Initialize sentiment service
         self.sentiment_service = await get_sentiment_service()
         
+        # Initialize local embedding model
+        await self.initialize_embedding_model()
+        
         # Verify training vectors exist for RAG functionality
         await self.verify_training_vectors()
         
-        logger.info("✅ Breaking news RAG test framework initialized successfully")
+        logger.info("✅ Optimized breaking news RAG test framework initialized successfully")
+    
+    async def initialize_embedding_model(self):
+        """Initialize local fin-E5 embedding model"""
+        if not HAS_SENTENCE_TRANSFORMERS:
+            logger.error("❌ sentence-transformers required for local embeddings. Install with: pip install sentence-transformers")
+            raise ImportError("sentence-transformers package required")
+        
+        try:
+            # Load embedding model for financial text embeddings
+            logger.info("📥 Loading embedding model...")
+            start_time = datetime.now()
+            
+            # Try E5 models that match existing vector dimensions
+            try:
+                # Use E5-large which produces 1024 dimensions to match existing vectors
+                self.embedding_model = SentenceTransformer('intfloat/e5-large-v2')
+                model_name = "e5-large-v2 (1024-dim)"
+            except:
+                try:
+                    # Alternative: multilingual E5 large
+                    self.embedding_model = SentenceTransformer('intfloat/multilingual-e5-large')
+                    model_name = "multilingual-e5-large (1024-dim)"
+                except:
+                    # Final fallback - will need vector regeneration
+                    self.embedding_model = SentenceTransformer('intfloat/e5-base-v2')
+                    model_name = "e5-base-v2 (512-dim) - WARNING: Dimension mismatch!"
+            
+            load_time = (datetime.now() - start_time).total_seconds()
+            logger.info(f"✅ Loaded {model_name} embedding model in {load_time:.2f}s")
+            
+            # Test embedding generation speed
+            test_text = "Test article for embedding speed"
+            start_time = datetime.now()
+            test_embedding = self.embedding_model.encode([test_text])
+            embedding_time = (datetime.now() - start_time).total_seconds()
+            
+            logger.info(f"⚡ Embedding generation speed: {embedding_time*1000:.1f}ms per article")
+            logger.info(f"📏 Embedding dimension: {len(test_embedding[0])}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            raise
     
     async def verify_training_vectors(self):
         """Verify that training vectors exist for RAG functionality"""
@@ -145,20 +199,28 @@ class BreakingNewsRAGTester:
             logger.error(f"Error retrieving breaking news articles: {e}")
             return []
     
-    async def get_similar_training_examples(self, query_content: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Find similar examples from training set using RAG"""
+    async def get_similar_training_examples(self, query_content: str, top_k: int = 3) -> List[Dict[str, Any]]:
+        """Find similar examples from training set using optimized vector search"""
         if not self.vectors_table:
             return []
             
         try:
-            # Generate features for the query content
-            features = await self.generate_query_features(query_content)
-            if not features:
+            # Generate embedding for the query content using local model
+            embedding_start = datetime.now()
+            
+            # Prepare text for E5 model (add query prefix for better performance)
+            query_text = f"query: {query_content[:1000]}"  # Limit to 1000 chars for speed
+            
+            # Generate embedding using local model
+            query_embedding = self.embedding_model.encode([query_text])[0].tolist()
+            embedding_time = (datetime.now() - embedding_start).total_seconds()
+            
+            if not query_embedding:
                 return []
             
             # Choose query based on available vectors table
             if hasattr(self, 'use_training_filter') and self.use_training_filter:
-                # Use existing vectors filtered by training set
+                # Use existing vectors filtered by training set with similarity threshold
                 similarity_query = """
                 SELECT 
                     v.ticker,
@@ -169,11 +231,13 @@ class BreakingNewsRAGTester:
                     1 - cosineDistance(v.feature_vector, %s) as similarity
                 FROM News.rag_article_vectors v
                 INNER JOIN News.rag_training_set t ON v.original_content_hash = t.original_content_hash
+                WHERE cosineDistance(v.feature_vector, %s) < 0.5
                 ORDER BY distance ASC
                 LIMIT %s
                 """
+                params = [query_embedding, query_embedding, query_embedding, top_k]
             else:
-                # Use dedicated training vectors table
+                # Use dedicated training vectors table with similarity threshold
                 similarity_query = """
                 SELECT 
                     ticker,
@@ -183,145 +247,78 @@ class BreakingNewsRAGTester:
                     cosineDistance(feature_vector, %s) as distance,
                     1 - cosineDistance(feature_vector, %s) as similarity
                 FROM News.rag_training_vectors
+                WHERE cosineDistance(feature_vector, %s) < 0.5
                 ORDER BY distance ASC
                 LIMIT %s
                 """
+                params = [query_embedding, query_embedding, query_embedding, top_k]
             
-            result = self.ch_manager.client.query(
-                similarity_query, 
-                parameters=[features, features, top_k]
-            )
+            result = self.ch_manager.client.query(similarity_query, parameters=params)
             
             similar_examples = []
             for row in result.result_rows:
-                similar_examples.append({
-                    'ticker': row[0],
-                    'headline': row[1],
-                    'outcome_type': row[2],
-                    'price_increase_ratio': float(row[3]),
-                    'distance': float(row[4]),
-                    'similarity': float(row[5])
-                })
+                # Only include examples with >50% similarity (distance < 0.5)
+                similarity = float(row[5])
+                if similarity > 0.5:
+                    similar_examples.append({
+                        'ticker': row[0],
+                        'headline': row[1],
+                        'outcome_type': row[2],
+                        'price_increase_ratio': float(row[3]),
+                        'distance': float(row[4]),
+                        'similarity': similarity
+                    })
             
+            logger.debug(f"Found {len(similar_examples)} similar examples in {embedding_time*1000:.1f}ms")
             return similar_examples
             
         except Exception as e:
             logger.error(f"Error finding similar examples: {e}")
             return []
     
-    async def generate_query_features(self, content: str) -> List[float]:
-        """Generate features for query content (same method as training)"""
-        try:
-            # Use the same feature extraction as in generate_vectors.py
-            analysis_prompt = f"""
-Analyze the following financial news article and extract key features for similarity comparison.
-Focus on: sentiment, topic, urgency, market impact, company type, and news type.
-
-Article: {content[:4500]}
-
-Respond with a JSON object containing numerical scores (0.0 to 1.0) for these features:
-{{
-    "sentiment_score": 0.0-1.0,
-    "bullish_score": 0.0-1.0, 
-    "urgency_score": 0.0-1.0,
-    "financial_impact_score": 0.0-1.0,
-    "earnings_related": 0.0-1.0,
-    "partnership_related": 0.0-1.0,
-    "product_related": 0.0-1.0,
-    "regulatory_related": 0.0-1.0,
-    "clinical_trial_related": 0.0-1.0,
-    "acquisition_related": 0.0-1.0,
-    "market_general": 0.0-1.0,
-    "biotech_pharma": 0.0-1.0,
-    "tech_software": 0.0-1.0,
-    "finance_banking": 0.0-1.0,
-    "energy_commodities": 0.0-1.0,
-    "retail_consumer": 0.0-1.0,
-    "manufacturing": 0.0-1.0,
-    "healthcare": 0.0-1.0,
-    "real_estate": 0.0-1.0,
-    "transportation": 0.0-1.0
-}}
-"""
-            
-            result = await self.sentiment_service.load_balancer.make_claude_request(analysis_prompt)
-            
-            if result and isinstance(result, dict):
-                # Convert Claude's analysis to feature vector (same as generate_vectors.py)
-                feature_vector = [
-                    result.get('sentiment_score', 0.5),
-                    result.get('bullish_score', 0.5),
-                    result.get('urgency_score', 0.5),
-                    result.get('financial_impact_score', 0.5),
-                    result.get('earnings_related', 0.0),
-                    result.get('partnership_related', 0.0),
-                    result.get('product_related', 0.0),
-                    result.get('regulatory_related', 0.0),
-                    result.get('clinical_trial_related', 0.0),
-                    result.get('acquisition_related', 0.0),
-                    result.get('market_general', 0.0),
-                    result.get('biotech_pharma', 0.0),
-                    result.get('tech_software', 0.0),
-                    result.get('finance_banking', 0.0),
-                    result.get('energy_commodities', 0.0),
-                    result.get('retail_consumer', 0.0),
-                    result.get('manufacturing', 0.0),
-                    result.get('healthcare', 0.0),
-                    result.get('real_estate', 0.0),
-                    result.get('transportation', 0.0)
-                ]
-                
-                # Add derived features to reach 50 dimensions
-                while len(feature_vector) < 50:
-                    if len(feature_vector) < 30:
-                        feature_vector.append(feature_vector[0] * feature_vector[1])  # sentiment * bullish
-                    elif len(feature_vector) < 40:
-                        feature_vector.append(feature_vector[2] * feature_vector[3])  # urgency * impact
-                    else:
-                        feature_vector.append(0.5)  # neutral padding
-                
-                return feature_vector
-            else:
-                return [0.5] * 50  # Neutral features on failure
-                
-        except Exception as e:
-            logger.error(f"Query feature generation failed: {e}")
-            return [0.5] * 50
-    
     async def analyze_rag_sentiment(self, content: str) -> Dict[str, Any]:
-        """Analyze sentiment using RAG-enhanced method"""
+        """Analyze sentiment using optimized RAG method"""
         start_time = datetime.now()
         
         try:
-            # Get similar examples from training set
-            similar_examples = await self.get_similar_training_examples(content, top_k=5)
+            # Fast similarity search with local embeddings
+            similar_examples = await self.get_similar_training_examples(content, top_k=3)
             
-            # Create RAG prompt with similar examples
-            rag_context = self.create_rag_context(similar_examples)
+            # Create optimized RAG context
+            rag_context = self.create_optimized_rag_context(similar_examples)
+            
+            # Single optimized LLM call
+            llm_start = datetime.now()
             
             # Clean content for JSON safety
             clean_content = content.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
             clean_content = ''.join(char if ord(char) >= 32 or char in '\n\r\t' else ' ' for char in clean_content)
             
-            # Analyze with RAG context
-            rag_prompt = f"""Based on these similar historical examples and their outcomes:
+            # Optimized prompt - shorter and more focused
+            if similar_examples:
+                rag_prompt = f"""Based on these {len(similar_examples)} similar historical examples:
 
 {rag_context}
 
-Now analyze this new article:
-{clean_content}
+Analyze this new article: {clean_content[:2000]}
 
-IMPORTANT: Consider the historical patterns above. Look for opportunities that match successful patterns from TRUE_BULLISH examples. Don't be overly conservative - if the article shows strong positive signals similar to past winners, recommend BUY with appropriate confidence.
+TRADING DECISION RULES:
+- If similar examples are mostly TRUE_BULLISH (led to 30%+ gains): Recommend BUY with HIGH confidence
+- If mixed results but some TRUE_BULLISH: BUY with MEDIUM confidence  
+- If mostly FALSE_PUMP/NEUTRAL: HOLD
+- Be AGGRESSIVE on opportunities - missing TRUE_BULLISH is worse than catching FALSE_PUMP
 
-Key considerations:
-- If similar to TRUE_BULLISH examples with high similarity: Consider BUY with high confidence
-- If shows positive signals but uncertain: BUY with medium confidence is better than missing opportunities
-- Only use HOLD if genuinely neutral or similar to FALSE_PUMP/NEUTRAL examples
+Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low", "reasoning": "brief explanation"}}"""
+            else:
+                # Fallback to traditional-style analysis if no similar examples
+                rag_prompt = f"""Analyze this financial news for trading potential: {clean_content[:2000]}
 
-Provide sentiment analysis considering the historical patterns shown above.
-Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low", "reasoning": "explanation based on historical patterns"}}"""
+Focus on: partnerships, clinical trials, earnings, acquisitions, product launches.
+
+Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low", "reasoning": "brief explanation"}}"""
             
             result = await self.sentiment_service.load_balancer.make_claude_request(rag_prompt)
+            llm_time = (datetime.now() - llm_start).total_seconds()
             analysis_time = (datetime.now() - start_time).total_seconds()
             
             if result and isinstance(result, dict):
@@ -340,7 +337,9 @@ Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low",
                     'reasoning': reasoning,
                     'analysis_time': analysis_time,
                     'similar_examples': similar_examples,
-                    'method': 'RAG'
+                    'method': 'Optimized RAG',
+                    'llm_time': llm_time,
+                    'total_time': analysis_time
                 }
             else:
                 return {
@@ -350,11 +349,13 @@ Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low",
                     'reasoning': 'Analysis failed',
                     'analysis_time': analysis_time,
                     'similar_examples': similar_examples,
-                    'method': 'RAG (fallback)'
+                    'method': 'Optimized RAG (fallback)',
+                    'llm_time': llm_time,
+                    'total_time': analysis_time
                 }
                 
         except Exception as e:
-            logger.error(f"RAG sentiment analysis failed: {e}")
+            logger.error(f"Optimized RAG sentiment analysis failed: {e}")
             analysis_time = (datetime.now() - start_time).total_seconds()
             return {
                 'action': 'HOLD',
@@ -363,29 +364,43 @@ Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low",
                 'reasoning': f'Error: {str(e)}',
                 'analysis_time': analysis_time,
                 'similar_examples': [],
-                'method': 'RAG (error)'
+                'method': 'Optimized RAG (error)',
+                'llm_time': 0.0,
+                'total_time': analysis_time
             }
     
-    def create_rag_context(self, similar_examples: List[Dict]) -> str:
-        """Create context string from similar examples"""
+    def create_optimized_rag_context(self, similar_examples: List[Dict]) -> str:
+        """Create optimized context string from similar examples"""
         if not similar_examples:
             return "No similar historical examples found."
         
         context_parts = []
+        outcome_counts = {'TRUE_BULLISH': 0, 'FALSE_PUMP': 0, 'NEUTRAL': 0}
+        
         for i, example in enumerate(similar_examples, 1):
+            outcome = example['outcome_type']
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+            
             outcome_desc = {
-                'TRUE_BULLISH': 'Led to 30%+ price increase',
-                'FALSE_PUMP': 'Was a false pump (no real gains)',
-                'NEUTRAL': 'Had minimal price impact'
-            }.get(example['outcome_type'], 'Unknown outcome')
+                'TRUE_BULLISH': 'SUCCESS: 30%+ gain',
+                'FALSE_PUMP': 'FAILED: False pump',
+                'NEUTRAL': 'NEUTRAL: <5% move'
+            }.get(outcome, 'Unknown')
             
             context_parts.append(
-                f"{i}. {example['ticker']}: {example['headline'][:100]}..."
-                f"\n   Outcome: {outcome_desc}"
-                f"\n   Similarity: {example['similarity']:.3f}"
+                f"{i}. {example['ticker']}: {example['headline'][:80]}... → {outcome_desc} (sim: {example['similarity']:.2f})"
             )
         
-        return "\n\n".join(context_parts)
+        # Add pattern summary
+        total = len(similar_examples)
+        if outcome_counts['TRUE_BULLISH'] >= total * 0.6:
+            pattern = "STRONG BUY SIGNAL: Most similar examples succeeded"
+        elif outcome_counts['TRUE_BULLISH'] >= total * 0.4:
+            pattern = "MIXED SIGNAL: Some similar examples succeeded"
+        else:
+            pattern = "WEAK SIGNAL: Few similar examples succeeded"
+        
+        return f"PATTERN: {pattern}\n\n" + "\n".join(context_parts)
     
     async def analyze_breaking_news(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Analyze breaking news articles with RAG sentiment"""
@@ -446,6 +461,8 @@ Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low",
                 print(f"    📅 {article['detected_at']} | ⏱️ {article['analysis_time']:.2f}s")
                 if article['similar_examples']:
                     print(f"    🧠 Based on {len(article['similar_examples'])} similar examples")
+                if 'llm_time' in article and article['llm_time'] > 0:
+                    print(f"    ⚡ Performance: LLM={article['llm_time']*1000:.0f}ms, Total={article['total_time']*1000:.0f}ms")
                 print(f"    💭 {article['reasoning'][:100]}...")
                 print()
         
@@ -483,7 +500,7 @@ async def main():
     
     args = parser.parse_args()
     
-    tester = BreakingNewsRAGTester(buy_high_threshold=args.buy_high_threshold)
+    tester = OptimizedBreakingNewsRAGTester(buy_high_threshold=args.buy_high_threshold)
     
     try:
         # Initialize test framework

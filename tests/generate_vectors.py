@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Generate Claude Feature Vectors for RAG Training Dataset
+Generate E5 Embedding Vectors for RAG Training Dataset
 
-This script pre-computes Claude feature vectors for all articles in the 
-rag_training_dataset and stores them in rag_article_vectors for fast similarity search.
+This script pre-computes E5 embedding vectors for all articles in the 
+rag_training_dataset and stores them in rag_training_vectors for fast similarity search.
 
 Usage:
     python3 tests/generate_vectors.py --batch-size 50
@@ -23,6 +23,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from clickhouse_setup import ClickHouseManager
 from sentiment_service import get_sentiment_service
 
+# Try to import sentence-transformers for local embeddings
+try:
+    from sentence_transformers import SentenceTransformer
+    HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    HAS_SENTENCE_TRANSFORMERS = False
+    logging.error("sentence-transformers not available. Install with: pip install sentence-transformers")
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -30,117 +38,85 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class VectorGenerator:
-    """Generate and store Claude feature vectors for RAG training dataset"""
+class E5VectorGenerator:
+    """Generate and store E5 embedding vectors for RAG training dataset"""
     
     def __init__(self, batch_size: int = 50):
         self.ch_manager = ClickHouseManager()
         self.sentiment_service = None
+        self.embedding_model = None
         self.batch_size = batch_size
-        self.feature_cache = {}
         
     async def initialize(self):
         """Initialize the vector generator"""
-        logger.info("🧪 Initializing Claude Vector Generator...")
+        logger.info("🚀 Initializing E5 Vector Generator...")
+        
+        if not HAS_SENTENCE_TRANSFORMERS:
+            raise ImportError("sentence-transformers package required. Install with: pip install sentence-transformers")
         
         # Initialize ClickHouse connection
         self.ch_manager.connect()
         
-        # Initialize sentiment service (for Claude API access)
-        self.sentiment_service = await get_sentiment_service()
+        # Initialize embedding model
+        await self.initialize_embedding_model()
         
-        logger.info("✅ Vector generator initialized successfully")
+        logger.info("✅ E5 vector generator initialized successfully")
     
-    async def generate_claude_features(self, content: str) -> List[float]:
-        """Generate Claude feature vector for given content"""
-        
-        # Use content hash for caching
-        content_hash = str(hash(content))
-        if content_hash in self.feature_cache:
-            return self.feature_cache[content_hash]
-        
+    async def initialize_embedding_model(self):
+        """Initialize E5 embedding model"""
         try:
-            # Claude feature extraction prompt
-            analysis_prompt = f"""
-Analyze the following financial news article and extract key features for similarity comparison.
-Focus on: sentiment, topic, urgency, market impact, company type, and news type.
-
-Article: {content[:4500]}
-
-Respond with a JSON object containing numerical scores (0.0 to 1.0) for these features:
-{{
-    "sentiment_score": 0.0-1.0,
-    "bullish_score": 0.0-1.0, 
-    "urgency_score": 0.0-1.0,
-    "financial_impact_score": 0.0-1.0,
-    "earnings_related": 0.0-1.0,
-    "partnership_related": 0.0-1.0,
-    "product_related": 0.0-1.0,
-    "regulatory_related": 0.0-1.0,
-    "clinical_trial_related": 0.0-1.0,
-    "acquisition_related": 0.0-1.0,
-    "market_general": 0.0-1.0,
-    "biotech_pharma": 0.0-1.0,
-    "tech_software": 0.0-1.0,
-    "finance_banking": 0.0-1.0,
-    "energy_commodities": 0.0-1.0,
-    "retail_consumer": 0.0-1.0,
-    "manufacturing": 0.0-1.0,
-    "healthcare": 0.0-1.0,
-    "real_estate": 0.0-1.0,
-    "transportation": 0.0-1.0
-}}
-"""
+            logger.info("📥 Loading E5 embedding model...")
+            start_time = datetime.now()
             
-            # Use existing Claude API through sentiment service
-            result = await self.sentiment_service.load_balancer.make_claude_request(analysis_prompt)
+            # Use E5-large for high-quality embeddings
+            try:
+                self.embedding_model = SentenceTransformer('intfloat/e5-large-v2')
+                model_name = "e5-large-v2"
+            except:
+                try:
+                    # Fallback to multilingual E5
+                    self.embedding_model = SentenceTransformer('intfloat/multilingual-e5-large')
+                    model_name = "multilingual-e5-large"
+                except:
+                    # Final fallback
+                    self.embedding_model = SentenceTransformer('intfloat/e5-base-v2')
+                    model_name = "e5-base-v2"
             
-            if result and isinstance(result, dict):
-                # Convert Claude's analysis to feature vector
-                feature_vector = [
-                    result.get('sentiment_score', 0.5),
-                    result.get('bullish_score', 0.5),
-                    result.get('urgency_score', 0.5),
-                    result.get('financial_impact_score', 0.5),
-                    result.get('earnings_related', 0.0),
-                    result.get('partnership_related', 0.0),
-                    result.get('product_related', 0.0),
-                    result.get('regulatory_related', 0.0),
-                    result.get('clinical_trial_related', 0.0),
-                    result.get('acquisition_related', 0.0),
-                    result.get('market_general', 0.0),
-                    result.get('biotech_pharma', 0.0),
-                    result.get('tech_software', 0.0),
-                    result.get('finance_banking', 0.0),
-                    result.get('energy_commodities', 0.0),
-                    result.get('retail_consumer', 0.0),
-                    result.get('manufacturing', 0.0),
-                    result.get('healthcare', 0.0),
-                    result.get('real_estate', 0.0),
-                    result.get('transportation', 0.0)
-                ]
-                
-                # Add derived features to reach 50 dimensions
-                while len(feature_vector) < 50:
-                    # Add some composite features
-                    if len(feature_vector) < 30:
-                        feature_vector.append(feature_vector[0] * feature_vector[1])  # sentiment * bullish
-                    elif len(feature_vector) < 40:
-                        feature_vector.append(feature_vector[2] * feature_vector[3])  # urgency * impact
-                    else:
-                        feature_vector.append(0.5)  # neutral padding
-                
-                # Cache the result
-                self.feature_cache[content_hash] = feature_vector
-                return feature_vector
-            else:
-                # Return neutral feature vector on failure
-                return [0.5] * 50
-                
+            load_time = (datetime.now() - start_time).total_seconds()
+            logger.info(f"✅ Loaded {model_name} embedding model in {load_time:.2f}s")
+            
+            # Test embedding generation
+            test_text = "Test article for embedding"
+            start_time = datetime.now()
+            test_embedding = self.embedding_model.encode([test_text])
+            embedding_time = (datetime.now() - start_time).total_seconds()
+            
+            logger.info(f"⚡ Embedding generation speed: {embedding_time*1000:.1f}ms per article")
+            logger.info(f"📏 Embedding dimension: {len(test_embedding[0])}")
+            
         except Exception as e:
-            logger.error(f"Claude feature extraction failed: {e}")
-            # Return neutral feature vector on failure
-            return [0.5] * 50
+            logger.error(f"Failed to load embedding model: {e}")
+            raise
+    
+    async def generate_e5_embedding(self, content: str) -> List[float]:
+        """Generate E5 embedding for article content"""
+        try:
+            # Prepare text for E5 model (add passage prefix for better performance)
+            passage_text = f"passage: {content[:1000]}"  # Limit to 1000 chars for efficiency
+            
+            # Generate embedding using local model
+            start_time = datetime.now()
+            embedding = self.embedding_model.encode([passage_text])[0].tolist()
+            generation_time = (datetime.now() - start_time).total_seconds()
+            
+            logger.debug(f"Generated E5 embedding in {generation_time*1000:.1f}ms")
+            
+            return embedding
+            
+        except Exception as e:
+            logger.error(f"E5 embedding generation failed: {e}")
+            # Return zero vector as fallback
+            return [0.0] * 1024  # Assuming e5-large dimensions
     
     async def get_training_articles(self, offset: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
         """Get batch of articles from training dataset"""
@@ -245,6 +221,42 @@ Respond with a JSON object containing numerical scores (0.0 to 1.0) for these fe
             logger.error(f"Error fetching balanced training articles: {e}")
             return []
     
+    async def process_articles_batch(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Process a batch of articles and generate E5 embeddings"""
+        logger.info(f"📊 Processing batch of {len(articles)} articles...")
+        
+        articles_with_vectors = []
+        
+        for i, article in enumerate(articles, 1):
+            try:
+                logger.info(f"  🔄 Processing article {i}/{len(articles)}: {article['ticker']}")
+                
+                # Generate E5 embedding for the article content
+                content = article.get('full_content') or article.get('headline', '')
+                if not content:
+                    logger.warning(f"⚠️ No content for {article['ticker']}, skipping...")
+                    continue
+                
+                # Generate embedding
+                feature_vector = await self.generate_e5_embedding(content)
+                
+                if not feature_vector or all(x == 0.0 for x in feature_vector):
+                    logger.warning(f"⚠️ Failed to generate embedding for {article['ticker']}, skipping...")
+                    continue
+                
+                # Add embedding to article data
+                article['feature_vector'] = feature_vector
+                articles_with_vectors.append(article)
+                
+                logger.info(f"  ✅ Generated {len(feature_vector)}-dim embedding for {article['ticker']}")
+                
+            except Exception as e:
+                logger.error(f"Error processing article {article.get('ticker', 'unknown')}: {e}")
+                continue
+        
+        logger.info(f"✅ Successfully processed {len(articles_with_vectors)}/{len(articles)} articles")
+        return articles_with_vectors
+    
     async def store_vectors(self, articles_with_vectors: List[Dict[str, Any]]):
         """Store articles with their feature vectors in the TRAINING vectors database"""
         try:
@@ -256,7 +268,7 @@ Respond with a JSON object containing numerical scores (0.0 to 1.0) for these fe
                     article['headline'],
                     article['full_content'],
                     article['feature_vector'],
-                    'claude-3-5-sonnet-20240620',  # feature_model
+                    'e5-large-v2',  # feature_model - updated for E5
                     article['outcome_type'],
                     article['has_30pt_increase'],
                     article['is_false_pump'],
@@ -281,68 +293,54 @@ Respond with a JSON object containing numerical scores (0.0 to 1.0) for these fe
             raise
     
     async def generate_all_vectors(self):
-        """Generate feature vectors for all articles in the TRAINING dataset"""
-        logger.info("🚀 Starting vector generation for TRAINING articles only...")
+        """Generate E5 embedding vectors for all articles in the TRAINING dataset"""
+        logger.info("🚀 Starting E5 vector generation for TRAINING articles...")
         
-        # Create training vectors table if it doesn't exist
+        # Create the training vectors table
         await self.create_training_vectors_table()
         
-        # Get total count from TRAINING SET
-        total_query = 'SELECT COUNT(*) FROM News.rag_training_set'
-        total_articles = self.ch_manager.client.query(total_query).result_rows[0][0]
-        logger.info(f"📊 Total TRAINING articles to process: {total_articles}")
-        
-        processed = 0
+        # Process articles in batches
+        offset = 0
+        batch_num = 1
+        total_processed = 0
         start_time = datetime.now()
         
-        # Track processed articles by outcome type (training set counts)
-        processed_counts = {'TRUE_BULLISH': 0, 'FALSE_PUMP': 0, 'NEUTRAL': 0}
-        remaining_by_outcome = {
-            'TRUE_BULLISH': 140,  # From train/test split
-            'FALSE_PUMP': 140,
-            'NEUTRAL': 140
-        }
-        
-        batch_num = 1
-        while any(count > 0 for count in remaining_by_outcome.values()):
-            batch_start = datetime.now()
-            logger.info(f"📦 Processing batch {batch_num}")
-            logger.info(f"  📊 Remaining: TRUE_BULLISH={remaining_by_outcome['TRUE_BULLISH']}, FALSE_PUMP={remaining_by_outcome['FALSE_PUMP']}, NEUTRAL={remaining_by_outcome['NEUTRAL']}")
+        while True:
+            logger.info(f"📦 Processing batch {batch_num} (offset: {offset})...")
             
-            # Get balanced batch with proper offset
-            articles = await self.get_training_articles_balanced(self.batch_size, processed_counts)
+            # Get next batch of training articles
+            articles = await self.get_training_articles(offset=offset, limit=self.batch_size)
+            
             if not articles:
-                logger.info("  ⚠️ No more articles to process")
+                logger.info("✅ No more articles to process")
                 break
             
-            # Generate vectors for this batch
-            articles_with_vectors = []
-            for i, article in enumerate(articles, 1):
-                logger.info(f"  🔬 Generating features for {article['ticker']} ({article['outcome_type']}) ({i}/{len(articles)})")
-                
-                # Generate Claude features
-                feature_vector = await self.generate_claude_features(article['content'])
-                
-                # Add vector to article data
-                article['feature_vector'] = feature_vector
-                articles_with_vectors.append(article)
-                
-                # Update remaining count
-                remaining_by_outcome[article['outcome_type']] -= 1
+            logger.info(f"📄 Retrieved {len(articles)} articles for batch {batch_num}")
             
-            # Store this batch
-            await self.store_vectors(articles_with_vectors)
+            # Process the batch and generate E5 embeddings
+            articles_with_vectors = await self.process_articles_batch(articles)
             
-            processed += len(articles)
-            batch_time = (datetime.now() - batch_start).total_seconds()
-            total_time = (datetime.now() - start_time).total_seconds()
+            if articles_with_vectors:
+                # Store this batch
+                await self.store_vectors(articles_with_vectors)
+                total_processed += len(articles_with_vectors)
+                logger.info(f"✅ Batch {batch_num} completed: {len(articles_with_vectors)} vectors stored")
+            else:
+                logger.warning(f"⚠️ Batch {batch_num} produced no valid vectors")
             
-            logger.info(f"✅ Batch {batch_num} completed in {batch_time:.1f}s | Progress: {processed}/{total_articles} ({processed/total_articles*100:.1f}%)")
-            logger.info(f"⏱️ Total time: {total_time:.1f}s")
-            
+            # Update for next batch
+            offset += self.batch_size
             batch_num += 1
+            
+            # Progress update
+            elapsed_time = (datetime.now() - start_time).total_seconds()
+            logger.info(f"⏱️ Progress: {total_processed} articles processed in {elapsed_time:.1f}s")
         
-        logger.info(f"🎉 TRAINING vector generation completed! Processed {processed} articles in {total_time:.1f}s")
+        total_time = (datetime.now() - start_time).total_seconds()
+        logger.info(f"🎉 E5 vector generation completed! Processed {total_processed} articles in {total_time:.1f}s")
+        
+        # Verify the results
+        await self.verify_vectors()
     
     async def create_training_vectors_table(self):
         """Create the training vectors table"""
@@ -350,7 +348,7 @@ Respond with a JSON object containing numerical scores (0.0 to 1.0) for these fe
             # Drop existing training vectors table if it exists
             self.ch_manager.client.command("DROP TABLE IF EXISTS News.rag_training_vectors")
             
-            # Create new training vectors table (same schema as rag_article_vectors)
+            # Create new training vectors table (optimized for E5 embeddings)
             create_table_sql = """
             CREATE TABLE News.rag_training_vectors (
                 id UUID DEFAULT generateUUIDv4(),
@@ -358,9 +356,9 @@ Respond with a JSON object containing numerical scores (0.0 to 1.0) for these fe
                 headline String,
                 full_content String,
                 
-                -- Claude-generated features
-                feature_vector Array(Float32),
-                feature_model String DEFAULT 'claude-3-5-sonnet-20240620',
+                -- E5-generated embeddings
+                feature_vector Array(Float64),
+                feature_model String DEFAULT 'e5-large-v2',
                 
                 -- Outcome labels
                 outcome_type String,
@@ -375,7 +373,7 @@ Respond with a JSON object containing numerical scores (0.0 to 1.0) for these fe
                 -- Metadata
                 created_at DateTime DEFAULT now(),
                 
-                -- Indexing
+                -- Indexing for fast similarity search
                 INDEX idx_outcome_type (outcome_type) TYPE set(10) GRANULARITY 1,
                 INDEX idx_ticker (ticker) TYPE set(1000) GRANULARITY 1
             ) ENGINE = ReplacingMergeTree(created_at)
@@ -447,7 +445,7 @@ async def main():
     
     args = parser.parse_args()
     
-    generator = VectorGenerator(batch_size=args.batch_size)
+    generator = E5VectorGenerator(batch_size=args.batch_size)
     
     try:
         await generator.initialize()
