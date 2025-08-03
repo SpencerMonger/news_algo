@@ -98,18 +98,23 @@ class E5VectorGenerator:
             logger.error(f"Failed to load embedding model: {e}")
             raise
     
-    async def generate_e5_embedding(self, content: str) -> List[float]:
-        """Generate E5 embedding for article content"""
+    async def generate_e5_embedding(self, content: str, outcome_type: str = None) -> List[float]:
+        """Generate outcome-aware E5 embedding for article content"""
         try:
-            # Prepare text for E5 model (add passage prefix for better performance)
-            passage_text = f"passage: {content[:1000]}"  # Limit to 1000 chars for efficiency
+            # Prepare text for E5 model with outcome conditioning
+            if outcome_type:
+                # Include outcome information to make embeddings outcome-aware
+                passage_text = f"passage: [OUTCOME:{outcome_type}] {content[:1000]}"
+            else:
+                # Fallback for query embeddings without known outcome
+                passage_text = f"passage: {content[:1000]}"
             
             # Generate embedding using local model
             start_time = datetime.now()
             embedding = self.embedding_model.encode([passage_text])[0].tolist()
             generation_time = (datetime.now() - start_time).total_seconds()
             
-            logger.debug(f"Generated E5 embedding in {generation_time*1000:.1f}ms")
+            logger.debug(f"Generated outcome-aware E5 embedding in {generation_time*1000:.1f}ms")
             
             return embedding
             
@@ -238,7 +243,7 @@ class E5VectorGenerator:
                     continue
                 
                 # Generate embedding
-                feature_vector = await self.generate_e5_embedding(content)
+                feature_vector = await self.generate_e5_embedding(content, article.get('outcome_type'))
                 
                 if not feature_vector or all(x == 0.0 for x in feature_vector):
                     logger.warning(f"⚠️ Failed to generate embedding for {article['ticker']}, skipping...")

@@ -316,179 +316,281 @@ class OptimizedRAGTester:
             logger.error(f"Error retrieving test articles: {e}")
             return []
     
-    async def get_similar_training_examples(self, query_content: str, top_k: int = 3) -> Tuple[List[Dict[str, Any]], float]:
-        """Find similar examples from training set using optimized vector search"""
+    async def get_similar_outcome_examples(self, target_outcome: str = 'TRUE_BULLISH', top_k: int = 3) -> Tuple[List[Dict[str, Any]], float]:
+        """Find examples from training set based on outcome patterns rather than text similarity"""
         search_start_time = datetime.now()
         
         try:
-            # Generate embedding for the query content using local model
-            embedding_start = datetime.now()
-            
-            # Prepare text for E5 model (add query prefix for better performance)
-            query_text = f"query: {query_content[:1000]}"  # Limit to 1000 chars for speed
-            
-            # Generate embedding using local model
-            query_embedding = self.embedding_model.encode([query_text])[0].tolist()
-            embedding_time = (datetime.now() - embedding_start).total_seconds()
-            
-            if not query_embedding:
-                return [], embedding_time
-            
-            # Optimized vector search with dynamic similarity threshold
-            vector_search_start = datetime.now()
-            
-            # Choose query based on available vectors table
-            if hasattr(self, 'use_training_filter') and self.use_training_filter:
-                # Use existing vectors filtered by training set
-                similarity_query = """
-                SELECT 
-                    v.ticker,
-                    v.headline,
-                    v.outcome_type,
-                    v.price_increase_ratio,
-                    cosineDistance(v.feature_vector, %s) as distance,
-                    1 - cosineDistance(v.feature_vector, %s) as similarity
-                FROM News.rag_article_vectors v
-                INNER JOIN News.rag_training_set t ON v.original_content_hash = t.original_content_hash
-                WHERE cosineDistance(v.feature_vector, %s) < 0.5
-                ORDER BY distance ASC
-                LIMIT %s
-                """
-                params = [query_embedding, query_embedding, query_embedding, top_k]
-            else:
-                # Use dedicated training vectors table with similarity threshold
-                similarity_query = """
+            # Build query based on outcome patterns - find the BEST performing examples
+            if target_outcome == 'TRUE_BULLISH':
+                # Find articles that actually had strong positive outcomes
+                query = """
                 SELECT 
                     ticker,
                     headline,
+                    full_content,
                     outcome_type,
+                    has_30pt_increase,
+                    is_false_pump,
                     price_increase_ratio,
-                    cosineDistance(feature_vector, %s) as distance,
-                    1 - cosineDistance(feature_vector, %s) as similarity
-                FROM News.rag_training_vectors
-                WHERE cosineDistance(feature_vector, %s) < 0.5
-                ORDER BY distance ASC
+                    published_est
+                FROM News.rag_training_set
+                WHERE outcome_type = 'TRUE_BULLISH'
+                  AND has_30pt_increase = true
+                  AND price_increase_ratio > 0.25
+                ORDER BY price_increase_ratio DESC
                 LIMIT %s
                 """
-                params = [query_embedding, query_embedding, query_embedding, top_k]
+            else:
+                # For other outcomes, find representative examples
+                query = """
+                SELECT 
+                    ticker,
+                    headline,
+                    full_content,
+                    outcome_type,
+                    has_30pt_increase,
+                    is_false_pump,
+                    price_increase_ratio,
+                    published_est
+                FROM News.rag_training_set
+                WHERE outcome_type = %s
+                ORDER BY 
+                    CASE 
+                        WHEN outcome_type = 'FALSE_PUMP' THEN -price_increase_ratio
+                        ELSE RAND()
+                    END
+                LIMIT %s
+                """
             
-            result = self.ch_manager.client.query(similarity_query, parameters=params)
-            vector_search_time = (datetime.now() - vector_search_start).total_seconds()
+            # Execute query
+            if target_outcome == 'TRUE_BULLISH':
+                result = self.ch_manager.client.query(query, parameters=[top_k])
+            else:
+                result = self.ch_manager.client.query(query, parameters=[target_outcome, top_k])
             
-            similar_examples = []
+            examples = []
             for row in result.result_rows:
-                # Only include examples with >50% similarity (distance < 0.5)
-                similarity = float(row[5])
-                if similarity > 0.5:
-                    similar_examples.append({
-                        'ticker': row[0],
-                        'headline': row[1],
-                        'outcome_type': row[2],
-                        'price_increase_ratio': float(row[3]),
-                        'distance': float(row[4]),
-                        'similarity': similarity
-                    })
+                ticker, headline, content, outcome, has_30pt, is_false_pump, price_ratio, published = row
+                
+                examples.append({
+                    'ticker': ticker,
+                    'headline': headline,
+                    'full_content': content,
+                    'outcome_type': outcome,
+                    'has_30pt_increase': has_30pt,
+                    'is_false_pump': is_false_pump,
+                    'price_increase_ratio': float(price_ratio) if price_ratio else 0.0,
+                    'published_est': published,
+                    'pattern_score': float(price_ratio) if price_ratio else 0.0  # Use price performance as "similarity"
+                })
             
-            total_search_time = (datetime.now() - search_start_time).total_seconds()
-            logger.debug(f"Vector search: {len(similar_examples)} examples in {total_search_time*1000:.1f}ms")
+            search_time = (datetime.now() - search_start_time).total_seconds()
             
-            return similar_examples, embedding_time
+            logger.info(f"🎯 Found {len(examples)} outcome-pattern examples for {target_outcome} in {search_time*1000:.0f}ms")
+            return examples, search_time
             
         except Exception as e:
-            logger.error(f"Error finding similar examples: {e}")
-            search_time = (datetime.now() - search_start_time).total_seconds()
-            return [], search_time
+            logger.error(f"❌ Error in outcome pattern search: {e}")
+            return [], (datetime.now() - search_start_time).total_seconds()
     
     async def analyze_optimized_rag_sentiment(self, content: str) -> Tuple[str, float, float, List[Dict], Dict[str, float]]:
-        """Analyze sentiment using optimized RAG method with performance tracking"""
-        start_time = datetime.now()
-        
-        performance_metrics = {
-            'embedding_time': 0.0,
-            'vector_search_time': 0.0,
-            'llm_decision_time': 0.0
-        }
+        """Analyze sentiment using outcome-pattern based RAG with performance-based confidence"""
+        analysis_start_time = datetime.now()
+        timing_info = {}
         
         try:
-            # Fast similarity search with local embeddings
-            similar_examples, embedding_time = await self.get_similar_training_examples(content, top_k=3)
-            performance_metrics['embedding_time'] = embedding_time
-            performance_metrics['vector_search_time'] = (datetime.now() - start_time).total_seconds() - embedding_time
+            # Get outcome pattern examples - focus on TRUE_BULLISH patterns
+            similar_examples, search_time = await self.get_similar_outcome_examples('TRUE_BULLISH', top_k=5)
+            timing_info['embedding_time'] = 0.0  # No embedding needed for pattern search
+            timing_info['vector_search_time'] = search_time
             
-            # Create optimized RAG context
-            rag_context = self.create_optimized_rag_context(similar_examples)
+            if not similar_examples:
+                # Fallback to neutral examples if no TRUE_BULLISH patterns found
+                similar_examples, search_time = await self.get_similar_outcome_examples('NEUTRAL', top_k=3)
+                timing_info['vector_search_time'] += search_time
             
-            # Single optimized LLM call
-            llm_start = datetime.now()
-            
-            # Clean content for JSON safety
-            clean_content = content.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-            clean_content = ''.join(char if ord(char) >= 32 or char in '\n\r\t' else ' ' for char in clean_content)
-            
-            # Optimized prompt - shorter and more focused
+            # Calculate confidence based on pattern strength
             if similar_examples:
-                rag_prompt = f"""Based on these {len(similar_examples)} similar historical examples:
-
-{rag_context}
-
-Analyze this new article: {clean_content[:2000]}
-
-TRADING DECISION RULES:
-- If similar examples are mostly TRUE_BULLISH (led to 30%+ gains): Recommend BUY with HIGH confidence
-- If mixed results but some TRUE_BULLISH: BUY with MEDIUM confidence  
-- If mostly FALSE_PUMP/NEUTRAL: HOLD
-- Be AGGRESSIVE on opportunities - missing TRUE_BULLISH is worse than catching FALSE_PUMP
-
-Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low", "reasoning": "brief explanation"}}"""
+                # Base confidence on the strength of historical patterns
+                avg_performance = sum(ex.get('price_increase_ratio', 0.0) for ex in similar_examples) / len(similar_examples)
+                strong_performers = sum(1 for ex in similar_examples if ex.get('price_increase_ratio', 0.0) > 0.30)
+                
+                # Calculate pattern-based confidence
+                base_confidence = 0.75  # Conservative baseline
+                performance_boost = min(avg_performance * 0.5, 0.15)  # Up to +15% for strong patterns
+                consistency_boost = (strong_performers / len(similar_examples)) * 0.10  # Up to +10% for consistency
+                
+                pattern_confidence = base_confidence + performance_boost + consistency_boost
+                pattern_confidence = min(pattern_confidence, 0.95)  # Cap at 95%
+                
+                logger.debug(f"📊 Pattern confidence: {pattern_confidence:.3f} (avg perf: {avg_performance:.3f}, strong: {strong_performers}/{len(similar_examples)})")
             else:
-                # Fallback to traditional-style analysis if no similar examples
-                rag_prompt = f"""Analyze this financial news for trading potential: {clean_content[:2000]}
+                pattern_confidence = 0.60  # Low confidence without patterns
+            
+            # Create context for LLM
+            context = self.create_outcome_pattern_context(similar_examples)
+            
+            # Create prompt focusing on outcome patterns
+            prompt = f"""
+            Based on these historical examples of articles that achieved significant price increases (30%+ gains), analyze this new article.
 
-Focus on: partnerships, clinical trials, earnings, acquisitions, product launches.
+            HISTORICAL SUCCESS PATTERNS:
+            {context}
 
-Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low", "reasoning": "brief explanation"}}"""
+            NEW ARTICLE TO ANALYZE:
+            {content[:800]}
+
+            Based on the pattern of successful articles above, provide your analysis:
+
+            {{
+                "sentiment": "BUY|HOLD|SELL",
+                "confidence": {pattern_confidence:.3f},
+                "reasoning": "Brief explanation focusing on similarity to successful patterns"
+            }}
+            """
             
-            result = await self.sentiment_service.load_balancer.make_claude_request(rag_prompt)
-            llm_time = (datetime.now() - llm_start).total_seconds()
-            performance_metrics['llm_decision_time'] = llm_time
+            # Get LLM decision
+            llm_start_time = datetime.now()
             
-            analysis_time = (datetime.now() - start_time).total_seconds()
+            try:
+                response = await self.sentiment_service.load_balancer.make_claude_request(prompt)
+                
+                timing_info['llm_decision_time'] = (datetime.now() - llm_start_time).total_seconds()
+                
+                # Parse response - handle both string and dict responses
+                import json
+                try:
+                    # Handle dict response (already parsed)
+                    if isinstance(response, dict):
+                        result = response
+                    else:
+                        # Handle string response that needs parsing
+                        clean_response = response.strip()
+                        if clean_response.startswith('```json'):
+                            clean_response = clean_response.split('```json')[1].split('```')[0]
+                        elif clean_response.startswith('```'):
+                            clean_response = clean_response.split('```')[1].split('```')[0]
+                        
+                        result = json.loads(clean_response.strip())
+                    
+                    sentiment = result.get('sentiment', 'HOLD')
+                    # Use our pattern-based confidence instead of LLM confidence
+                    confidence = pattern_confidence
+                    
+                    total_time = (datetime.now() - analysis_start_time).total_seconds()
+                    
+                    logger.debug(f"🎯 Pattern-based RAG: {sentiment} @ {confidence:.3f} confidence")
+                    return sentiment, confidence, total_time, similar_examples, timing_info
+                    
+                except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                    logger.error(f"Response parse error: {e}, response type: {type(response)}, response: {str(response)[:200]}")
+                    return 'HOLD', 0.50, (datetime.now() - analysis_start_time).total_seconds(), similar_examples, timing_info
+                    
+            except Exception as e:
+                logger.error(f"LLM request failed: {e}")
+                timing_info['llm_decision_time'] = (datetime.now() - llm_start_time).total_seconds()
+                return 'HOLD', 0.50, (datetime.now() - analysis_start_time).total_seconds(), similar_examples, timing_info
             
-            if result and isinstance(result, dict):
-                # Extract action and confidence
-                action = result.get('action', 'HOLD')
-                confidence_str = result.get('confidence', 'medium')
-                
-                # Convert confidence string to float
-                confidence = self.confidence_map.get(confidence_str, 0.5)
-                
-                return (
-                    action, 
-                    confidence, 
-                    analysis_time,
-                    similar_examples,
-                    performance_metrics
-                )
-            else:
-                return 'HOLD', 0.5, analysis_time, similar_examples, performance_metrics
-                
         except Exception as e:
-            logger.error(f"Optimized RAG sentiment analysis failed: {e}")
-            analysis_time = (datetime.now() - start_time).total_seconds()
-            performance_metrics['llm_decision_time'] = analysis_time
-            return 'HOLD', 0.5, analysis_time, [], performance_metrics
+            logger.error(f"Error in outcome-pattern RAG analysis: {e}")
+            total_time = (datetime.now() - analysis_start_time).total_seconds()
+            return 'HOLD', 0.50, total_time, [], timing_info
+    
+    def calculate_nuanced_confidence(self, similar_examples: List[Dict]) -> float:
+        """Calculate nuanced confidence based on weighted similarity patterns"""
+        if not similar_examples:
+            return 0.5
+        
+        # Calculate weighted outcome scores
+        weighted_scores = {'TRUE_BULLISH': 0.0, 'FALSE_PUMP': 0.0, 'NEUTRAL': 0.0}
+        total_weighted_similarity = 0.0
+        
+        for example in similar_examples:
+            weighted_sim = example.get('weighted_similarity', example['similarity'])
+            outcome = example['outcome_type']
+            weighted_scores[outcome] += weighted_sim
+            total_weighted_similarity += weighted_sim
+        
+        # Calculate average similarity quality
+        avg_similarity = sum(e['similarity'] for e in similar_examples) / len(similar_examples)
+        
+        # Determine confidence based on pattern strength and similarity quality
+        true_bullish_weight = weighted_scores['TRUE_BULLISH']
+        false_pump_weight = weighted_scores['FALSE_PUMP']
+        neutral_weight = weighted_scores['NEUTRAL']
+        
+        # Base confidence on similarity quality (40-70% range)
+        base_confidence = 0.4 + (avg_similarity * 0.3)  # 0.4 to 0.7 based on similarity
+        
+        # Adjust based on outcome pattern strength
+        if true_bullish_weight >= false_pump_weight * 2.0:
+            # Very strong bullish pattern
+            pattern_boost = 0.25
+        elif true_bullish_weight >= false_pump_weight * 1.5:
+            # Strong bullish pattern  
+            pattern_boost = 0.15
+        elif true_bullish_weight > false_pump_weight:
+            # Moderate bullish pattern
+            pattern_boost = 0.08
+        elif false_pump_weight > true_bullish_weight * 1.5:
+            # Strong bearish pattern - lower confidence for any recommendation
+            pattern_boost = -0.1
+        else:
+            # Mixed/unclear pattern
+            pattern_boost = 0.0
+        
+        # Final confidence calculation
+        final_confidence = base_confidence + pattern_boost
+        
+        # Clamp to reasonable range (0.5 to 0.95)
+        final_confidence = max(0.5, min(0.95, final_confidence))
+        
+        logger.debug(f"Confidence calc: base={base_confidence:.2f}, pattern_boost={pattern_boost:.2f}, final={final_confidence:.2f}")
+        logger.debug(f"Pattern: TB={true_bullish_weight:.2f}, FP={false_pump_weight:.2f}, avg_sim={avg_similarity:.2f}")
+        
+        return final_confidence
+    
+    def determine_sentiment_from_pattern(self, similar_examples: List[Dict]) -> str:
+        """Determine sentiment based on weighted pattern analysis"""
+        if not similar_examples:
+            return "HOLD"
+        
+        weighted_scores = {'TRUE_BULLISH': 0.0, 'FALSE_PUMP': 0.0, 'NEUTRAL': 0.0}
+        
+        for example in similar_examples:
+            weighted_sim = example.get('weighted_similarity', example['similarity'])
+            outcome = example['outcome_type']
+            weighted_scores[outcome] += weighted_sim
+        
+        true_bullish_weight = weighted_scores['TRUE_BULLISH']
+        false_pump_weight = weighted_scores['FALSE_PUMP']
+        neutral_weight = weighted_scores['NEUTRAL']
+        
+        # Decision logic based on weighted patterns
+        if true_bullish_weight > false_pump_weight and true_bullish_weight > neutral_weight:
+            return "BUY"
+        elif false_pump_weight > true_bullish_weight * 1.2:
+            return "SELL" 
+        else:
+            return "HOLD"
     
     def create_optimized_rag_context(self, similar_examples: List[Dict]) -> str:
-        """Create optimized context string from similar examples"""
+        """Create optimized context string from similar examples with outcome weighting"""
         if not similar_examples:
             return "No similar historical examples found."
         
         context_parts = []
         outcome_counts = {'TRUE_BULLISH': 0, 'FALSE_PUMP': 0, 'NEUTRAL': 0}
+        weighted_outcome_scores = {'TRUE_BULLISH': 0.0, 'FALSE_PUMP': 0.0, 'NEUTRAL': 0.0}
         
         for i, example in enumerate(similar_examples, 1):
             outcome = example['outcome_type']
             outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+            
+            # Use weighted similarity for scoring outcomes
+            weighted_sim = example.get('weighted_similarity', example['similarity'])
+            weighted_outcome_scores[outcome] += weighted_sim
             
             outcome_desc = {
                 'TRUE_BULLISH': 'SUCCESS: 30%+ gain',
@@ -496,20 +598,28 @@ Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low",
                 'NEUTRAL': 'NEUTRAL: <5% move'
             }.get(outcome, 'Unknown')
             
+            # Show both original and weighted similarity for transparency
+            orig_sim = example['similarity']
             context_parts.append(
-                f"{i}. {example['ticker']}: {example['headline'][:80]}... → {outcome_desc} (sim: {example['similarity']:.2f})"
+                f"{i}. {example['ticker']}: {example['headline'][:80]}... → {outcome_desc} (sim: {orig_sim:.2f}→{weighted_sim:.2f})"
             )
         
-        # Add pattern summary
-        total = len(similar_examples)
-        if outcome_counts['TRUE_BULLISH'] >= total * 0.6:
-            pattern = "STRONG BUY SIGNAL: Most similar examples succeeded"
-        elif outcome_counts['TRUE_BULLISH'] >= total * 0.4:
-            pattern = "MIXED SIGNAL: Some similar examples succeeded"
-        else:
-            pattern = "WEAK SIGNAL: Few similar examples succeeded"
+        # Enhanced pattern analysis using weighted scores
+        total_examples = len(similar_examples)
+        true_bullish_weight = weighted_outcome_scores['TRUE_BULLISH']
+        false_pump_weight = weighted_outcome_scores['FALSE_PUMP']
         
-        return f"PATTERN: {pattern}\n\n" + "\n".join(context_parts)
+        # Determine pattern strength based on weighted outcomes
+        if true_bullish_weight >= false_pump_weight * 1.5:
+            pattern = f"STRONG BUY SIGNAL: Weighted analysis favors success (TB:{true_bullish_weight:.2f} vs FP:{false_pump_weight:.2f})"
+        elif true_bullish_weight > false_pump_weight:
+            pattern = f"MODERATE BUY SIGNAL: Slight success bias (TB:{true_bullish_weight:.2f} vs FP:{false_pump_weight:.2f})"
+        elif false_pump_weight > true_bullish_weight * 1.2:
+            pattern = f"CAUTION SIGNAL: Historical failures dominate (FP:{false_pump_weight:.2f} vs TB:{true_bullish_weight:.2f})"
+        else:
+            pattern = f"MIXED SIGNAL: Conflicting historical outcomes (TB:{true_bullish_weight:.2f}, FP:{false_pump_weight:.2f})"
+        
+        return f"OUTCOME-WEIGHTED PATTERN: {pattern}\n\n" + "\n".join(context_parts)
     
     async def analyze_traditional_sentiment(self, content: str) -> Tuple[str, float, float]:
         """Analyze sentiment using traditional method only"""
@@ -550,7 +660,7 @@ Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low",
         
         try:
             # Get similar examples from training set
-            similar_examples = await self.get_similar_training_examples(content, top_k=5)
+            similar_examples = await self.get_similar_outcome_examples(content, top_k=5)
             
             # Create RAG prompt with similar examples
             rag_context = self.create_rag_context(similar_examples)
@@ -664,7 +774,8 @@ Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low",
                 logger.info(f"  🧠 RAG: {rag_sentiment} ({rag_conf:.2f}) in {rag_time:.2f}s")
                 logger.info(f"    ⚡ Breakdown: embed={perf_metrics['embedding_time']*1000:.0f}ms, search={perf_metrics['vector_search_time']*1000:.0f}ms, llm={perf_metrics['llm_decision_time']*1000:.0f}ms")
                 if similar_examples:
-                    logger.info(f"    📋 Used {len(similar_examples)} similar examples (avg similarity: {sum(e['similarity'] for e in similar_examples)/len(similar_examples):.2f})")
+                    avg_pattern_score = sum(e.get('pattern_score', 0.0) for e in similar_examples) / len(similar_examples)
+                    logger.info(f"    📋 Used {len(similar_examples)} outcome pattern examples (avg performance: +{avg_pattern_score*100:.1f}%)")
             
             results.append(result)
         
@@ -1607,6 +1718,42 @@ Respond with JSON: {{"action": "BUY/HOLD/SELL", "confidence": "high/medium/low",
             'traditional_trades': traditional_trades,
             'rag_trades': rag_trades
         }
+
+    def create_outcome_pattern_context(self, examples: List[Dict]) -> str:
+        """Create context string from outcome pattern examples focusing on performance"""
+        if not examples:
+            return "No historical success patterns found."
+        
+        context_parts = []
+        
+        for i, example in enumerate(examples, 1):
+            ticker = example['ticker']
+            headline = example['headline']
+            outcome = example['outcome_type']
+            price_ratio = example.get('price_increase_ratio', 0.0)
+            has_30pt = example.get('has_30pt_increase', False)
+            
+            # Format performance info
+            performance_info = f"+{price_ratio*100:.1f}%" if price_ratio > 0 else "No gain"
+            success_indicator = "✅ 30%+ GAIN" if has_30pt else "📈 Positive"
+            
+            context_parts.append(f"""
+{i}. {ticker}: {headline[:100]}...
+   Result: {success_indicator} ({performance_info})
+   Pattern: {outcome}""")
+        
+        # Add summary
+        total_examples = len(examples)
+        strong_performers = sum(1 for ex in examples if ex.get('price_increase_ratio', 0.0) > 0.30)
+        avg_performance = sum(ex.get('price_increase_ratio', 0.0) for ex in examples) / total_examples
+        
+        summary = f"""
+PATTERN SUMMARY:
+- {strong_performers}/{total_examples} examples achieved 30%+ gains
+- Average performance: +{avg_performance*100:.1f}%
+- Success rate: {(strong_performers/total_examples)*100:.1f}%"""
+        
+        return "\n".join(context_parts) + summary
 
 async def main():
     """Main test execution function"""
