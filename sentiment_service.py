@@ -707,45 +707,43 @@ class SentimentService:
         else:
             content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
         
-        # Apply 6K character limit to prevent token overflow
-        content_to_analyze = content_to_analyze[:6000] if content_to_analyze else f"{headline}\n\n{summary}"
+        # Apply 1500 character limit to match 4D prompt strategy
+        content_to_analyze = content_to_analyze[:1500] if content_to_analyze else f"{headline}\n\n{summary}"
 
-        # Base prompt
-        prompt = f"""
-Analyze the following news article about {ticker} and determine if it suggests a BUY, SELL, or HOLD signal based on the sentiment and potential market impact.
+        # 4D Timing and Urgency Prompt - EXACT COPY
+        prompt = f"""Analyze this financial news for immediate market impact timing.
 
-Article Content:
+ARTICLE CONTENT:
 {content_to_analyze}
 
-Instructions:
-1. Analyze the sentiment (positive, negative, neutral)
-2. Consider the potential market impact on stock price
-3. Provide a clear recommendation:
-   - BUY: For positive sentiment with strong bullish indicators
-   - SELL: For negative sentiment with strong bearish indicators  
-   - HOLD: For neutral sentiment or unclear market impact
-4. Rate confidence as high, medium, or low
-5. Give a brief explanation (1-2 sentences)"""
+TIMING ANALYSIS: Determine if this news will cause immediate explosive price action (hours/days) or delayed appreciation.
 
-        # Add Bitcoin/crypto consideration ONLY for USA tickers
-        if country == 'USA':
-            prompt += """
+IMMEDIATE IMPACT CATALYSTS (BUY + high confidence):
+- FDA approvals, merger announcements, major contract wins
+- Earnings surprises with immediate market implications
+- Breaking regulatory decisions or legal victories
+- Emergency use authorizations or critical partnerships
 
-Special consideration: If the article discusses Bitcoin, cryptocurrency investments, or crypto-related business activities by the company, these should generally be viewed as high-confidence market movers. Bitcoin/crypto news often has significant immediate market impact on stock prices."""
+DELAYED IMPACT NEWS (BUY + medium confidence):
+- Product development milestones with future potential
+- Strategic initiatives with 6-12 month timelines
+- Market expansion plans requiring execution time
+- Research results requiring further development
 
-        prompt += f"""
+LOW IMPACT/SPECULATIVE (HOLD):
+- Early-stage research or development updates
+- Management commentary without concrete announcements
+- Industry trend discussions without company-specific catalysts
+- Vague future planning statements
 
-Respond in this exact JSON format:
+Focus on: Will this move the stock price within 24-48 hours?
+
+Respond with JSON:
 {{
-    "ticker": "{ticker}",
-    "sentiment": "positive/negative/neutral",
-    "recommendation": "BUY/SELL/HOLD",
+    "recommendation": "BUY/HOLD/SELL",
     "confidence": "high/medium/low",
-    "explanation": "Brief explanation of your reasoning"
-}}
-
-Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL").
-"""
+    "reasoning": "Immediate impact timing assessment and catalyst urgency analysis"
+}}"""
         return prompt
     
     async def analyze_article_sentiment(self, article: Dict[str, Any]) -> Dict[str, Any]:
@@ -784,6 +782,20 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 # Add timing information
                 analysis_result['analysis_time_ms'] = int(analysis_time * 1000)
                 analysis_result['analyzed_at'] = datetime.now()
+                
+                # Map 4D prompt "reasoning" field to expected "explanation" field
+                if 'reasoning' in analysis_result and 'explanation' not in analysis_result:
+                    analysis_result['explanation'] = analysis_result['reasoning']
+                
+                # Map 4D prompt recommendation to sentiment field (4D prompt doesn't return sentiment)
+                if 'sentiment' not in analysis_result and 'recommendation' in analysis_result:
+                    recommendation = analysis_result.get('recommendation', 'HOLD')
+                    if recommendation == 'BUY':
+                        analysis_result['sentiment'] = 'positive'
+                    elif recommendation == 'SELL':
+                        analysis_result['sentiment'] = 'negative'
+                    else:  # HOLD
+                        analysis_result['sentiment'] = 'neutral'
                 
                 # Cache the result
                 if content_hash:
