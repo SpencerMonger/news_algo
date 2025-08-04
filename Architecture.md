@@ -335,15 +335,23 @@ SENTIMENT_ANALYSIS = 'BUY' AND 'high' # LLM outputs labels
 - **Window Management**: Removed rolling 15-minute window, now uses ticker's first timestamp as anchor point
 - **Automatic Cleanup**: Added logic to stop monitoring tickers after 40-second window expires:
   ```sql
-  -- Only look at data within 40 seconds of each ticker's first timestamp
-  AND pt.timestamp <= (
-      SELECT min(pt2.timestamp) + INTERVAL 40 SECOND 
-      FROM News.price_tracking pt2 
-      WHERE pt2.ticker = pt.ticker
+  -- Updated approach using CTE to avoid ClickHouse correlated subquery restrictions
+  WITH ticker_windows AS (
+      SELECT 
+          ticker,
+          min(timestamp) as first_timestamp,
+          min(timestamp) + INTERVAL 40 SECOND as cutoff_timestamp
+      FROM News.price_tracking
+      WHERE ticker IN (active_tickers)
+      GROUP BY ticker
   )
+  SELECT ... FROM News.price_tracking pt
+  INNER JOIN ticker_windows tw ON pt.ticker = tw.ticker
+  WHERE pt.timestamp <= tw.cutoff_timestamp
   ```
 - **Impact**: Ensures 40-second trading window is strictly enforced, prevents false alerts from stale price data
 - **Performance**: Queries become more efficient as old tickers automatically expire from consideration
+- **ClickHouse Compatibility**: Uses CTE instead of correlated subqueries to avoid experimental feature requirements
 
 **Individual Article Processing Architecture**:
 - **Issue Resolved**: Eliminated batch processing bottleneck that caused fast articles to wait for slow articles to complete sentiment analysis before ANY could be inserted to database

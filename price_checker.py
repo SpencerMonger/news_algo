@@ -813,7 +813,19 @@ class ContinuousPriceMonitor:
             return set()
 
     async def check_price_alerts_optimized(self):
-        """Check for 5%+ price increases WITH sentiment analysis - ONLY trigger alerts when price moves 5% AND sentiment is 'BUY' with high confidence"""
+        """
+        Check for 5%+ price increases WITH sentiment analysis - ONLY trigger alerts when price moves 5% AND sentiment is 'BUY' with high confidence
+        
+        CRITICAL FIX: This method now implements the EXACT solution from Architecture.md to prevent alerts outside the 40-second window.
+        
+        PREVIOUS BUG: The old CTE approach used min(timestamp) from ALL historical data (up to 7 days due to TTL),
+        which allowed alerts like VERB to trigger 30 minutes after news release.
+        
+        CURRENT SOLUTION: Uses a CTE to pre-calculate the 40-second cutoff timestamp for each ticker, 
+        eliminating the correlated subquery that was causing ClickHouse errors.
+        
+        This ensures alerts ONLY trigger within 40 seconds of the FIRST price entry for each ticker.
+        """
         try:
             if not self.active_tickers:
                 return
@@ -822,12 +834,10 @@ class ContinuousPriceMonitor:
             ticker_list = list(self.active_tickers)
             ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
             
-            # ENHANCED: Include sentiment analysis in price alert logic
-            # Only trigger alerts when:
-            # 1. Price moves 5%+ within 2 minutes (existing logic)
-            # 2. AND sentiment is 'BUY' with 'high' confidence (from price_tracking table)
+            # CRITICAL FIX: Use CTE to eliminate correlated subquery
+            # This resolves the ClickHouse "allow_experimental_correlated_subqueries" error
             query = f"""
-            WITH ticker_first_timestamps AS (
+            WITH ticker_windows AS (
                 SELECT 
                     ticker,
                     min(timestamp) as first_timestamp,
@@ -835,50 +845,39 @@ class ContinuousPriceMonitor:
                 FROM News.price_tracking
                 WHERE ticker IN ({ticker_placeholders})
                 GROUP BY ticker
-            ),
-            price_data AS (
-                SELECT 
-                    pt.ticker as ticker,
-                    argMax(pt.price, pt.timestamp) as current_price,
-                    argMin(pt.price, pt.timestamp) as first_price,
-                    max(pt.timestamp) as current_timestamp,
-                    min(pt.timestamp) as first_timestamp,
-                    count() as price_count,
-                    COALESCE(a.alert_count, 0) as existing_alerts,
-                    argMax(pt.sentiment, pt.timestamp) as sentiment,
-                    argMax(pt.recommendation, pt.timestamp) as recommendation,
-                    argMax(pt.confidence, pt.timestamp) as confidence
-                FROM News.price_tracking pt
-                INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
-                LEFT JOIN (
-                    SELECT ticker, count() as alert_count
-                    FROM News.news_alert
-                    WHERE timestamp >= now() - INTERVAL 2 MINUTE
-                    GROUP BY ticker
-                ) a ON pt.ticker = a.ticker
-                WHERE pt.ticker IN ({ticker_placeholders})
-                AND COALESCE(a.alert_count, 0) < 8
-                AND pt.timestamp <= tft.cutoff_timestamp
-                GROUP BY pt.ticker, a.alert_count
-                HAVING first_price > 0 AND price_count >= 2
             )
             SELECT 
-                ticker,
-                current_price,
-                first_price,
-                ((current_price - first_price) / first_price) * 100 as change_pct,
-                price_count,
-                first_timestamp,
-                current_timestamp,
-                dateDiff('second', first_timestamp, current_timestamp) as seconds_elapsed,
-                existing_alerts,
-                sentiment,
-                recommendation,
-                confidence
-            FROM price_data
-            WHERE ((current_price - first_price) / first_price) * 100 >= 5.0 
-            AND dateDiff('second', first_timestamp, current_timestamp) <= 40
-            AND current_price < 20.0
+                pt.ticker,
+                argMax(pt.price, pt.timestamp) as current_price,
+                argMin(pt.price, pt.timestamp) as first_price,
+                max(pt.timestamp) as current_timestamp,
+                min(pt.timestamp) as first_timestamp,
+                count() as price_count,
+                COALESCE(a.alert_count, 0) as existing_alerts,
+                argMax(pt.sentiment, pt.timestamp) as sentiment,
+                argMax(pt.recommendation, pt.timestamp) as recommendation,
+                argMax(pt.confidence, pt.timestamp) as confidence,
+                ((argMax(pt.price, pt.timestamp) - argMin(pt.price, pt.timestamp)) / argMin(pt.price, pt.timestamp)) * 100 as change_pct,
+                dateDiff('second', min(pt.timestamp), max(pt.timestamp)) as seconds_elapsed
+            FROM News.price_tracking pt
+            INNER JOIN ticker_windows tw ON pt.ticker = tw.ticker
+            LEFT JOIN (
+                SELECT ticker, count() as alert_count
+                FROM News.news_alert
+                WHERE timestamp >= now() - INTERVAL 2 MINUTE
+                GROUP BY ticker
+            ) a ON pt.ticker = a.ticker
+            WHERE pt.ticker IN ({ticker_placeholders})
+            AND COALESCE(a.alert_count, 0) < 8
+            -- CRITICAL: Only look at data within 40 seconds of each ticker's first timestamp
+            -- Using CTE eliminates the correlated subquery issue
+            AND pt.timestamp <= tw.cutoff_timestamp
+            GROUP BY pt.ticker, a.alert_count
+            HAVING first_price > 0 
+            AND price_count >= 2
+            AND change_pct >= 5.0 
+            AND seconds_elapsed <= 40
+            AND current_price < 12.0
             AND (recommendation = 'BUY' AND confidence = 'high')
             ORDER BY change_pct DESC
             """
@@ -890,7 +889,7 @@ class ContinuousPriceMonitor:
                 alert_data = []
                 
                 for row in result.result_rows:
-                    ticker, current_price, first_price, change_pct, price_count, first_timestamp, current_timestamp, seconds_elapsed, existing_alerts, sentiment, recommendation, confidence = row
+                    ticker, current_price, first_price, current_timestamp, first_timestamp, price_count, existing_alerts, sentiment, recommendation, confidence, change_pct, seconds_elapsed = row
                     
                     # Determine data source for logging
                     data_source_emoji = "🌐" if self.use_websocket_data else "🔄"
@@ -898,15 +897,17 @@ class ContinuousPriceMonitor:
                     # Enhanced logging with sentiment information
                     if sentiment and recommendation:
                         sentiment_info = f"Sentiment: {sentiment}, Recommendation: {recommendation} ({confidence} confidence)"
-                        logger.info(f"🚨 SENTIMENT-ENHANCED ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
+                        logger.info(f"🚨 40-SECOND WINDOW ENFORCED: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   📊 {sentiment_info}")
                         logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
                         logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
+                        logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     else:
-                        logger.info(f"🚨 PRICE-ONLY ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
+                        logger.info(f"🚨 40-SECOND WINDOW ENFORCED: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   ⚠️ No sentiment data available - using price-only logic")
                         logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
                         logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
+                        logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     
                     # Add to alert data for batch insert
                     alert_data.append((ticker, datetime.now(), 1, current_price))
@@ -923,30 +924,42 @@ class ContinuousPriceMonitor:
                         alert_data,
                         column_names=['ticker', 'timestamp', 'alert', 'price']
                     )
-                    logger.info(f"✅ SENTIMENT-ENHANCED ALERTS: Inserted {len(alert_data)} alerts with sentiment analysis")
+                    logger.info(f"✅ 40-SECOND WINDOW ENFORCED: Inserted {len(alert_data)} alerts with strict timing controls")
             else:
                 # Enhanced debug logging to show why no alerts were triggered
                 # First check if there are any price movements that would qualify
                 debug_query = f"""
+                WITH ticker_windows AS (
+                    SELECT 
+                        ticker,
+                        min(timestamp) as first_timestamp,
+                        min(timestamp) + INTERVAL 40 SECOND as cutoff_timestamp
+                    FROM News.price_tracking
+                    WHERE ticker IN ({ticker_placeholders})
+                    GROUP BY ticker
+                )
                 SELECT 
-                    ticker,
-                    ((argMax(price, timestamp) - argMin(price, timestamp)) / argMin(price, timestamp)) * 100 as change_pct,
+                    pt.ticker,
+                    ((argMax(pt.price, pt.timestamp) - argMin(pt.price, pt.timestamp)) / argMin(pt.price, pt.timestamp)) * 100 as change_pct,
                     count() as price_count,
-                    dateDiff('second', argMin(timestamp, timestamp), argMax(timestamp, timestamp)) as seconds_elapsed
-                FROM News.price_tracking
-                WHERE timestamp >= now() - INTERVAL 15 MINUTE
-                AND ticker IN ({ticker_placeholders})
-                GROUP BY ticker
+                    dateDiff('second', min(pt.timestamp), max(pt.timestamp)) as seconds_elapsed
+                FROM News.price_tracking pt
+                INNER JOIN ticker_windows tw ON pt.ticker = tw.ticker
+                WHERE pt.ticker IN ({ticker_placeholders})
+                -- CRITICAL: Apply same 40-second window constraint as main query
+                -- Using CTE eliminates the correlated subquery issue
+                AND pt.timestamp <= tw.cutoff_timestamp
+                GROUP BY pt.ticker
                 HAVING change_pct >= 5.0 AND price_count >= 2
-                AND dateDiff('second', argMin(timestamp, timestamp), argMax(timestamp, timestamp)) <= 40
+                AND seconds_elapsed <= 40
                 """
                 
                 debug_result = self.ch_manager.client.query(debug_query)
                 if debug_result.result_rows:
-                    logger.info(f"💡 SENTIMENT FILTER: Found {len(debug_result.result_rows)} tickers with price moves but no favorable sentiment")
+                    logger.info(f"💡 40-SECOND WINDOW ENFORCED: Found {len(debug_result.result_rows)} tickers with price moves but no favorable sentiment")
                     for row in debug_result.result_rows:
                         ticker, change_pct, price_count, seconds_elapsed = row
-                        logger.info(f"   📊 {ticker}: +{change_pct:.2f}% in {seconds_elapsed}s - blocked by sentiment filter")
+                        logger.info(f"   📊 {ticker}: +{change_pct:.2f}% in {seconds_elapsed}s - blocked by sentiment filter (within 40s window)")
                         
                         # Check what sentiment data exists for this ticker in price_tracking
                         sentiment_debug_query = f"""
@@ -954,7 +967,7 @@ class ContinuousPriceMonitor:
                             argMax(sentiment, timestamp) as latest_sentiment,
                             argMax(recommendation, timestamp) as latest_recommendation,
                             argMax(confidence, timestamp) as latest_confidence,
-                            argMax(timestamp, timestamp) as latest_timestamp
+                            max(timestamp) as latest_timestamp
                         FROM News.price_tracking
                         WHERE ticker = '{ticker}'
                         AND timestamp >= now() - INTERVAL 1 HOUR

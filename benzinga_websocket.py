@@ -267,6 +267,26 @@ class BenzingaWebSocketScraper:
                 logger.warning(f"⚠️ Invalid ticker format: '{ticker_string}'")
                 return None
 
+    def clean_content_for_sentiment_analysis(self, content: str) -> str:
+        """Clean content using the same process as the backtest for consistent 4D prompt input"""
+        if not content:
+            return ""
+        
+        try:
+            # Apply the same cleaning logic as the backtest
+            clean_content = content.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+            clean_content = ''.join(char if ord(char) >= 32 or char in '\n\r\t' else ' ' for char in clean_content)
+            
+            # Remove extra spaces
+            clean_content = ' '.join(clean_content.split())
+            
+            logger.debug(f"Content cleaning: {len(content)} -> {len(clean_content)} chars")
+            return clean_content
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning content for sentiment analysis: {e}")
+            return content
+
     def clean_html_content(self, html_content: str) -> str:
         """Clean HTML content to plain text, similar to sentiment_analyzer scraping logic"""
         if not html_content:
@@ -382,6 +402,10 @@ class BenzingaWebSocketScraper:
             content_hash = self.generate_content_hash(title, url)
             
             for ticker in found_tickers:
+                # Clean the content using the same process as backtest
+                raw_content = self.clean_html_content(body) if body else self.clean_html_content(title)
+                cleaned_content = self.clean_content_for_sentiment_analysis(raw_content)
+                
                 article = {
                     'source': 'Benzinga_WebSocket',
                     'ticker': ticker,  # Individual ticker per article
@@ -389,7 +413,7 @@ class BenzingaWebSocketScraper:
                     'published_utc': created_at,  # Store raw string as per schema
                     'article_url': url,
                     'summary': title,
-                    'full_content': self.clean_html_content(body) if body else self.clean_html_content(title),  # Read entire article content
+                    'full_content': cleaned_content,  # Use cleaned content for consistent 4D prompt input
                     'detected_at': datetime.now(),
                     'processing_latency_ms': 0,
                     'market_relevant': 1,
