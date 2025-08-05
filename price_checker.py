@@ -816,15 +816,7 @@ class ContinuousPriceMonitor:
         """
         Check for 5%+ price increases WITH sentiment analysis - ONLY trigger alerts when price moves 5% AND sentiment is 'BUY' with high confidence
         
-        CRITICAL FIX: This method now implements the EXACT solution from Architecture.md to prevent alerts outside the 40-second window.
-        
-        PREVIOUS BUG: The old CTE approach used min(timestamp) from ALL historical data (up to 7 days due to TTL),
-        which allowed alerts like VERB to trigger 30 minutes after news release.
-        
-        CURRENT SOLUTION: Uses a CTE to pre-calculate the 40-second cutoff timestamp for each ticker, 
-        eliminating the correlated subquery that was causing ClickHouse errors.
-        
-        This ensures alerts ONLY trigger within 40 seconds of the FIRST price entry for each ticker.
+        SIMPLE 40-SECOND WINDOW: For each ticker, get the FIRST timestamp, then only allow alerts within 40 seconds of that first timestamp.
         """
         try:
             if not self.active_tickers:
@@ -834,14 +826,10 @@ class ContinuousPriceMonitor:
             ticker_list = list(self.active_tickers)
             ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
             
-            # CRITICAL FIX: Use CTE to eliminate correlated subquery
-            # This resolves the ClickHouse "allow_experimental_correlated_subqueries" error
+            # SIMPLE AND CORRECT: Get first timestamp per ticker, then filter by 40-second window
             query = f"""
-            WITH ticker_windows AS (
-                SELECT 
-                    ticker,
-                    min(timestamp) as first_timestamp,
-                    min(timestamp) + INTERVAL 40 SECOND as cutoff_timestamp
+            WITH ticker_first_timestamps AS (
+                SELECT ticker, min(timestamp) as first_timestamp
                 FROM News.price_tracking
                 WHERE ticker IN ({ticker_placeholders})
                 GROUP BY ticker
@@ -860,7 +848,7 @@ class ContinuousPriceMonitor:
                 ((argMax(pt.price, pt.timestamp) - argMin(pt.price, pt.timestamp)) / argMin(pt.price, pt.timestamp)) * 100 as change_pct,
                 dateDiff('second', min(pt.timestamp), max(pt.timestamp)) as seconds_elapsed
             FROM News.price_tracking pt
-            INNER JOIN ticker_windows tw ON pt.ticker = tw.ticker
+            INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
             LEFT JOIN (
                 SELECT ticker, count() as alert_count
                 FROM News.news_alert
@@ -869,9 +857,8 @@ class ContinuousPriceMonitor:
             ) a ON pt.ticker = a.ticker
             WHERE pt.ticker IN ({ticker_placeholders})
             AND COALESCE(a.alert_count, 0) < 8
-            -- CRITICAL: Only look at data within 40 seconds of each ticker's first timestamp
-            -- Using CTE eliminates the correlated subquery issue
-            AND pt.timestamp <= tw.cutoff_timestamp
+            -- SIMPLE: Only include data within 40 seconds of the first timestamp
+            AND pt.timestamp <= tft.first_timestamp + INTERVAL 40 SECOND
             GROUP BY pt.ticker, a.alert_count
             HAVING first_price > 0 
             AND price_count >= 2
@@ -929,11 +916,8 @@ class ContinuousPriceMonitor:
                 # Enhanced debug logging to show why no alerts were triggered
                 # First check if there are any price movements that would qualify
                 debug_query = f"""
-                WITH ticker_windows AS (
-                    SELECT 
-                        ticker,
-                        min(timestamp) as first_timestamp,
-                        min(timestamp) + INTERVAL 40 SECOND as cutoff_timestamp
+                WITH ticker_first_timestamps AS (
+                    SELECT ticker, min(timestamp) as first_timestamp
                     FROM News.price_tracking
                     WHERE ticker IN ({ticker_placeholders})
                     GROUP BY ticker
@@ -944,11 +928,10 @@ class ContinuousPriceMonitor:
                     count() as price_count,
                     dateDiff('second', min(pt.timestamp), max(pt.timestamp)) as seconds_elapsed
                 FROM News.price_tracking pt
-                INNER JOIN ticker_windows tw ON pt.ticker = tw.ticker
+                INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
                 WHERE pt.ticker IN ({ticker_placeholders})
-                -- CRITICAL: Apply same 40-second window constraint as main query
-                -- Using CTE eliminates the correlated subquery issue
-                AND pt.timestamp <= tw.cutoff_timestamp
+                -- SIMPLE: Apply same 40-second window constraint as main query
+                AND pt.timestamp <= tft.first_timestamp + INTERVAL 40 SECOND
                 GROUP BY pt.ticker
                 HAVING change_pct >= 5.0 AND price_count >= 2
                 AND seconds_elapsed <= 40
