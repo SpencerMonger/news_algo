@@ -691,6 +691,9 @@ class BenzingaWebSocketScraper:
             if inserted_count > 0:
                 logger.debug(f"💾 #{index:2d} INSERTED (FALLBACK): {ticker} -> Database")
                 return True
+            elif inserted_count == -1:
+                logger.debug(f"📝 #{index:2d} DUPLICATE SKIPPED (FALLBACK): {ticker} -> Database (already exists)")
+                return True  # Duplicate skip is considered successful
             else:
                 logger.error(f"❌ #{index:2d} INSERT FAILED (FALLBACK): {ticker}")
                 return False

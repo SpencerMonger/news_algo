@@ -1038,6 +1038,9 @@ Respond with JSON:
             if inserted_count > 0:
                 logger.debug(f"💾 #{index:2d} INSERTED: {ticker} -> {table_name} table ({insert_time:.2f}s)")
                 return True
+            elif inserted_count == -1:
+                logger.debug(f"📝 #{index:2d} DUPLICATE SKIPPED: {ticker} -> {table_name} table (already exists)")
+                return True  # Duplicate skip is considered successful
             else:
                 logger.error(f"❌ #{index:2d} INSERT FAILED: {ticker} -> {table_name} table")
                 return False

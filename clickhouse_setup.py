@@ -354,7 +354,7 @@ class ClickHouseManager:
             # Skip if no new articles to insert
             if not data_rows:
                 article_logger.info("No new articles to insert (all were duplicates)")
-                return 0
+                return -1  # Return -1 to indicate duplicates were skipped, not failure
             
             # Column names for insertion
             columns = [
