@@ -2,6 +2,8 @@ import asyncio
 import logging
 import requests
 import json
+import time
+import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from clickhouse_setup import ClickHouseManager, setup_logging
@@ -9,8 +11,8 @@ import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import aiohttp
-import os
 from dotenv import load_dotenv
+import argparse
 
 # Load environment variables
 load_dotenv()
@@ -19,15 +21,23 @@ load_dotenv()
 logger = setup_logging()
 
 class SentimentAnalyzer:
+    """
+    Standalone sentiment analysis tool that mirrors the live system logic
+    Uses the same 4D timing and urgency prompt as the production system
+    """
+    
     def __init__(self):
         # Claude API configuration
+        self.claude_api_key = os.getenv('ANTHROPIC_API_KEY')
+        if not self.claude_api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+        
         self.claude_endpoint = "https://api.anthropic.com/v1/messages"
-        self.api_key = os.getenv('ANTHROPIC_API_KEY')
         self.model = "claude-3-5-sonnet-20240620"
+        self.session = None
         
         self.ch_manager = ClickHouseManager()
         self.ch_manager.connect()
-        self.session = None
     
     async def _ensure_session(self):
         """Ensure aiohttp session is initialized"""
@@ -42,58 +52,20 @@ class SentimentAnalyzer:
                 ),
                 headers={
                     'anthropic-version': '2023-06-01',
-                    'x-api-key': self.api_key,
+                    'x-api-key': self.claude_api_key,
                     'content-type': 'application/json'
                 }
             )
     
-    def scrape_article_content(self, url: str, max_chars: int = 6000) -> str:
-        """Scrape article content from URL, limited to max_chars"""
+    def scrape_article_content(self, url: str, max_chars: int = 1500) -> str:
+        """Scrape article content from URL, limited to max_chars - SYNCHRONOUS VERSION"""
         try:
-            # Multiple User-Agent headers to try
-            user_agents = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0'
-            ]
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
             
-            response = None
-            for i, user_agent in enumerate(user_agents):
-                try:
-                    headers = {
-                        'User-Agent': user_agent,
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Connection': 'keep-alive',
-                        'Upgrade-Insecure-Requests': '1'
-                    }
-                    
-                    response = requests.get(url, headers=headers, timeout=15)
-                    response.raise_for_status()
-                    logger.info(f"✅ Successfully fetched with User-Agent #{i+1}")
-                    break
-                    
-                except requests.exceptions.HTTPError as e:
-                    if i == len(user_agents) - 1:  # Last attempt
-                        logger.error(f"❌ All User-Agent attempts failed. Last error: {e}")
-                        raise
-                    else:
-                        logger.warning(f"⚠️ User-Agent #{i+1} failed ({e.response.status_code}), trying next...")
-                        continue
-                except Exception as e:
-                    if i == len(user_agents) - 1:  # Last attempt
-                        logger.error(f"❌ All User-Agent attempts failed. Last error: {e}")
-                        raise
-                    else:
-                        logger.warning(f"⚠️ User-Agent #{i+1} failed ({e}), trying next...")
-                        continue
-            
-            if not response:
-                logger.error("❌ Failed to fetch URL with any User-Agent")
-                return ""
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -101,31 +73,23 @@ class SentimentAnalyzer:
             for script in soup(["script", "style"]):
                 script.decompose()
             
-            # Site-specific extraction methods
+            # Try to extract article content based on the URL domain
             article_content = ""
-            domain = urlparse(url).netloc.lower()
             
-            # Benzinga-specific extraction
-            if 'benzinga.com' in domain:
+            if 'benzinga.com' in url:
                 article_content = self._extract_benzinga_content(soup)
-                
-            # BusinessWire-specific extraction
-            elif 'businesswire.com' in domain:
+            elif 'businesswire.com' in url:
                 article_content = self._extract_businesswire_content(soup)
-                
-            # PR Newswire-specific extraction
-            elif 'prnewswire.com' in domain:
+            elif 'prnewswire.com' in url:
                 article_content = self._extract_prnewswire_content(soup)
-                
-            # Yahoo Finance-specific extraction
-            elif 'finance.yahoo.com' in domain:
+            elif 'finance.yahoo.com' in url:
                 article_content = self._extract_yahoo_finance_content(soup)
-                
-            # MarketWatch-specific extraction
-            elif 'marketwatch.com' in domain:
+            elif 'marketwatch.com' in url:
                 article_content = self._extract_marketwatch_content(soup)
-                
-            # Generic fallback for other sites
+            else:
+                article_content = self._extract_generic_content(soup)
+            
+            # Fallback to generic extraction if specific method fails
             if not article_content or len(article_content) < 100:
                 article_content = self._extract_generic_content(soup)
             
@@ -138,7 +102,7 @@ class SentimentAnalyzer:
             if len(clean_content) > max_chars:
                 clean_content = clean_content[:max_chars]
                 
-            logger.info(f"Scraped content: {len(clean_content)} characters from {domain}")
+            logger.info(f"Scraped content: {len(clean_content)} characters")
             return clean_content
             
         except Exception as e:
@@ -262,7 +226,7 @@ class SentimentAnalyzer:
         return ' '.join(chunk for chunk in chunks if chunk)
     
     def create_sentiment_prompt(self, article: Dict[str, Any]) -> str:
-        """Create a prompt for sentiment analysis"""
+        """Create the 4D timing and urgency prompt - EXACT COPY from live system"""
         ticker = article.get('ticker', 'UNKNOWN')
         headline = article.get('headline', '')
         summary = article.get('summary', '')
@@ -272,7 +236,7 @@ class SentimentAnalyzer:
         # Always scrape full content from URL if available
         if article_url:
             logger.info(f"Scraping full content from URL: {article_url}")
-            scraped_content = self.scrape_article_content(article_url, max_chars=6000)
+            scraped_content = self.scrape_article_content(article_url, max_chars=1500)
             if scraped_content:
                 content_to_analyze = scraped_content
                 logger.info(f"Using scraped content: {len(content_to_analyze)} characters")
@@ -281,36 +245,43 @@ class SentimentAnalyzer:
         else:
             content_to_analyze = full_content if full_content else f"{headline}\n\n{summary}"
         
-        # Apply 6K character limit to prevent token overflow
-        content_to_analyze = content_to_analyze[:6000] if content_to_analyze else f"{headline}\n\n{summary}"
-        
-        prompt = f"""
-Analyze the following news article about {ticker} and determine if it suggests a BUY, SELL, or HOLD signal based on the sentiment and potential market impact.
+        # Apply 1500 character limit to match 4D prompt strategy from live system
+        content_to_analyze = content_to_analyze[:1500] if content_to_analyze else f"{headline}\n\n{summary}"
 
-Article Content:
+        # 4D Timing and Urgency Prompt - EXACT COPY from sentiment_service.py
+        prompt = f"""Analyze this financial news for immediate market impact timing.
+
+ARTICLE CONTENT:
 {content_to_analyze}
 
-Instructions:
-1. Analyze the sentiment (positive, negative, neutral)
-2. Consider the potential market impact on stock price
-3. Provide a clear recommendation:
-   - BUY: For positive sentiment with strong bullish indicators
-   - SELL: For negative sentiment with strong bearish indicators  
-   - HOLD: For neutral sentiment or unclear market impact
-4. Rate confidence as high, medium, or low
-5. Give a brief explanation (1-2 sentences)
+TIMING ANALYSIS: Determine if this news will cause immediate explosive price action (hours/days) or delayed appreciation.
 
-Respond in this exact JSON format:
+IMMEDIATE IMPACT CATALYSTS (BUY + high confidence):
+- FDA approvals, merger announcements, major contract wins
+- Earnings surprises with immediate market implications
+- Breaking regulatory decisions or legal victories
+- Emergency use authorizations or critical partnerships
+
+DELAYED IMPACT NEWS (BUY + medium confidence):
+- Product development milestones with future potential
+- Strategic initiatives with 6-12 month timelines
+- Market expansion plans requiring execution time
+- Research results requiring further development
+
+LOW IMPACT/SPECULATIVE (HOLD):
+- Early-stage research or development updates
+- Management commentary without concrete announcements
+- Industry trend discussions without company-specific catalysts
+- Vague future planning statements
+
+Focus on: Will this move the stock price within 24-48 hours?
+
+Respond with JSON:
 {{
-    "ticker": "{ticker}",
-    "sentiment": "positive/negative/neutral",
-    "recommendation": "BUY/SELL/HOLD",
+    "recommendation": "BUY/HOLD/SELL",
     "confidence": "high/medium/low",
-    "explanation": "Brief explanation of your reasoning"
-}}
-
-Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL").
-"""
+    "reasoning": "Immediate impact timing assessment and catalyst urgency analysis"
+}}"""
         return prompt
         
     async def query_claude(self, prompt: str) -> Optional[Dict[str, Any]]:
@@ -460,10 +431,9 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 confidence = analysis.get('confidence', 'unknown')
                 
                 print(f"✅ ANALYSIS SUCCESSFUL:")
-                print(f"   Sentiment: {analysis.get('sentiment', 'unknown')}")
                 print(f"   Recommendation: {recommendation}")
                 print(f"   Confidence: {confidence}")
-                print(f"   Explanation: {analysis.get('explanation', 'No explanation provided')}")
+                print(f"   Reasoning: {analysis.get('reasoning', 'No reasoning provided')}")
                 
                 # Store result for summary
                 ticker_results.append({
@@ -558,7 +528,6 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             
             if analysis and 'error' not in analysis:
                 result = {
-                    'sentiment': analysis.get('sentiment', 'unknown'),
                     'recommendation': analysis.get('recommendation', 'unknown'),
                     'confidence': analysis.get('confidence', 'unknown')
                 }
@@ -607,19 +576,14 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             # No event loop exists, create one
             return asyncio.run(coro)
 
-    def test_claude_connection(self):
-        """Test connection to Claude API"""
+    async def test_claude_connection(self):
+        """Test connection to Claude API - ASYNC VERSION"""
         print("Testing Claude API connection...")
         
         test_prompt = "Hello, please respond with a simple JSON object containing 'status': 'connected'"
         
         try:
-            # Run analysis in async context
-            async def run_test():
-                return await self.query_claude(test_prompt)
-            
-            # Handle event loop properly
-            response = self._run_async_safely(run_test())
+            response = await self.query_claude(test_prompt)
             
             if response and 'error' not in response:
                 print("✅ Claude API connection successful!")
@@ -634,33 +598,47 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             return False
     
     def close(self):
-        """Close ClickHouse connection and aiohttp session"""
-        if self.ch_manager:
-            self.ch_manager.close()
-        if self.session:
-            # Use asyncio.run to properly close the session
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If loop is running, schedule the close for later
-                    loop.create_task(self.session.close())
-                else:
-                    # If loop is not running, we can run it
-                    asyncio.run(self.session.close())
-            except RuntimeError:
-                # If we can't get the loop, try to close synchronously
+        """Close connections and cleanup resources"""
+        try:
+            if self.session:
+                # Schedule session closure in the event loop if it's running
+                import asyncio
                 try:
-                    # Create a new event loop just for cleanup
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(self.session.close())
-                    loop.close()
-                except Exception:
-                    # If all else fails, just set to None
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If loop is running, schedule the cleanup
+                        loop.create_task(self.session.close())
+                    else:
+                        # If loop is not running, run the cleanup synchronously
+                        asyncio.run(self.session.close())
+                except RuntimeError:
+                    # Event loop is closed or not available, skip session cleanup
                     pass
-            finally:
                 self.session = None
+                
+            if self.ch_manager:
+                self.ch_manager.close()
+                
+            logger.info("SentimentAnalyzer cleanup completed")
+            
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
 
+    async def async_close(self):
+        """Async version of close for proper cleanup"""
+        try:
+            if self.session:
+                await self.session.close()
+                self.session = None
+                
+            if self.ch_manager:
+                self.ch_manager.close()
+                
+            logger.info("SentimentAnalyzer async cleanup completed")
+            
+        except Exception as e:
+            logger.warning(f"Error during async cleanup: {e}")
+    
     async def debug_scraping(self, url: str):
         """Debug function to show exactly what content is being scraped"""
         print(f"\n{'='*80}")
@@ -691,10 +669,24 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 
                 if analysis and 'error' not in analysis:
                     print(f"✅ SENTIMENT ANALYSIS SUCCESSFUL:")
-                    print(f"   Sentiment: {analysis.get('sentiment', 'unknown')}")
                     print(f"   Recommendation: {analysis.get('recommendation', 'unknown')}")
                     print(f"   Confidence: {analysis.get('confidence', 'unknown')}")
-                    print(f"   Explanation: {analysis.get('explanation', 'No explanation provided')}")
+                    
+                    # Map 4D prompt "reasoning" field to "explanation" for display
+                    reasoning = analysis.get('reasoning', analysis.get('explanation', 'No reasoning provided'))
+                    print(f"   Reasoning: {reasoning}")
+                    
+                    # Add sentiment mapping based on recommendation (4D prompt doesn't return sentiment)
+                    recommendation = analysis.get('recommendation', 'HOLD')
+                    if recommendation == 'BUY':
+                        sentiment = 'positive'
+                    elif recommendation == 'SELL':
+                        sentiment = 'negative'
+                    else:  # HOLD
+                        sentiment = 'neutral'
+                    
+                    print(f"   Derived Sentiment: {sentiment}")
+                    
                 else:
                     print(f"❌ SENTIMENT ANALYSIS FAILED:")
                     if analysis:
@@ -782,49 +774,72 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
             print(f"❌ Error in debug: {e}")
 
     async def analyze_single_url(self, url: str, ticker: str = "UNKNOWN"):
-        """Analyze a single URL for sentiment"""
+        """Analyze a single URL for sentiment using 4D prompt"""
         print(f"\n{'='*80}")
-        print(f"ANALYZING SINGLE URL")
+        print(f"ANALYZING SINGLE URL - 4D TIMING & URGENCY ANALYSIS")
         print(f"{'='*80}")
         print(f"URL: {url}")
         print(f"Ticker: {ticker}")
+        print(f"Model: {self.model}")
         print(f"{'='*80}")
         
-        # Create a test article from the URL
-        article = {
-            'ticker': ticker,
-            'headline': 'Single URL Analysis',
-            'summary': 'Analyzing single URL provided by user',
-            'full_content': '',
-            'article_url': url,
-            'source': 'User Input',
-            'timestamp': datetime.now()
-        }
-        
-        # Create prompt and analyze
-        prompt = self.create_sentiment_prompt(article)
-        analysis = await self.query_claude(prompt)
-        
-        if analysis and 'error' not in analysis:
-            print(f"✅ ANALYSIS SUCCESSFUL:")
-            print(f"   Sentiment: {analysis.get('sentiment', 'unknown')}")
-            print(f"   Recommendation: {analysis.get('recommendation', 'unknown')}")
-            print(f"   Confidence: {analysis.get('confidence', 'unknown')}")
-            print(f"   Explanation: {analysis.get('explanation', 'No explanation provided')}")
+        try:
+            # Ensure session is ready before starting
+            await self._ensure_session()
             
-            logger.info(f"SINGLE URL ANALYSIS - {ticker}: {analysis.get('recommendation', 'unknown')} "
-                       f"({analysis.get('confidence', 'unknown')} confidence)")
-            return analysis
-        else:
-            print(f"❌ ANALYSIS FAILED:")
-            if analysis:
-                print(f"   Error: {analysis.get('error', 'Unknown error')}")
-                if 'raw_response' in analysis:
-                    print(f"   Raw Response: {analysis['raw_response'][:200]}...")
+            # Create a test article from the URL
+            article = {
+                'ticker': ticker,
+                'headline': 'Single URL Analysis',
+                'summary': 'Analyzing single URL provided by user',
+                'full_content': '',
+                'article_url': url,
+                'source': 'User Input',
+                'timestamp': datetime.now()
+            }
+            
+            # Create 4D prompt and analyze
+            prompt = self.create_sentiment_prompt(article)
+            analysis = await self.query_claude(prompt)
+            
+            if analysis and 'error' not in analysis:
+                print(f"✅ 4D ANALYSIS SUCCESSFUL:")
+                print(f"   Recommendation: {analysis.get('recommendation', 'unknown')}")
+                print(f"   Confidence: {analysis.get('confidence', 'unknown')}")
+                
+                # Map 4D prompt "reasoning" field to "explanation" for display
+                reasoning = analysis.get('reasoning', analysis.get('explanation', 'No reasoning provided'))
+                print(f"   Reasoning: {reasoning}")
+                
+                # Add sentiment mapping based on recommendation (4D prompt doesn't return sentiment)
+                recommendation = analysis.get('recommendation', 'HOLD')
+                if recommendation == 'BUY':
+                    sentiment = 'positive'
+                elif recommendation == 'SELL':
+                    sentiment = 'negative'
+                else:  # HOLD
+                    sentiment = 'neutral'
+                
+                print(f"   Derived Sentiment: {sentiment}")
+                
+                logger.info(f"4D URL ANALYSIS - {ticker}: {analysis.get('recommendation', 'unknown')} "
+                           f"({analysis.get('confidence', 'unknown')} confidence)")
+                return analysis
             else:
-                print(f"   Error: No response from Claude")
-            
-            logger.warning(f"SINGLE URL ANALYSIS FAILED - {ticker}: {analysis.get('error', 'Unknown') if analysis else 'No response'}")
+                print(f"❌ 4D ANALYSIS FAILED:")
+                if analysis:
+                    print(f"   Error: {analysis.get('error', 'Unknown error')}")
+                    if 'raw_response' in analysis:
+                        print(f"   Raw Response: {analysis['raw_response'][:200]}...")
+                else:
+                    print(f"   Error: No response from Claude")
+                
+                logger.warning(f"4D URL ANALYSIS FAILED - {ticker}: {analysis.get('error', 'Unknown') if analysis else 'No response'}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ ANALYSIS EXCEPTION: {str(e)}")
+            logger.error(f"Exception in analyze_single_url: {e}")
             return None
 
     async def test_url_consistency(self, url: str, test_runs: int = 3):
@@ -862,7 +877,6 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 
                 if analysis and 'error' not in analysis:
                     result = {
-                        'sentiment': analysis.get('sentiment', 'unknown'),
                         'recommendation': analysis.get('recommendation', 'unknown'),
                         'confidence': analysis.get('confidence', 'unknown'),
                         'content_length': len(scraped_content)
@@ -896,7 +910,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 print(f"Content lengths: {content_lengths}")
             
             # Check if all sentiment results are identical
-            sentiment_results = [(r['sentiment'], r['recommendation'], r['confidence']) for r in successful_results]
+            sentiment_results = [(r['recommendation'], r['confidence']) for r in successful_results]
             sentiment_consistent = len(set(sentiment_results)) == 1
             print(f"Sentiment consistent: {'✅ YES' if sentiment_consistent else '❌ NO'}")
             
@@ -907,7 +921,7 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
                 print(f"\nVariations found:")
                 unique_results = list({str(r): r for r in successful_results}.values())
                 for i, result in enumerate(unique_results, 1):
-                    count = sum(1 for r in successful_results if (r['sentiment'], r['recommendation'], r['confidence']) == (result['sentiment'], result['recommendation'], result['confidence']))
+                    count = sum(1 for r in successful_results if (r['recommendation'], r['confidence']) == (result['recommendation'], result['confidence']))
                     print(f"  {i}. {result['recommendation']} ({result['confidence']}) - appeared {count} times")
         else:
             print(f"❌ No successful runs to compare")
@@ -916,107 +930,73 @@ Important: Use exactly "BUY", "SELL", or "HOLD" for recommendation (not "NEUTRAL
 
 
 async def main_async():
-    """Async main execution function"""
-    import sys
+    """Main async function with argument parsing for URL analysis"""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='Sentiment Analyzer - 4D Timing & Urgency Analysis (matches live system)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Analyze a specific URL (ticker will be auto-detected or set to UNKNOWN)
+  python sentiment_analyzer.py --url "https://www.benzinga.com/news/earnings/..."
+
+  # Analyze a specific URL with explicit ticker
+  python sentiment_analyzer.py --url "https://www.benzinga.com/news/earnings/..." --ticker AAPL
+
+  # Run default database analysis
+  python sentiment_analyzer.py
+
+  # Test URL consistency
+  python sentiment_analyzer.py --url "https://..." --test-consistency 5
+        """
+    )
     
-    print("Starting News Sentiment Analysis with Claude API")
-    print("=" * 50)
+    parser.add_argument('--url', type=str, help='Specific URL to analyze')
+    parser.add_argument('--ticker', type=str, help='Ticker symbol (optional, defaults to UNKNOWN or auto-detected)')
+    parser.add_argument('--test-consistency', type=int, metavar='N', help='Test URL consistency N times')
+    parser.add_argument('--analyze-recent', action='store_true', help='Analyze recent articles from database')
+    
+    args = parser.parse_args()
     
     # Initialize analyzer
     analyzer = SentimentAnalyzer()
     
     try:
-        # Check for debug commands
-        if len(sys.argv) > 1:
-            arg1 = sys.argv[1]
-            
-            # Check if it's a URL (starts with http)
-            if arg1.startswith('http'):
-                # Single URL analysis
-                url = arg1
-                ticker = sys.argv[2] if len(sys.argv) > 2 else "UNKNOWN"
-                print(f"\n🔍 Analyzing single URL...")
-                await analyzer.analyze_single_url(url, ticker)
-                return
-            
-            elif arg1 == '--debug-scraping':
-                if len(sys.argv) > 2:
-                    # Debug specific URL
-                    url = sys.argv[2]
-                    print(f"\n🔍 Debugging URL scraping...")
-                    await analyzer.debug_scraping(url)
-                else:
-                    # Debug recent article
-                    print(f"\n🔍 Debugging recent article scraping...")
-                    await analyzer.debug_recent_article()
-                return
-            
-            elif arg1 == '--debug-ticker':
-                if len(sys.argv) > 2:
-                    ticker = sys.argv[2]
-                    print(f"\n🔍 Debugging scraping for ticker: {ticker}")
-                    await analyzer.debug_recent_article(ticker)
-                else:
-                    print("❌ Please provide a ticker symbol: --debug-ticker AAPL")
-                return
-            
-            elif arg1 == '--test-deterministic':
-                print("\n🧪 Running deterministic test...")
-                analyzer.test_deterministic_analysis(test_runs=5)
-                return
-            
-            elif arg1 == '--test-url-consistency':
-                if len(sys.argv) > 2:
-                    url = sys.argv[2]
-                    test_runs = 3 # Default to 3 runs
-                    if len(sys.argv) > 3:
-                        try:
-                            test_runs = int(sys.argv[3])
-                        except ValueError:
-                            print(f"Invalid number of test runs: {sys.argv[3]}. Using default: {test_runs}")
-                    print(f"\n🧪 Testing URL consistency for {test_runs} runs on {url}...")
-                    await analyzer.test_url_consistency(url, test_runs=test_runs)
-                else:
-                    print("❌ Please provide a URL: --test-url-consistency http://example.com")
-                return
-            
-            elif arg1 == '--help':
-                print("\n📖 USAGE:")
-                print("  python3 sentiment_analyzer.py                    # Run normal analysis")
-                print("  python3 sentiment_analyzer.py <URL>              # Analyze single URL")
-                print("  python3 sentiment_analyzer.py <URL> <TICKER>     # Analyze single URL with ticker")
-                print("  python3 sentiment_analyzer.py --debug-scraping   # Debug recent article scraping")
-                print("  python3 sentiment_analyzer.py --debug-scraping <URL>  # Debug specific URL")
-                print("  python3 sentiment_analyzer.py --debug-ticker <TICKER>  # Debug specific ticker")
-                print("  python3 sentiment_analyzer.py --test-deterministic     # Test AI consistency")
-                print("  python3 sentiment_analyzer.py --test-url-consistency <URL> [N]  # Test URL consistency (N=3 default)")
-                print("  python3 sentiment_analyzer.py --help                   # Show this help")
-                return
-        
-        # Test Claude API connection first
-        if not analyzer.test_claude_connection():
-            print("\n❌ Cannot connect to Claude API. Please ensure:")
-            print("1. ANTHROPIC_API_KEY is set in .env")
-            print("2. The API endpoint is accessible at https://api.anthropic.com/v1/messages")
+        # Test Claude connection first
+        if not await analyzer.test_claude_connection():
+            print("❌ Failed to connect to Claude API. Please check your ANTHROPIC_API_KEY.")
             return
+            
+        print("✅ Claude API connection successful")
+        print(f"🤖 Using model: {analyzer.model}")
+        print(f"📊 Using 4D Timing & Urgency Analysis (matches live system)")
         
-        print("\n🚀 Starting sentiment analysis...")
-        
-        # Analyze articles (default: last 24 hours, limit 100 to get all articles)
-        analyzer.analyze_articles(hours=24, limit=100)
+        # Handle different modes based on arguments
+        if args.url:
+            # Use provided ticker or default to UNKNOWN
+            ticker = args.ticker if args.ticker else "UNKNOWN"
+            
+            if args.test_consistency:
+                # Test URL consistency
+                await analyzer.test_url_consistency(args.url, args.test_consistency)
+            else:
+                # Single URL analysis
+                await analyzer.analyze_single_url(args.url, ticker)
+        elif args.analyze_recent:
+            # Analyze recent articles from database
+            analyzer.analyze_articles(hours=24, limit=10)
+        else:
+            # Default: analyze recent articles
+            print("\n🔍 No specific URL provided. Analyzing recent articles from database...")
+            analyzer.analyze_articles(hours=24, limit=10)
         
     except KeyboardInterrupt:
-        print("\n\n⚠️ Analysis interrupted by user")
-        logger.info("Analysis interrupted by user")
+        print("\n⚠️ Analysis interrupted by user")
     except Exception as e:
-        print(f"\n❌ Error during analysis: {e}")
-        logger.error(f"Error during analysis: {e}")
+        print(f"❌ Analysis failed: {e}")
+        logger.error(f"Analysis failed: {e}")
     finally:
-        # Proper async cleanup
-        if analyzer.session:
-            await analyzer.session.close()
-        if analyzer.ch_manager:
-            analyzer.ch_manager.close()
+        await analyzer.async_close()
         print("\n✅ Analysis completed")
 
 def main():

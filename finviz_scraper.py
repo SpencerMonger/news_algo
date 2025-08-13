@@ -222,8 +222,8 @@ class FinvizScraper:
                             if not ticker_text or len(ticker_text) > 10:  # Skip invalid tickers
                                 continue
                             
-                            # Apply 3-4 letter restriction - only store tickers with 3 or 4 letters
-                            if len(ticker_text) < 3 or len(ticker_text) > 4:
+                            # Apply 2-4 letter restriction - only store tickers with 2, 3, or 4 letters
+                            if len(ticker_text) < 2 or len(ticker_text) > 4:
                                 continue
                             
                             ticker_data = {
