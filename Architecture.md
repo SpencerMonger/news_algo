@@ -906,3 +906,97 @@ File Trigger → Price Checker → API Call → Price Analysis → Alert Generat
 News Published → WebSocket Receive → Ticker Extract → Trigger Create → Price Check → Alert Generate
      0s               ~0.1s              ~0.2s          ~0.3s         ~2.5s        ~3-5s
 ```
+
+---
+
+## RECENT CHANGES (UNTESTED) - August 18, 2025
+
+### Critical Bug Fix: 60-Second Window Enforcement + 2nd Price Baseline
+
+**Issue Identified**: On August 18, 2025, the 40-second window restriction failed for ASBP, causing alerts to be generated continuously for 30+ minutes instead of stopping after 40 seconds.
+
+**Root Cause Analysis**:
+- **Application-Level Bug**: The system was only enforcing the 40-second window at the **query level** (when checking for alerts) but NOT at the **price insertion level**
+- **Continuous Price Insertion**: Price data was being inserted every 2 seconds indefinitely for all active tickers
+- **Query Always Found Fresh Data**: Since new price data was continuously added, the alert query always found "recent" data that appeared to be within the window
+- **False Window Enforcement**: The query logging showed "40-SECOND WINDOW ENFORCED" but was actually processing data from hours later
+
+**Complete Solution Implemented**:
+
+#### 1. Application-Level Window Enforcement
+```python
+# NEW: Check window BEFORE any price operations
+async def get_tickers_within_60_second_window(self) -> Set[str]:
+    query = """
+    SELECT ticker, min(timestamp) as first_timestamp,
+           dateDiff('second', min(timestamp), now()) as seconds_since_first
+    FROM News.price_tracking
+    WHERE ticker IN (active_tickers)
+    GROUP BY ticker
+    HAVING seconds_since_first <= 60  # Extended from 40 to 60 seconds
+    """
+    # Returns only tickers still within the 60-second window
+    # Automatically removes expired tickers from active tracking
+
+# WEBSOCKET: Stop price insertion after 60 seconds
+async def process_websocket_prices(self):
+    valid_tickers = await self.get_tickers_within_60_second_window()
+    for ticker in websocket_buffer:
+        if ticker not in valid_tickers:
+            continue  # Skip expired tickers - NO MORE PRICE DATA INSERTED
+
+# REST API: Stop price calls after 60 seconds  
+async def track_prices_rest_fallback(self):
+    valid_tickers = await self.get_tickers_within_60_second_window()
+    # Only make API calls for valid tickers - NO MORE API CALLS FOR EXPIRED TICKERS
+```
+
+#### 2. Extended Trading Window (40s → 60s)
+- **Rationale**: Since we're now properly stopping price tracking altogether, we can afford a longer window
+- **Impact**: 50% more time to capture legitimate price movements
+- **All References Updated**: Query filters, logging messages, debug output
+
+#### 3. 2nd Price Baseline (NEW)
+**Issue**: Polygon's first price is often stale or incorrect, leading to inaccurate percentage calculations
+
+**Solution**: Use the 2nd price as baseline for all percentage calculations
+```sql
+-- NEW: Get 2nd price for each ticker
+ticker_second_prices AS (
+    SELECT ticker, price as second_price
+    FROM (
+        SELECT ticker, price,
+               ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY timestamp ASC) as rn
+        FROM News.price_tracking
+        WHERE ticker IN (active_tickers)
+    ) ranked
+    WHERE rn = 2  # Use 2nd price instead of 1st
+)
+
+-- Updated percentage calculation
+((current_price - COALESCE(second_price, first_price)) / COALESCE(second_price, first_price)) * 100 as change_pct
+```
+
+**Changes**:
+- **Baseline**: 1st price → 2nd price (with 1st price fallback)
+- **Minimum Data**: `price_count >= 2` → `price_count >= 3` (need 3 prices to have a valid 2nd price)
+- **Logging**: Shows `[2nd price]` to clarify baseline being used
+
+#### 4. Expected Behavior After Fix
+For any ticker (e.g., ASBP):
+- **Detection**: 12:30:03
+- **Price tracking starts**: 12:30:05 (1st price - potentially bad)
+- **2nd price captured**: 12:30:07 (baseline for calculations) ✅
+- **60-second window expires**: 12:31:05 ✅ 
+- **Price insertion STOPS**: After 12:31:05 ✅
+- **No more alerts**: After 12:31:05 ✅
+- **Percentage calculations**: Based on reliable 2nd price ✅
+
+#### 5. Technical Implementation Details
+- **Window Check Frequency**: Every 2 seconds during price processing cycles
+- **Automatic Cleanup**: Expired tickers are removed from `active_tickers` and `ticker_timestamps`
+- **ClickHouse Compatibility**: Uses CTEs and window functions (no subqueries)
+- **Performance**: Minimal overhead - single query per cycle to check all ticker windows
+- **Logging**: Enhanced to show 60s window enforcement and 2nd price baseline usage
+
+**Status**: ⚠️ **IMPLEMENTED BUT UNTESTED** - Requires production validation to confirm the fix resolves the infinite alert generation issue.

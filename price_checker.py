@@ -341,8 +341,16 @@ class ContinuousPriceMonitor:
             price_data = []
             processed_tickers = set()
             
+            # CRITICAL FIX: Check 40-second window BEFORE inserting price data
+            valid_tickers = await self.get_tickers_within_60_second_window()
+            
             for ticker, prices in self.websocket_price_buffer.items():
                 if not prices:
+                    continue
+                
+                # ENFORCE 60-SECOND WINDOW: Skip tickers outside the window
+                if ticker not in valid_tickers:
+                    logger.debug(f"⏰ WINDOW EXPIRED: Skipping price data for {ticker} (>60s since first timestamp)")
                     continue
                 
                 # Use the most recent price for each ticker
@@ -555,13 +563,20 @@ class ContinuousPriceMonitor:
         if not self.active_tickers:
             return
         
+        # CRITICAL FIX: Check 40-second window BEFORE making API calls
+        valid_tickers = await self.get_tickers_within_60_second_window()
+        
+        if not valid_tickers:
+            logger.debug("⏰ WINDOW EXPIRED: No tickers within 60-second window, skipping price tracking")
+            return
+        
         # OPTIMIZED: Track timing for performance monitoring
         start_time = time.time()
         
-        logger.info(f"🔄 REST FALLBACK: Processing {len(self.active_tickers)} tickers via REST API")
+        logger.info(f"🔄 REST FALLBACK: Processing {len(valid_tickers)} tickers via REST API (within 60s window)")
         
-        # Create parallel price fetching tasks
-        price_tasks = [self.get_current_price_rest_fallback(ticker) for ticker in self.active_tickers]
+        # Create parallel price fetching tasks ONLY for valid tickers
+        price_tasks = [self.get_current_price_rest_fallback(ticker) for ticker in valid_tickers]
         
         # Execute all price requests in parallel with REDUCED timeout
         try:
@@ -570,7 +585,7 @@ class ContinuousPriceMonitor:
                 timeout=2.0  # 2 seconds max - matches polling interval
             )
         except asyncio.TimeoutError:
-            logger.warning(f"⏱️ REST FALLBACK TIMEOUT: Price fetching took >2s for {len(self.active_tickers)} tickers - SKIPPING THIS CYCLE")
+            logger.warning(f"⏱️ REST FALLBACK TIMEOUT: Price fetching took >2s for {len(valid_tickers)} tickers - SKIPPING THIS CYCLE")
             return
         
         # Process results and prepare batch insert (same logic as WebSocket)
@@ -578,7 +593,7 @@ class ContinuousPriceMonitor:
         successful_prices = 0
         failed_tickers = []
         
-        for i, (ticker, price_result) in enumerate(zip(self.active_tickers, price_results)):
+        for i, (ticker, price_result) in enumerate(zip(valid_tickers, price_results)):
             if isinstance(price_result, Exception):
                 logger.debug(f"Exception getting price for {ticker}: {price_result}")
                 failed_tickers.append(ticker)
@@ -600,10 +615,10 @@ class ContinuousPriceMonitor:
         if price_data:
             # Get sentiment data for each ticker before inserting
             sentiment_data = {}
-            if self.active_tickers:
+            if valid_tickers:
                 try:
-                    # Get latest sentiment analysis for all active tickers
-                    ticker_list = list(self.active_tickers)
+                    # Get latest sentiment analysis for valid tickers only
+                    ticker_list = list(valid_tickers)
                     ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
                     
                     sentiment_query = f"""
@@ -675,7 +690,7 @@ class ContinuousPriceMonitor:
             
             # Enhanced logging with sentiment info
             sentiment_count = len([t for t in sentiment_data.values() if t['recommendation'] != 'HOLD'])
-            logger.info(f"🔄 REST FALLBACK: Tracked {successful_prices}/{len(self.active_tickers)} ticker prices in {total_time:.3f}s")
+            logger.info(f"🔄 REST FALLBACK: Tracked {successful_prices}/{len(valid_tickers)} ticker prices in {total_time:.3f}s")
             if sentiment_count > 0:
                 logger.info(f"🧠 SENTIMENT: {sentiment_count} tickers have non-neutral sentiment analysis")
             
@@ -816,7 +831,7 @@ class ContinuousPriceMonitor:
         """
         Check for 5%+ price increases WITH sentiment analysis - ONLY trigger alerts when price moves 5% AND sentiment is 'BUY' with high confidence
         
-        SIMPLE 40-SECOND WINDOW: For each ticker, get the FIRST timestamp, then only allow alerts within 40 seconds of that first timestamp.
+        SIMPLE 60-SECOND WINDOW: For each ticker, get the FIRST timestamp, then only allow alerts within 60 seconds of that first timestamp.
         """
         try:
             if not self.active_tickers:
@@ -826,29 +841,44 @@ class ContinuousPriceMonitor:
             ticker_list = list(self.active_tickers)
             ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
             
-            # SIMPLE AND CORRECT: Get first timestamp per ticker, then filter by 40-second window
+            # SIMPLE AND CORRECT: Get first timestamp per ticker, then filter by 60-second window
             query = f"""
             WITH ticker_first_timestamps AS (
                 SELECT ticker, min(timestamp) as first_timestamp
                 FROM News.price_tracking
                 WHERE ticker IN ({ticker_placeholders})
                 GROUP BY ticker
+            ),
+            ticker_second_prices AS (
+                SELECT 
+                    ticker,
+                    price as second_price
+                FROM (
+                    SELECT 
+                        ticker,
+                        price,
+                        ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY timestamp ASC) as rn
+                    FROM News.price_tracking
+                    WHERE ticker IN ({ticker_placeholders})
+                ) ranked
+                WHERE rn = 2
             )
             SELECT 
                 pt.ticker,
                 argMax(pt.price, pt.timestamp) as current_price,
-                argMin(pt.price, pt.timestamp) as first_price,
+                COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp)) as baseline_price,
                 max(pt.timestamp) as current_timestamp,
-                min(pt.timestamp) as first_timestamp,
+                tft.first_timestamp as first_timestamp,
                 count() as price_count,
                 COALESCE(a.alert_count, 0) as existing_alerts,
                 argMax(pt.sentiment, pt.timestamp) as sentiment,
                 argMax(pt.recommendation, pt.timestamp) as recommendation,
                 argMax(pt.confidence, pt.timestamp) as confidence,
-                ((argMax(pt.price, pt.timestamp) - argMin(pt.price, pt.timestamp)) / argMin(pt.price, pt.timestamp)) * 100 as change_pct,
-                dateDiff('second', min(pt.timestamp), max(pt.timestamp)) as seconds_elapsed
+                ((argMax(pt.price, pt.timestamp) - COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) / COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) * 100 as change_pct,
+                dateDiff('second', tft.first_timestamp, max(pt.timestamp)) as seconds_elapsed
             FROM News.price_tracking pt
             INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
+            LEFT JOIN ticker_second_prices tsp ON pt.ticker = tsp.ticker
             LEFT JOIN (
                 SELECT ticker, count() as alert_count
                 FROM News.news_alert
@@ -857,15 +887,15 @@ class ContinuousPriceMonitor:
             ) a ON pt.ticker = a.ticker
             WHERE pt.ticker IN ({ticker_placeholders})
             AND COALESCE(a.alert_count, 0) < 8
-            -- SIMPLE: Only include data within 40 seconds of the first timestamp
-            AND pt.timestamp <= tft.first_timestamp + INTERVAL 40 SECOND
-            GROUP BY pt.ticker, a.alert_count
-            HAVING first_price > 0 
-            AND price_count >= 2
+            -- SIMPLE: Only include data within 60 seconds of the first timestamp
+            AND pt.timestamp <= tft.first_timestamp + INTERVAL 60 SECOND
+            GROUP BY pt.ticker, a.alert_count, tft.first_timestamp, tsp.second_price
+            HAVING baseline_price > 0 
+            AND price_count >= 3
             AND change_pct >= 5.0 
-            AND seconds_elapsed <= 40
-            AND current_price < 12.0
-            AND (recommendation = 'BUY' AND confidence = 'high')
+            AND seconds_elapsed <= 60
+            AND current_price < 11.0
+            AND recommendation = 'BUY'
             ORDER BY change_pct DESC
             """
             
@@ -876,7 +906,7 @@ class ContinuousPriceMonitor:
                 alert_data = []
                 
                 for row in result.result_rows:
-                    ticker, current_price, first_price, current_timestamp, first_timestamp, price_count, existing_alerts, sentiment, recommendation, confidence, change_pct, seconds_elapsed = row
+                    ticker, current_price, baseline_price, current_timestamp, first_timestamp, price_count, existing_alerts, sentiment, recommendation, confidence, change_pct, seconds_elapsed = row
                     
                     # Determine data source for logging
                     data_source_emoji = "🌐" if self.use_websocket_data else "🔄"
@@ -884,13 +914,13 @@ class ContinuousPriceMonitor:
                     # Enhanced logging with sentiment information
                     if sentiment and recommendation:
                         sentiment_info = f"Sentiment: {sentiment}, Recommendation: {recommendation} ({confidence} confidence)"
-                        logger.info(f"🚨 40-SECOND WINDOW ENFORCED: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
+                        logger.info(f"🚨 60-SECOND WINDOW ENFORCED: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f} [2nd price]) in {seconds_elapsed}s")
                         logger.info(f"   📊 {sentiment_info}")
                         logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
                         logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
                         logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     else:
-                        logger.info(f"🚨 40-SECOND WINDOW ENFORCED: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${first_price:.4f}) in {seconds_elapsed}s")
+                        logger.info(f"🚨 60-SECOND WINDOW ENFORCED: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f} [2nd price]) in {seconds_elapsed}s")
                         logger.info(f"   ⚠️ No sentiment data available - using price-only logic")
                         logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
                         logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
@@ -900,7 +930,7 @@ class ContinuousPriceMonitor:
                     alert_data.append((ticker, datetime.now(), 1, current_price))
                     
                     # Log to price_move table
-                    await self.log_price_alert(ticker, current_price, first_price, change_pct)
+                    await self.log_price_alert(ticker, current_price, baseline_price, change_pct)
                     
                     self.stats['alerts_triggered'] += 1
                 
@@ -911,7 +941,7 @@ class ContinuousPriceMonitor:
                         alert_data,
                         column_names=['ticker', 'timestamp', 'alert', 'price']
                     )
-                    logger.info(f"✅ 40-SECOND WINDOW ENFORCED: Inserted {len(alert_data)} alerts with strict timing controls")
+                    logger.info(f"✅ 60-SECOND WINDOW ENFORCED: Inserted {len(alert_data)} alerts with strict timing controls")
             else:
                 # Enhanced debug logging to show why no alerts were triggered
                 # First check if there are any price movements that would qualify
@@ -921,28 +951,43 @@ class ContinuousPriceMonitor:
                     FROM News.price_tracking
                     WHERE ticker IN ({ticker_placeholders})
                     GROUP BY ticker
+                ),
+                ticker_second_prices AS (
+                    SELECT 
+                        ticker,
+                        price as second_price
+                    FROM (
+                        SELECT 
+                            ticker,
+                            price,
+                            ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY timestamp ASC) as rn
+                        FROM News.price_tracking
+                        WHERE ticker IN ({ticker_placeholders})
+                    ) ranked
+                    WHERE rn = 2
                 )
                 SELECT 
                     pt.ticker,
-                    ((argMax(pt.price, pt.timestamp) - argMin(pt.price, pt.timestamp)) / argMin(pt.price, pt.timestamp)) * 100 as change_pct,
+                    ((argMax(pt.price, pt.timestamp) - COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) / COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) * 100 as change_pct,
                     count() as price_count,
-                    dateDiff('second', min(pt.timestamp), max(pt.timestamp)) as seconds_elapsed
+                    dateDiff('second', tft.first_timestamp, max(pt.timestamp)) as seconds_elapsed
                 FROM News.price_tracking pt
                 INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
+                LEFT JOIN ticker_second_prices tsp ON pt.ticker = tsp.ticker
                 WHERE pt.ticker IN ({ticker_placeholders})
-                -- SIMPLE: Apply same 40-second window constraint as main query
-                AND pt.timestamp <= tft.first_timestamp + INTERVAL 40 SECOND
-                GROUP BY pt.ticker
-                HAVING change_pct >= 5.0 AND price_count >= 2
-                AND seconds_elapsed <= 40
+                -- SIMPLE: Apply same 60-second window constraint as main query
+                AND pt.timestamp <= tft.first_timestamp + INTERVAL 60 SECOND
+                GROUP BY pt.ticker, tft.first_timestamp, tsp.second_price
+                HAVING change_pct >= 5.0 AND price_count >= 3
+                AND seconds_elapsed <= 60
                 """
                 
                 debug_result = self.ch_manager.client.query(debug_query)
                 if debug_result.result_rows:
-                    logger.info(f"💡 40-SECOND WINDOW ENFORCED: Found {len(debug_result.result_rows)} tickers with price moves but no favorable sentiment")
+                    logger.info(f"💡 60-SECOND WINDOW ENFORCED: Found {len(debug_result.result_rows)} tickers with price moves but no favorable sentiment")
                     for row in debug_result.result_rows:
                         ticker, change_pct, price_count, seconds_elapsed = row
-                        logger.info(f"   📊 {ticker}: +{change_pct:.2f}% in {seconds_elapsed}s - blocked by sentiment filter (within 40s window)")
+                        logger.info(f"   📊 {ticker}: +{change_pct:.2f}% in {seconds_elapsed}s - blocked by sentiment filter (within 60s window)")
                         
                         # Check what sentiment data exists for this ticker in price_tracking
                         sentiment_debug_query = f"""
@@ -1221,6 +1266,91 @@ class ContinuousPriceMonitor:
             except Exception as e:
                 logger.error(f"Error in hybrid polling loop: {e}")
                 await asyncio.sleep(2.0)  # Continue with 2-second intervals even on error
+
+    async def get_tickers_within_60_second_window(self) -> Set[str]:
+        """
+        Get tickers whose FIRST price timestamp is within the last 60 seconds.
+        This prevents price data insertion for tickers that have exceeded the 60-second trading window.
+        IMPORTANT: New tickers with NO price data yet should be allowed to start tracking.
+        """
+        try:
+            if not self.active_tickers:
+                return set()
+            
+            # Convert active tickers to list for SQL query
+            ticker_list = list(self.active_tickers)
+            ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
+            
+            # Get first timestamp for each active ticker
+            query = f"""
+            SELECT 
+                ticker, 
+                min(timestamp) as first_timestamp,
+                dateDiff('second', min(timestamp), now()) as seconds_since_first
+            FROM News.price_tracking
+            WHERE ticker IN ({ticker_placeholders})
+            GROUP BY ticker
+            HAVING seconds_since_first <= 60
+            """
+            
+            result = self.ch_manager.client.query(query)
+            
+            # Extract tickers that are still within the 60-second window
+            valid_tickers_with_data = set()
+            
+            for row in result.result_rows:
+                ticker, first_timestamp, seconds_since_first = row
+                valid_tickers_with_data.add(ticker)
+                logger.debug(f"✅ WINDOW VALID: {ticker} - {seconds_since_first}s since first price")
+            
+            # CRITICAL FIX: Include tickers that have NO price data yet (new tickers)
+            tickers_with_no_data = self.active_tickers - valid_tickers_with_data
+            
+            # Check which of these actually have NO data vs expired data
+            if tickers_with_no_data:
+                # Check if these tickers have ANY price data at all
+                no_data_placeholders = ','.join([f"'{ticker}'" for ticker in tickers_with_no_data])
+                check_query = f"""
+                SELECT DISTINCT ticker
+                FROM News.price_tracking
+                WHERE ticker IN ({no_data_placeholders})
+                """
+                
+                check_result = self.ch_manager.client.query(check_query)
+                tickers_with_any_data = {row[0] for row in check_result.result_rows}
+                
+                # Tickers with no data at all = new tickers that should be allowed
+                truly_new_tickers = tickers_with_no_data - tickers_with_any_data
+                
+                # Tickers with data but not in valid window = expired tickers
+                expired_tickers = tickers_with_any_data
+                
+                if truly_new_tickers:
+                    logger.info(f"🆕 NEW TICKERS: {len(truly_new_tickers)} tickers have no price data yet, allowing tracking: {sorted(truly_new_tickers)}")
+                
+                if expired_tickers:
+                    logger.info(f"⏰ WINDOW EXPIRED: {len(expired_tickers)} tickers exceeded 60s window: {sorted(expired_tickers)}")
+                    # Remove expired tickers from active tracking
+                    for ticker in expired_tickers:
+                        self.active_tickers.discard(ticker)
+                        if ticker in self.ticker_timestamps:
+                            del self.ticker_timestamps[ticker]
+                
+                # Valid tickers = those within window + truly new tickers
+                valid_tickers = valid_tickers_with_data | truly_new_tickers
+            else:
+                valid_tickers = valid_tickers_with_data
+            
+            if valid_tickers:
+                logger.debug(f"✅ TRACKING ALLOWED: {len(valid_tickers)} tickers ready for price tracking: {sorted(valid_tickers)}")
+            
+            return valid_tickers
+            
+        except Exception as e:
+            logger.error(f"Error checking 60-second window: {e}")
+            # On error, return all active tickers to be safe and allow tracking
+            logger.warning(f"⚠️ Window check failed, allowing all {len(self.active_tickers)} active tickers to continue tracking")
+            return self.active_tickers
 
 
 # GLOBAL NOTIFICATION FUNCTION for immediate ticker notifications
