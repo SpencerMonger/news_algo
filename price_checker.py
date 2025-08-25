@@ -880,7 +880,9 @@ class ContinuousPriceMonitor:
             INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
             LEFT JOIN ticker_second_prices tsp ON pt.ticker = tsp.ticker
             LEFT JOIN (
-                SELECT ticker, count() as alert_count
+                SELECT ticker, 
+                       count() as alert_count,
+                       argMax(timestamp, timestamp) as last_alerted_timestamp
                 FROM News.news_alert
                 WHERE timestamp >= now() - INTERVAL 2 MINUTE
                 GROUP BY ticker
@@ -889,8 +891,9 @@ class ContinuousPriceMonitor:
             AND COALESCE(a.alert_count, 0) < 8
             -- SIMPLE: Only include data within 60 seconds of the first timestamp
             AND pt.timestamp <= tft.first_timestamp + INTERVAL 60 SECOND
-            GROUP BY pt.ticker, a.alert_count, tft.first_timestamp, tsp.second_price
-            HAVING baseline_price > 0 
+            GROUP BY pt.ticker, a.alert_count, tft.first_timestamp, tsp.second_price, a.last_alerted_timestamp
+            HAVING baseline_price > 0
+            AND (a.last_alerted_timestamp IS NULL OR current_timestamp > a.last_alerted_timestamp) 
             AND price_count >= 3
             AND change_pct >= 5.0 
             AND seconds_elapsed <= 60
@@ -926,8 +929,8 @@ class ContinuousPriceMonitor:
                         logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
                         logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     
-                    # Add to alert data for batch insert
-                    alert_data.append((ticker, datetime.now(), 1, current_price))
+                    # Add to alert data for batch insert - use current_timestamp (price data timestamp) for deduplication
+                    alert_data.append((ticker, current_timestamp, 1, current_price))
                     
                     # Log to price_move table
                     await self.log_price_alert(ticker, current_price, baseline_price, change_pct)

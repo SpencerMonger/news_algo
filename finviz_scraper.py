@@ -243,7 +243,10 @@ class FinvizScraper:
                                 'institutional_ownership': self.parse_table_value(cells[col_map.get('inst own', 14)].get_text().strip() if col_map.get('inst own', 14) and col_map.get('inst own', 14) < len(cells) else '0')
                             }
                             
-                            if ticker_data['ticker'] and ticker_data['ticker'] != '-':  # Only add valid tickers
+                            # Filter out Malaysian stocks and only add valid tickers
+                            if (ticker_data['ticker'] and 
+                                ticker_data['ticker'] != '-' and 
+                                ticker_data['country'].lower() != 'malaysia'):
                                 tickers.append(ticker_data)
                                 
                         except Exception as e:
