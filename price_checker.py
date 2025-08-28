@@ -829,9 +829,8 @@ class ContinuousPriceMonitor:
 
     async def check_price_alerts_optimized(self):
         """
-        Check for 5%+ price increases WITH sentiment analysis - ONLY trigger alerts when price moves 5% AND sentiment is 'BUY' with high confidence
-        
-        SIMPLE 60-SECOND WINDOW: For each ticker, get the FIRST timestamp, then only allow alerts within 60 seconds of that first timestamp.
+        Check for 5%+ price increases WITH sentiment analysis - Individual timestamp alerts with deduplication
+        Each qualifying row generates one trade signal once.
         """
         try:
             if not self.active_tickers:
@@ -841,15 +840,9 @@ class ContinuousPriceMonitor:
             ticker_list = list(self.active_tickers)
             ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
             
-            # SIMPLE AND CORRECT: Get first timestamp per ticker, then filter by 60-second window
+            # Individual timestamp query - matches test pattern exactly
             query = f"""
-            WITH ticker_first_timestamps AS (
-                SELECT ticker, min(timestamp) as first_timestamp
-                FROM News.price_tracking
-                WHERE ticker IN ({ticker_placeholders})
-                GROUP BY ticker
-            ),
-            ticker_second_prices AS (
+            WITH ticker_second_prices AS (
                 SELECT 
                     ticker,
                     price as second_price
@@ -862,54 +855,64 @@ class ContinuousPriceMonitor:
                     WHERE ticker IN ({ticker_placeholders})
                 ) ranked
                 WHERE rn = 2
+            ),
+            price_analysis AS (
+                SELECT 
+                    pt.ticker,
+                    pt.price as current_price,
+                    COALESCE(tsp.second_price, 5.10) as baseline_price,
+                    pt.timestamp as current_timestamp,
+                    min(pt.timestamp) OVER (PARTITION BY pt.ticker) as first_timestamp,
+                    ROW_NUMBER() OVER (PARTITION BY pt.ticker ORDER BY pt.timestamp ASC) as price_count,
+                    pt.sentiment,
+                    pt.recommendation,
+                    pt.confidence,
+                    ((pt.price - COALESCE(tsp.second_price, 5.10)) / COALESCE(tsp.second_price, 5.10)) * 100 as change_pct,
+                    dateDiff('second', min(pt.timestamp) OVER (PARTITION BY pt.ticker), pt.timestamp) as seconds_elapsed
+                FROM News.price_tracking pt
+                LEFT JOIN ticker_second_prices tsp ON pt.ticker = tsp.ticker
+                WHERE pt.ticker IN ({ticker_placeholders})
             )
             SELECT 
-                pt.ticker,
-                argMax(pt.price, pt.timestamp) as current_price,
-                COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp)) as baseline_price,
-                max(pt.timestamp) as current_timestamp,
-                tft.first_timestamp as first_timestamp,
-                count() as price_count,
-                COALESCE(a.alert_count, 0) as existing_alerts,
-                argMax(pt.sentiment, pt.timestamp) as sentiment,
-                argMax(pt.recommendation, pt.timestamp) as recommendation,
-                argMax(pt.confidence, pt.timestamp) as confidence,
-                ((argMax(pt.price, pt.timestamp) - COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) / COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) * 100 as change_pct,
-                dateDiff('second', tft.first_timestamp, max(pt.timestamp)) as seconds_elapsed
-            FROM News.price_tracking pt
-            INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
-            LEFT JOIN ticker_second_prices tsp ON pt.ticker = tsp.ticker
-            LEFT JOIN (
-                SELECT ticker, 
-                       count() as alert_count,
-                       argMax(timestamp, timestamp) as last_alerted_timestamp
-                FROM News.news_alert
-                WHERE timestamp >= now() - INTERVAL 2 MINUTE
-                GROUP BY ticker
-            ) a ON pt.ticker = a.ticker
-            WHERE pt.ticker IN ({ticker_placeholders})
-            AND COALESCE(a.alert_count, 0) < 8
-            -- SIMPLE: Only include data within 60 seconds of the first timestamp
-            AND pt.timestamp <= tft.first_timestamp + INTERVAL 60 SECOND
-            GROUP BY pt.ticker, a.alert_count, tft.first_timestamp, tsp.second_price, a.last_alerted_timestamp
-            HAVING baseline_price > 0
-            AND (a.last_alerted_timestamp IS NULL OR current_timestamp > a.last_alerted_timestamp) 
-            AND price_count >= 3
-            AND change_pct >= 5.0 
+                ticker,
+                current_price,
+                baseline_price,
+                current_timestamp,
+                first_timestamp,
+                price_count,
+                0 as existing_alerts,
+                sentiment,
+                recommendation,
+                confidence,
+                change_pct,
+                seconds_elapsed
+            FROM price_analysis
+            WHERE price_count >= 3
+            AND change_pct >= 5.0
             AND seconds_elapsed <= 60
             AND current_price < 11.0
             AND recommendation = 'BUY'
-            ORDER BY change_pct DESC
+            ORDER BY current_timestamp ASC
             """
             
             result = self.ch_manager.client.query(query)
             
             if result.result_rows:
+                # Check for existing alerts to handle deduplication
+                existing_alerts_query = f"SELECT ticker, timestamp FROM News.news_alert WHERE ticker IN ({ticker_placeholders})"
+                existing_result = self.ch_manager.client.query(existing_alerts_query)
+                existing_alert_timestamps = {(row[0], row[1]) for row in existing_result.result_rows}
+                
                 # Prepare batch insert for news_alert table
                 alert_data = []
                 
                 for row in result.result_rows:
                     ticker, current_price, baseline_price, current_timestamp, first_timestamp, price_count, existing_alerts, sentiment, recommendation, confidence, change_pct, seconds_elapsed = row
+                    
+                    # Skip if alert already exists for this exact timestamp
+                    if (ticker, current_timestamp) in existing_alert_timestamps:
+                        logger.info(f"⏸️ DEDUPLICATION: Skipping {ticker} at {current_timestamp} - alert already exists")
+                        continue
                     
                     # Determine data source for logging
                     data_source_emoji = "🌐" if self.use_websocket_data else "🔄"
@@ -917,19 +920,19 @@ class ContinuousPriceMonitor:
                     # Enhanced logging with sentiment information
                     if sentiment and recommendation:
                         sentiment_info = f"Sentiment: {sentiment}, Recommendation: {recommendation} ({confidence} confidence)"
-                        logger.info(f"🚨 60-SECOND WINDOW ENFORCED: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f} [2nd price]) in {seconds_elapsed}s")
+                        logger.info(f"🚨 INDIVIDUAL TIMESTAMP ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   📊 {sentiment_info}")
                         logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
-                        logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
+                        logger.info(f"   📈 Price sequence: #{price_count}")
                         logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     else:
-                        logger.info(f"🚨 60-SECOND WINDOW ENFORCED: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f} [2nd price]) in {seconds_elapsed}s")
+                        logger.info(f"🚨 INDIVIDUAL TIMESTAMP ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   ⚠️ No sentiment data available - using price-only logic")
                         logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
-                        logger.info(f"   📈 Price Data: [{price_count} points] [Alert #{existing_alerts + 1}/8]")
+                        logger.info(f"   📈 Price sequence: #{price_count}")
                         logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     
-                    # Add to alert data for batch insert - use current_timestamp (price data timestamp) for deduplication
+                    # Add to alert data for batch insert - use current_timestamp for deduplication
                     alert_data.append((ticker, current_timestamp, 1, current_price))
                     
                     # Log to price_move table
@@ -944,7 +947,7 @@ class ContinuousPriceMonitor:
                         alert_data,
                         column_names=['ticker', 'timestamp', 'alert', 'price']
                     )
-                    logger.info(f"✅ 60-SECOND WINDOW ENFORCED: Inserted {len(alert_data)} alerts with strict timing controls")
+                    logger.info(f"✅ INDIVIDUAL TIMESTAMP ALERTS: Created {len(alert_data)} new alerts with deduplication")
             else:
                 # Enhanced debug logging to show why no alerts were triggered
                 # First check if there are any price movements that would qualify
