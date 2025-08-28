@@ -856,6 +856,21 @@ class ContinuousPriceMonitor:
                 ) ranked
                 WHERE rn = 2
             ),
+            ticker_first_3_volume AS (
+                SELECT 
+                    ticker,
+                    sum(volume) as first_3_volume_total
+                FROM (
+                    SELECT 
+                        ticker,
+                        volume,
+                        ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY timestamp ASC) as rn
+                    FROM News.price_tracking
+                    WHERE ticker IN ({ticker_placeholders})
+                ) ranked
+                WHERE rn <= 3
+                GROUP BY ticker
+            ),
             price_analysis AS (
                 SELECT 
                     pt.ticker,
@@ -886,12 +901,14 @@ class ContinuousPriceMonitor:
                 confidence,
                 change_pct,
                 seconds_elapsed
-            FROM price_analysis
+            FROM price_analysis pa
+            INNER JOIN ticker_first_3_volume tv ON pa.ticker = tv.ticker
             WHERE price_count >= 3
             AND change_pct >= 5.0
             AND seconds_elapsed <= 60
             AND current_price < 11.0
             AND recommendation = 'BUY'
+            AND tv.first_3_volume_total >= 2000
             ORDER BY current_timestamp ASC
             """
             
