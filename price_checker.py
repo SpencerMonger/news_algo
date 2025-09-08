@@ -908,7 +908,7 @@ class ContinuousPriceMonitor:
             AND seconds_elapsed <= 60
             AND current_price < 11.0
             AND recommendation = 'BUY'
-            AND tv.first_3_volume_total >= 2000
+            -- AND tv.first_3_volume_total >= 2000
             ORDER BY current_timestamp ASC
             """
             
@@ -966,6 +966,8 @@ class ContinuousPriceMonitor:
                     )
                     logger.info(f"✅ INDIVIDUAL TIMESTAMP ALERTS: Created {len(alert_data)} new alerts with deduplication")
             else:
+                # Log when tickers fail to meet requirements
+                logger.info(f"❌ REQUIREMENTS CHECK: {len(self.active_tickers)} active tickers failed to meet one or more requirements")
                 # Enhanced debug logging to show why no alerts were triggered
                 # First check if there are any price movements that would qualify
                 debug_query = f"""

@@ -205,9 +205,10 @@ class BenzingaWebSocketScraper:
             
             return found_tickers
 
-    def generate_content_hash(self, title: str, url: str) -> str:
+    def generate_content_hash(self, title: str, url: str, ticker: str = "") -> str:
         """Generate hash for duplicate detection (same as web_scraper.py)"""
-        return hashlib.md5(url.encode()).hexdigest()
+        hash_input = f"{url}_{ticker}" if ticker else url
+        return hashlib.md5(hash_input.encode()).hexdigest()
 
     def parse_benzinga_timestamp(self, created_at: str) -> datetime:
         """Parse Benzinga timestamp format"""
@@ -399,9 +400,11 @@ class BenzingaWebSocketScraper:
             
             # Create separate article for each ticker (SAME AS WEB_SCRAPER.PY)
             articles = []
-            content_hash = self.generate_content_hash(title, url)
             
             for ticker in found_tickers:
+                # Generate unique content hash per ticker
+                content_hash = self.generate_content_hash(title, url, ticker)
+                
                 # Clean the content using the same process as backtest
                 raw_content = self.clean_html_content(body) if body else self.clean_html_content(title)
                 cleaned_content = self.clean_content_for_sentiment_analysis(raw_content)

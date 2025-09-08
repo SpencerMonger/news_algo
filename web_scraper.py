@@ -238,9 +238,10 @@ class Crawl4AIScraper:
         
         return found_tickers
 
-    def generate_content_hash(self, title: str, url: str) -> str:
+    def generate_content_hash(self, title: str, url: str, ticker: str = "") -> str:
         """Generate hash for duplicate detection based on URL only"""
-        return hashlib.md5(url.encode()).hexdigest()
+        hash_input = f"{url}_{ticker}" if ticker else url
+        return hashlib.md5(hash_input.encode()).hexdigest()
 
     def parse_relative_time(self, time_text: str) -> datetime:
         """Extract timestamp from article - now handles full datetime formats"""
@@ -446,11 +447,10 @@ class Crawl4AIScraper:
                                 logger.debug(f"⏰ SKIPPING old GlobeNewswire article from {article_date}: {title[:50]}...")
                                 continue
                         
-                        # Generate content hash for deduplication
-                        content_hash = self.generate_content_hash(title, url)
-                        
                         # Create an article for each ticker found
                         for ticker in found_tickers:
+                            # Generate unique content hash per ticker
+                            content_hash = self.generate_content_hash(title, url, ticker)
                             article = {
                                 'timestamp': datetime.now(),
                                 'source': f'{source_name}_24H',
@@ -910,11 +910,10 @@ class Crawl4AIScraper:
                                         logger.debug(f"⏰ SKIPPING old RSS GlobeNewswire article from {article_date}: {title[:50]}...")
                                         continue
                                 
-                                # EXACT same content hash generation as web scraper
-                                content_hash = self.generate_content_hash(title, url)
-                                
                                 # Create article with EXACT same structure as web scraper
                                 for ticker in found_tickers:
+                                    # EXACT same content hash generation as web scraper (per ticker)
+                                    content_hash = self.generate_content_hash(title, url, ticker)
                                     article = {
                                         'timestamp': datetime.now(),
                                         'source': f'{source_name}_RSS',  # Mark as RSS source

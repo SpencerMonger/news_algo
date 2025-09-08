@@ -192,9 +192,10 @@ class NewswireMonitor:
         
         return list(found_tickers)
 
-    def generate_content_hash(self, title: str, url: str) -> str:
+    def generate_content_hash(self, title: str, url: str, ticker: str = "") -> str:
         """Generate hash for duplicate detection based on URL only"""
-        return hashlib.md5(url.encode()).hexdigest()
+        hash_input = f"{url}_{ticker}" if ticker else url
+        return hashlib.md5(hash_input.encode()).hexdigest()
 
     def is_recent_article(self, published_time: str, max_age_seconds: int = 1800) -> bool:
         """Check if article is recent enough"""
@@ -329,14 +330,7 @@ class NewswireMonitor:
                         if not self.is_recent_article(published, max_age_seconds=1800):
                             continue
                             
-                        # Generate hash for duplicate detection
-                        content_hash = self.generate_content_hash(title, link)
-                        
-                        if content_hash in self.duplicate_hashes:
-                            self.stats['duplicates_filtered'] += 1
-                            continue
-                        
-                        # Extract tickers from title and summary
+                        # Extract tickers from title and summary first
                         text_to_search = f"{title} {summary}"
                         found_tickers = self.extract_tickers_from_text(text_to_search)
                         
@@ -345,6 +339,12 @@ class NewswireMonitor:
                             latency_ms = int((time.time() - processing_start) * 1000)
                             
                             for ticker in found_tickers:
+                                # Generate unique hash per ticker for duplicate detection
+                                content_hash = self.generate_content_hash(title, link, ticker)
+                                
+                                if content_hash in self.duplicate_hashes:
+                                    self.stats['duplicates_filtered'] += 1
+                                    continue
                                 article = {
                                     'timestamp': datetime.now(),
                                     'source': source.name,
