@@ -907,6 +907,7 @@ class ContinuousPriceMonitor:
             AND change_pct >= 5.0
             AND seconds_elapsed <= 60
             AND current_price < 11.0
+            AND current_price >= 0.40
             AND recommendation = 'BUY'
             -- AND tv.first_3_volume_total >= 2000
             ORDER BY current_timestamp ASC
@@ -1071,24 +1072,45 @@ class ContinuousPriceMonitor:
             else:
                 headline, url, published_utc = "No recent news", "", datetime.now()
             
-            # Insert price move
+            # Convert published_utc string to datetime if needed
+            if isinstance(published_utc, str):
+                try:
+                    published_utc = datetime.fromisoformat(published_utc.replace('Z', '+00:00'))
+                except:
+                    published_utc = datetime.now()
+            
+            # Insert price move - using correct schema column names
+            current_timestamp = datetime.now()
             values = [(
-                datetime.now(),  # timestamp
-                ticker,          # ticker
-                headline,        # headline
-                published_utc,   # published_utc
-                url,             # article_url
-                current_price,   # latest_price
-                prev_price,      # previous_close
-                change_pct,      # price_change_percentage
-                0,               # volume_change_percentage
-                datetime.now()   # detected_at
+                current_timestamp,     # timestamp
+                ticker,                # ticker
+                headline,              # news_headline (note: schema uses news_headline not headline)
+                published_utc,         # news_published_utc
+                url,                   # news_article_url
+                current_price,         # current_price
+                current_timestamp,     # current_price_timestamp
+                0.0,                   # minute_30_high (placeholder)
+                0.0,                   # minute_30_low (placeholder)
+                0.0,                   # minute_30_open (placeholder)
+                0.0,                   # minute_30_close (placeholder)
+                0,                     # minute_30_volume (placeholder)
+                current_timestamp,     # minute_30_timestamp (placeholder)
+                change_pct,            # price_move_percentage
+                1,                     # price_above_30min_high (default 1)
+                0,                     # price_check_latency_ms (placeholder)
+                0                      # news_to_price_check_delay_ms (placeholder)
             )]
             
             self.ch_manager.client.insert(
                 'News.price_move',
                 values,
-                column_names=['timestamp', 'ticker', 'headline', 'published_utc', 'article_url', 'latest_price', 'previous_close', 'price_change_percentage', 'volume_change_percentage', 'detected_at']
+                column_names=[
+                    'timestamp', 'ticker', 'news_headline', 'news_published_utc', 'news_article_url',
+                    'current_price', 'current_price_timestamp', 'minute_30_high', 'minute_30_low',
+                    'minute_30_open', 'minute_30_close', 'minute_30_volume', 'minute_30_timestamp',
+                    'price_move_percentage', 'price_above_30min_high', 'price_check_latency_ms',
+                    'news_to_price_check_delay_ms'
+                ]
             )
             
         except Exception as e:

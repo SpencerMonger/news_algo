@@ -301,6 +301,7 @@ async def get_price_with_double_call(self, ticker: str):
 PRICE_CHANGE_THRESHOLD = 0.05    # 5% price increase required
 TIME_WINDOW = 60                 # seconds (extended from 40s)
 MIN_PRICE_COUNT = 3              # need at least 3 price records
+MIN_PRICE_LIMIT = 0.40           # current price must be at least $0.40
 MAX_PRICE_LIMIT = 11.0           # current price must be under $11
 VOLUME_REQUIREMENT = 2000        # first 3 price records must have combined volume ≥ 2000
 SENTIMENT_REQUIREMENT = 'BUY'    # recommendation must be 'BUY' (AI analysis)
@@ -312,7 +313,7 @@ BASELINE_PRICE = '2nd_price'     # use 2nd price as baseline (1st often garbage)
 1. **Price Movement**: ≥5% increase from 2nd price baseline
 2. **Time Window**: Price movement within 60-second window from first timestamp
 3. **Data Quality**: At least 3 price records available
-4. **Price Range**: Current price must be under $11.00
+4. **Price Range**: Current price must be between $0.40 and $11.00 (eliminates penny stocks and expensive stocks)
 5. **Volume Threshold**: Combined volume of first 3 records ≥ 2000
 6. **Sentiment Analysis**: AI recommendation must be 'BUY' with 'high' confidence
 7. **60-Second Cutoff**: No alerts generated after 60 seconds from first price timestamp

@@ -778,26 +778,8 @@ class ClickHouseManager:
             self.client.command(float_list_sql)
             logger.info("float_list table created/verified")
 
-            # Price move table  
-            price_move_sql = """
-            CREATE TABLE IF NOT EXISTS News.price_move (
-                timestamp DateTime DEFAULT now(),
-                ticker String,
-                headline String,
-                published_utc DateTime,
-                article_url String,
-                latest_price Float64,
-                previous_close Float64,
-                price_change_percentage Float64,
-                volume_change_percentage Int32,
-                detected_at DateTime DEFAULT now()
-            ) ENGINE = MergeTree()
-            ORDER BY (ticker, timestamp)
-            PARTITION BY toYYYYMM(timestamp)
-            TTL timestamp + INTERVAL 90 DAY
-            """
-            self.client.command(price_move_sql)
-            logger.info("price_move table created/verified")
+            # NOTE: price_move table is created via create_price_move_table() method
+            # Removed duplicate definition here to avoid schema conflicts
 
             # Monitored tickers table
             monitored_tickers_sql = """
