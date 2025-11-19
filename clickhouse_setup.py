@@ -518,6 +518,9 @@ class ClickHouseManager:
             insider_ownership Float64,
             institutional_ownership Float64,
             
+            -- Reverse split detection
+            recent_split UInt8 DEFAULT 0,
+            
             INDEX idx_ticker (ticker) TYPE bloom_filter GRANULARITY 1,
             INDEX idx_sector (sector) TYPE set(50) GRANULARITY 1,
             INDEX idx_last_updated (last_updated) TYPE minmax GRANULARITY 3
@@ -558,14 +561,16 @@ class ClickHouseManager:
                     ticker.get('eps', 0.0),
                     ticker.get('analyst_rating', ''),
                     ticker.get('insider_ownership', 0.0),
-                    ticker.get('institutional_ownership', 0.0)
+                    ticker.get('institutional_ownership', 0.0),
+                    ticker.get('recent_split', 0)
                 ])
             
             # Column names for insertion
             columns = [
                 'ticker', 'company_name', 'sector', 'industry', 'country', 'market_cap',
                 'float_shares', 'price', 'volume', 'last_updated',
-                'pe_ratio', 'eps', 'analyst_rating', 'insider_ownership', 'institutional_ownership'
+                'pe_ratio', 'eps', 'analyst_rating', 'insider_ownership', 'institutional_ownership',
+                'recent_split'
             ]
             
             result = self.client.insert(
@@ -763,20 +768,8 @@ class ClickHouseManager:
             self.client.command(immediate_notifications_sql)
             logger.info("Created immediate_notifications table for zero-lag detection")
 
-            # Float list table
-            float_list_sql = """
-            CREATE TABLE IF NOT EXISTS News.float_list (
-                ticker String,
-                float_value Float64,
-                market_cap Float64,
-                price Float64,
-                volume Int64,
-                last_updated DateTime DEFAULT now()
-            ) ENGINE = ReplacingMergeTree(last_updated)
-            ORDER BY ticker
-            """
-            self.client.command(float_list_sql)
-            logger.info("float_list table created/verified")
+            # NOTE: float_list table is created via create_float_list_table() method
+            # This avoids duplicate schema definitions and ensures recent_split column is included
 
             # NOTE: price_move table is created via create_price_move_table() method
             # Removed duplicate definition here to avoid schema conflicts

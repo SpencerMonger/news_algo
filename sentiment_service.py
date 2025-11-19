@@ -54,7 +54,7 @@ class NativeLoadBalancer:
         self.current_key_index = 0
         self.session: Optional[aiohttp.ClientSession] = None
         self.claude_endpoint = "https://api.anthropic.com/v1/messages"
-        self.model = "claude-3-5-sonnet-20240620"
+        self.model = "claude-sonnet-4-20250514"
         
         self.stats = {
             'total_requests': 0,
@@ -615,7 +615,7 @@ class SentimentService:
                 if self.legacy_api_key:
                     logger.warning("⚠️ Load balancing failed, falling back to single API key mode")
                     logger.info("✅ Sentiment Service initialized with SINGLE API KEY")
-                    logger.info(f"🤖 Using model: claude-3-5-sonnet-20240620")
+                    logger.info(f"🤖 Using model: claude-sonnet-4-20250514")
                     return True
                 else:
                     logger.error("❌ No API keys found in environment variables")
@@ -648,7 +648,7 @@ class SentimentService:
                 timeout = aiohttp.ClientTimeout(total=30)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     test_payload = {
-                        "model": "claude-3-5-sonnet-20240620",
+                        "model": "claude-sonnet-4-20250514",
                         "max_tokens": 20,
                         "messages": [
                             {
@@ -857,7 +857,7 @@ Respond with JSON:
         for attempt in range(max_retries + 1):
             try:
                 payload = {
-                    "model": "claude-3-5-sonnet-20240620",
+                    "model": "claude-sonnet-4-20250514",
                     "max_tokens": 300,
                     "temperature": 0.0,
                     "messages": [

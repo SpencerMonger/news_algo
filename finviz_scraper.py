@@ -317,6 +317,127 @@ class FinvizScraper:
         logger.info(f"Total tickers scraped from both URLs: {len(all_tickers)}")
         return all_tickers
 
+    async def scrape_ticker_news(self, ticker: str) -> List[Dict[str, Any]]:
+        """Scrape news for a specific ticker to check for reverse splits"""
+        articles = []
+        
+        # Construct ticker page URL
+        ticker_url = f"https://elite.finviz.com/quote.ashx?t={ticker}&ty=c&ta=1&p=i1"
+        
+        try:
+            # Add appropriate headers
+            scraper_headers = self.headers.copy()
+            scraper_headers['Referer'] = "https://elite.finviz.com/"
+            
+            async with self.session.get(ticker_url, headers=scraper_headers, timeout=15) as response:
+                if response.status != 200:
+                    return articles
+                
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # Find news table - look for tables with timestamp patterns
+                tables = soup.find_all('table')
+                timestamp_pattern = r'\w{3}-\d{2}-\d{2}\s+\d{1,2}:\d{2}[AP]M'
+                
+                for table in tables:
+                    table_text = table.get_text()
+                    if not re.search(timestamp_pattern, table_text):
+                        continue
+                    
+                    # Process table rows
+                    for row in table.find_all('tr'):
+                        cells = row.find_all(['td', 'th'])
+                        if len(cells) != 2:
+                            continue
+                        
+                        timestamp_cell = cells[0]
+                        article_cell = cells[1]
+                        
+                        timestamp_text = timestamp_cell.get_text().strip()
+                        article_links = article_cell.find_all('a', href=True)
+                        
+                        if not article_links:
+                            continue
+                        
+                        # Extract timestamp
+                        timestamp_match = re.search(timestamp_pattern, timestamp_text)
+                        if not timestamp_match:
+                            continue
+                        
+                        current_timestamp = timestamp_match.group()
+                        
+                        # Process each link
+                        for link in article_links:
+                            headline = link.get_text().strip()
+                            if headline and len(headline) > 15:
+                                articles.append({
+                                    'headline': headline,
+                                    'timestamp': current_timestamp
+                                })
+                
+                return articles
+                
+        except Exception as e:
+            logger.debug(f"Error scraping news for {ticker}: {e}")
+            return articles
+
+    def parse_finviz_timestamp_year(self, timestamp_text: str) -> int:
+        """Extract year from Finviz timestamp"""
+        try:
+            # Pattern: "Jul-21-25 08:20AM" -> extract year "25" -> 2025
+            match = re.search(r'\w{3}-\d{2}-(\d{2})', timestamp_text)
+            if match:
+                year_short = int(match.group(1))
+                # Assume 20xx for years 00-99
+                full_year = 2000 + year_short
+                return full_year
+        except Exception as e:
+            logger.debug(f"Error parsing year from timestamp '{timestamp_text}': {e}")
+        return datetime.now().year  # Default to current year
+
+    def detect_reverse_split(self, articles: List[Dict]) -> bool:
+        """
+        Check if any article headline contains 'reverse stock split' in 2025
+        Returns True if found, False otherwise
+        """
+        for article in articles:
+            headline = article.get('headline', '').lower()
+            timestamp_text = article.get('timestamp', '')
+            
+            # Check for reverse split mention
+            if 'reverse stock split' in headline:
+                # Extract year from timestamp
+                year = self.parse_finviz_timestamp_year(timestamp_text)
+                
+                # Check if it's from 2025
+                if year == 2025:
+                    logger.info(f"🔴 REVERSE SPLIT DETECTED in 2025 for ticker: {article['headline'][:80]}...")
+                    return True
+        
+        return False
+
+    async def check_ticker_for_split(self, ticker: str) -> int:
+        """
+        Check a single ticker for recent reverse split
+        Returns 1 (true) if split found in 2025, 0 (false) otherwise
+        """
+        try:
+            # Scrape news for ticker
+            articles = await self.scrape_ticker_news(ticker)
+            
+            if not articles:
+                return 0
+            
+            # Detect reverse split
+            has_split = self.detect_reverse_split(articles)
+            
+            return 1 if has_split else 0
+            
+        except Exception as e:
+            logger.warning(f"Error checking split for {ticker}: {e}")
+            return 0
+
     async def update_ticker_database(self):
         """Main function to update ticker database with retry logic"""
         logger.info("Starting Finviz ticker database update")
@@ -345,6 +466,30 @@ class FinvizScraper:
                 if not tickers:
                     logger.error(f"No tickers scraped on attempt {attempt}")
                     raise Exception("No tickers scraped from Finviz")
+                
+                # Check each ticker for reverse splits
+                logger.info(f"🔍 Checking {len(tickers)} tickers for reverse splits in 2025...")
+                splits_found = 0
+                
+                for i, ticker_data in enumerate(tickers):
+                    ticker = ticker_data['ticker']
+                    
+                    # Check for reverse split
+                    recent_split = await self.check_ticker_for_split(ticker)
+                    ticker_data['recent_split'] = recent_split
+                    
+                    if recent_split:
+                        splits_found += 1
+                        logger.info(f"🔴 Ticker {ticker} has recent reverse split!")
+                    
+                    # Log progress every 20 tickers
+                    if (i + 1) % 20 == 0:
+                        logger.info(f"📊 Split check progress: {i + 1}/{len(tickers)} tickers checked, {splits_found} splits found")
+                    
+                    # Rate limiting - be respectful to Finviz (2 seconds between requests)
+                    await asyncio.sleep(2)
+                
+                logger.info(f"✅ Split check complete: {splits_found} tickers with reverse splits in 2025")
                 
                 # Drop the existing float_list table to refresh data
                 logger.info("Dropping existing float_list table for complete refresh")
