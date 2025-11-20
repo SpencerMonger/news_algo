@@ -35,11 +35,19 @@ def main():
         print("✅ Connected successfully")
         print()
         
-        # Drop the old table if it exists
+        # Drop the old tables if they exist
         print("🗑️  Dropping old float_list_detailed table (if exists)...")
         try:
             ch_manager.client.command("DROP TABLE IF EXISTS News.float_list_detailed")
             print("✅ Old table dropped successfully")
+        except Exception as e:
+            print(f"⚠️  Note: {e}")
+        print()
+        
+        print("🗑️  Dropping old float_list_detailed_dedup table (if exists)...")
+        try:
+            ch_manager.client.command("DROP TABLE IF EXISTS News.float_list_detailed_dedup")
+            print("✅ Old dedup table dropped successfully")
         except Exception as e:
             print(f"⚠️  Note: {e}")
         print()
@@ -50,12 +58,22 @@ def main():
         print("✅ New table created successfully with 115+ fields")
         print()
         
+        # Create the new deduplicated table
+        print("🔧 Creating new float_list_detailed_dedup table (deduplicated)...")
+        ch_manager.create_float_list_detailed_dedup_table()
+        print("✅ New dedup table created successfully (replaces data per ticker)")
+        print()
+        
         # Verify the table structure
         print("📋 Verifying table structure...")
         try:
             result = ch_manager.client.query("DESCRIBE TABLE News.float_list_detailed")
             column_count = len(result.result_rows)
-            print(f"✅ Table has {column_count} columns")
+            print(f"✅ float_list_detailed has {column_count} columns")
+            
+            result_dedup = ch_manager.client.query("DESCRIBE TABLE News.float_list_detailed_dedup")
+            column_count_dedup = len(result_dedup.result_rows)
+            print(f"✅ float_list_detailed_dedup has {column_count_dedup} columns")
             print()
             
             # Show first few columns as confirmation

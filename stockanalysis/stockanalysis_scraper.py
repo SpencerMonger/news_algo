@@ -561,9 +561,17 @@ class StockAnalysisScraper:
                         # Insert immediately to avoid losing data
                         try:
                             self.clickhouse_manager.insert_float_list_detailed([stats])
-                            logger.info(f"✅ Inserted statistics for {ticker} into database")
+                            logger.info(f"✅ Inserted statistics for {ticker} into float_list_detailed")
                         except Exception as e:
-                            logger.error(f"❌ Failed to insert {ticker} into database: {e}")
+                            logger.error(f"❌ Failed to insert {ticker} into float_list_detailed: {e}")
+                            self.stats['errors'] += 1
+                        
+                        # Also insert into deduplicated table
+                        try:
+                            self.clickhouse_manager.insert_float_list_detailed_dedup([stats])
+                            logger.info(f"✅ Inserted statistics for {ticker} into float_list_detailed_dedup")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to insert {ticker} into float_list_detailed_dedup: {e}")
                             self.stats['errors'] += 1
                     else:
                         self.stats['tickers_failed'] += 1
@@ -623,7 +631,11 @@ async def main():
         if args.setup_table:
             logger.info("🔧 Setting up float_list_detailed table...")
             scraper.clickhouse_manager.create_float_list_detailed_table()
-            logger.info("✅ Table setup complete")
+            logger.info("✅ float_list_detailed table setup complete")
+            
+            logger.info("🔧 Setting up float_list_detailed_dedup table...")
+            scraper.clickhouse_manager.create_float_list_detailed_dedup_table()
+            logger.info("✅ float_list_detailed_dedup table setup complete")
             return
         
         # Start scraping
