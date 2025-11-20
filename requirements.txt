@@ -26,3 +26,5 @@ playwright>=1.40.0
 psutil>=5.9.0
 # WebSocket client for Benzinga streaming feed
 websockets>=12.0
+# Anthropic API client for Claude AI
+anthropic>=0.39.0

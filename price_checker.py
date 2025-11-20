@@ -903,14 +903,14 @@ class ContinuousPriceMonitor:
                 seconds_elapsed
             FROM price_analysis pa
             INNER JOIN ticker_first_3_volume tv ON pa.ticker = tv.ticker
-            LEFT JOIN News.float_list fl ON pa.ticker = fl.ticker
+            LEFT JOIN News.float_list_detailed_dedup fld ON pa.ticker = fld.ticker
             WHERE price_count >= 3
             AND change_pct >= 5.0
             AND seconds_elapsed <= 60
             AND current_price < 11.0
             AND current_price >= 0.40
             AND recommendation = 'BUY'
-            AND fl.recent_split = 1
+            AND fld.strength_score >= 4
             -- AND tv.first_3_volume_total >= 2000
             ORDER BY current_timestamp ASC
             """
