@@ -537,6 +537,160 @@ class ClickHouseManager:
             logger.error(f"Error creating float_list table: {e}")
             raise
 
+    def create_float_list_detailed_table(self):
+        """Create the float_list_detailed table for comprehensive stock statistics from StockAnalysis.com"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS News.float_list_detailed (
+            id UUID DEFAULT generateUUIDv4(),
+            ticker String,
+            scraped_at DateTime64(3) DEFAULT now64(),
+            source_url String,
+            
+            -- Total Valuation
+            market_cap Nullable(Float64),
+            enterprise_value Nullable(Float64),
+            
+            -- Important Dates
+            earnings_date String,
+            ex_dividend_date String,
+            
+            -- Stock Price Statistics
+            beta_5y Nullable(Float64),
+            `52_week_high` Nullable(Float64),
+            `52_week_low` Nullable(Float64),
+            `52_week_change` Nullable(Float64),
+            `50_day_ma` Nullable(Float64),
+            `200_day_ma` Nullable(Float64),
+            relative_strength_index Nullable(Float64),
+            average_volume_20d Nullable(Float64),
+            
+            -- Share Statistics
+            current_share_class Nullable(Float64),
+            shares_outstanding Nullable(Float64),
+            shares_change_yoy Nullable(Float64),
+            shares_change_qoq Nullable(Float64),
+            percent_insiders Nullable(Float64),
+            percent_institutions Nullable(Float64),
+            shares_float Nullable(Float64),
+            
+            -- Short Selling Information
+            short_interest Nullable(Float64),
+            short_previous_month Nullable(Float64),
+            short_percent_shares_out Nullable(Float64),
+            short_percent_float Nullable(Float64),
+            short_ratio Nullable(Float64),
+            
+            -- Valuation Ratios
+            pe_ratio Nullable(Float64),
+            forward_pe Nullable(Float64),
+            ps_ratio Nullable(Float64),
+            forward_ps Nullable(Float64),
+            pb_ratio Nullable(Float64),
+            p_tbv_ratio Nullable(Float64),
+            p_fcf_ratio Nullable(Float64),
+            p_ocf_ratio Nullable(Float64),
+            peg_ratio Nullable(Float64),
+            
+            -- Enterprise Valuation
+            ev_to_earnings Nullable(Float64),
+            ev_to_sales Nullable(Float64),
+            ev_to_ebitda Nullable(Float64),
+            ev_to_ebit Nullable(Float64),
+            ev_to_fcf Nullable(Float64),
+            
+            -- Financial Position
+            current_ratio Nullable(Float64),
+            quick_ratio Nullable(Float64),
+            debt_to_equity Nullable(Float64),
+            debt_to_ebitda Nullable(Float64),
+            debt_to_fcf Nullable(Float64),
+            interest_coverage Nullable(Float64),
+            
+            -- Financial Efficiency
+            return_on_equity Nullable(Float64),
+            return_on_assets Nullable(Float64),
+            return_on_invested_capital Nullable(Float64),
+            return_on_capital_employed Nullable(Float64),
+            revenue_per_employee Nullable(Float64),
+            profits_per_employee Nullable(Float64),
+            employee_count Nullable(Int32),
+            asset_turnover Nullable(Float64),
+            inventory_turnover Nullable(Float64),
+            
+            -- Taxes
+            income_tax Nullable(Float64),
+            effective_tax_rate Nullable(Float64),
+            
+            -- Income Statement
+            revenue Nullable(Float64),
+            gross_profit Nullable(Float64),
+            operating_income Nullable(Float64),
+            pretax_income Nullable(Float64),
+            net_income Nullable(Float64),
+            ebitda Nullable(Float64),
+            ebit Nullable(Float64),
+            earnings_per_share Nullable(Float64),
+            
+            -- Balance Sheet
+            cash_and_equivalents Nullable(Float64),
+            total_debt Nullable(Float64),
+            net_cash Nullable(Float64),
+            net_cash_per_share Nullable(Float64),
+            equity_book_value Nullable(Float64),
+            book_value_per_share Nullable(Float64),
+            working_capital Nullable(Float64),
+            
+            -- Cash Flow
+            operating_cash_flow Nullable(Float64),
+            capital_expenditures Nullable(Float64),
+            free_cash_flow Nullable(Float64),
+            fcf_per_share Nullable(Float64),
+            
+            -- Margins
+            gross_margin Nullable(Float64),
+            operating_margin Nullable(Float64),
+            pretax_margin Nullable(Float64),
+            profit_margin Nullable(Float64),
+            ebitda_margin Nullable(Float64),
+            ebit_margin Nullable(Float64),
+            fcf_margin Nullable(Float64),
+            
+            -- Dividends & Yields
+            dividend_per_share Nullable(Float64),
+            dividend_yield Nullable(Float64),
+            dividend_growth_yoy Nullable(Float64),
+            years_dividend_growth Nullable(Float64),
+            payout_ratio Nullable(Float64),
+            buyback_yield Nullable(Float64),
+            shareholder_yield Nullable(Float64),
+            earnings_yield Nullable(Float64),
+            fcf_yield Nullable(Float64),
+            
+            -- Stock Splits
+            last_split_date String,
+            split_type String,
+            split_ratio String,
+            
+            -- Scores
+            altman_z_score Nullable(Float64),
+            piotroski_f_score Nullable(Int32),
+            
+            INDEX idx_ticker (ticker) TYPE bloom_filter GRANULARITY 1,
+            INDEX idx_scraped_at (scraped_at) TYPE minmax GRANULARITY 3
+        ) 
+        ENGINE = ReplacingMergeTree(scraped_at)
+        ORDER BY (ticker, scraped_at)
+        PARTITION BY toYYYYMM(scraped_at)
+        SETTINGS index_granularity = 8192
+        """
+        
+        try:
+            self.client.command(create_table_sql)
+            logger.info("float_list_detailed table created/verified with complete statistics schema")
+        except Exception as e:
+            logger.error(f"Error creating float_list_detailed table: {e}")
+            raise
+
     def insert_tickers(self, ticker_data: List[Dict[str, Any]]) -> int:
         """Insert/update ticker data in batch"""
         if not ticker_data:
@@ -584,6 +738,197 @@ class ClickHouseManager:
             
         except Exception as e:
             logger.error(f"Error inserting tickers: {e}")
+            raise
+
+    def insert_float_list_detailed(self, stats_data: List[Dict[str, Any]]) -> int:
+        """Insert detailed stock statistics into float_list_detailed table"""
+        if not stats_data:
+            return 0
+            
+        try:
+            # Prepare data for insertion
+            data_rows = []
+            for stats in stats_data:
+                data_rows.append([
+                    stats.get('ticker', ''),
+                    stats.get('scraped_at', datetime.now()),
+                    stats.get('source_url', ''),
+                    # Total Valuation
+                    stats.get('market_cap', None),
+                    stats.get('enterprise_value', None),
+                    # Important Dates (strings - use empty string for NULL)
+                    stats.get('earnings_date', '') or '',
+                    stats.get('ex_dividend_date', '') or '',
+                    # Stock Price Statistics
+                    stats.get('beta_5y', None),
+                    stats.get('52_week_high', None),
+                    stats.get('52_week_low', None),
+                    stats.get('52_week_change', None),
+                    stats.get('50_day_ma', None),
+                    stats.get('200_day_ma', None),
+                    stats.get('relative_strength_index', None),
+                    stats.get('average_volume_20d', None),
+                    # Share Statistics
+                    stats.get('current_share_class', None),
+                    stats.get('shares_outstanding', None),
+                    stats.get('shares_change_yoy', None),
+                    stats.get('shares_change_qoq', None),
+                    stats.get('percent_insiders', None),
+                    stats.get('percent_institutions', None),
+                    stats.get('shares_float', None),
+                    # Short Selling Information
+                    stats.get('short_interest', None),
+                    stats.get('short_previous_month', None),
+                    stats.get('short_percent_shares_out', None),
+                    stats.get('short_percent_float', None),
+                    stats.get('short_ratio', None),
+                    # Valuation Ratios
+                    stats.get('pe_ratio', None),
+                    stats.get('forward_pe', None),
+                    stats.get('ps_ratio', None),
+                    stats.get('forward_ps', None),
+                    stats.get('pb_ratio', None),
+                    stats.get('p_tbv_ratio', None),
+                    stats.get('p_fcf_ratio', None),
+                    stats.get('p_ocf_ratio', None),
+                    stats.get('peg_ratio', None),
+                    # Enterprise Valuation
+                    stats.get('ev_to_earnings', None),
+                    stats.get('ev_to_sales', None),
+                    stats.get('ev_to_ebitda', None),
+                    stats.get('ev_to_ebit', None),
+                    stats.get('ev_to_fcf', None),
+                    # Financial Position
+                    stats.get('current_ratio', None),
+                    stats.get('quick_ratio', None),
+                    stats.get('debt_to_equity', None),
+                    stats.get('debt_to_ebitda', None),
+                    stats.get('debt_to_fcf', None),
+                    stats.get('interest_coverage', None),
+                    # Financial Efficiency
+                    stats.get('return_on_equity', None),
+                    stats.get('return_on_assets', None),
+                    stats.get('return_on_invested_capital', None),
+                    stats.get('return_on_capital_employed', None),
+                    stats.get('revenue_per_employee', None),
+                    stats.get('profits_per_employee', None),
+                    stats.get('employee_count', None),
+                    stats.get('asset_turnover', None),
+                    stats.get('inventory_turnover', None),
+                    # Taxes
+                    stats.get('income_tax', None),
+                    stats.get('effective_tax_rate', None),
+                    # Income Statement
+                    stats.get('revenue', None),
+                    stats.get('gross_profit', None),
+                    stats.get('operating_income', None),
+                    stats.get('pretax_income', None),
+                    stats.get('net_income', None),
+                    stats.get('ebitda', None),
+                    stats.get('ebit', None),
+                    stats.get('earnings_per_share', None),
+                    # Balance Sheet
+                    stats.get('cash_and_equivalents', None),
+                    stats.get('total_debt', None),
+                    stats.get('net_cash', None),
+                    stats.get('net_cash_per_share', None),
+                    stats.get('equity_book_value', None),
+                    stats.get('book_value_per_share', None),
+                    stats.get('working_capital', None),
+                    # Cash Flow
+                    stats.get('operating_cash_flow', None),
+                    stats.get('capital_expenditures', None),
+                    stats.get('free_cash_flow', None),
+                    stats.get('fcf_per_share', None),
+                    # Margins
+                    stats.get('gross_margin', None),
+                    stats.get('operating_margin', None),
+                    stats.get('pretax_margin', None),
+                    stats.get('profit_margin', None),
+                    stats.get('ebitda_margin', None),
+                    stats.get('ebit_margin', None),
+                    stats.get('fcf_margin', None),
+                    # Dividends & Yields
+                    stats.get('dividend_per_share', None),
+                    stats.get('dividend_yield', None),
+                    stats.get('dividend_growth_yoy', None),
+                    stats.get('years_dividend_growth', None),
+                    stats.get('payout_ratio', None),
+                    stats.get('buyback_yield', None),
+                    stats.get('shareholder_yield', None),
+                    stats.get('earnings_yield', None),
+                    stats.get('fcf_yield', None),
+                    # Stock Splits (strings - use empty string for NULL)
+                    stats.get('last_split_date', '') or '',
+                    stats.get('split_type', '') or '',
+                    stats.get('split_ratio', '') or '',
+                    # Scores
+                    stats.get('altman_z_score', None),
+                    stats.get('piotroski_f_score', None),
+                ])
+            
+            # Column names for insertion
+            columns = [
+                'ticker', 'scraped_at', 'source_url',
+                # Total Valuation
+                'market_cap', 'enterprise_value',
+                # Important Dates
+                'earnings_date', 'ex_dividend_date',
+                # Stock Price Statistics
+                'beta_5y', '52_week_high', '52_week_low', '52_week_change',
+                '50_day_ma', '200_day_ma', 'relative_strength_index', 'average_volume_20d',
+                # Share Statistics
+                'current_share_class', 'shares_outstanding', 'shares_change_yoy', 'shares_change_qoq',
+                'percent_insiders', 'percent_institutions', 'shares_float',
+                # Short Selling Information
+                'short_interest', 'short_previous_month', 'short_percent_shares_out',
+                'short_percent_float', 'short_ratio',
+                # Valuation Ratios
+                'pe_ratio', 'forward_pe', 'ps_ratio', 'forward_ps', 'pb_ratio',
+                'p_tbv_ratio', 'p_fcf_ratio', 'p_ocf_ratio', 'peg_ratio',
+                # Enterprise Valuation
+                'ev_to_earnings', 'ev_to_sales', 'ev_to_ebitda', 'ev_to_ebit', 'ev_to_fcf',
+                # Financial Position
+                'current_ratio', 'quick_ratio', 'debt_to_equity', 'debt_to_ebitda',
+                'debt_to_fcf', 'interest_coverage',
+                # Financial Efficiency
+                'return_on_equity', 'return_on_assets', 'return_on_invested_capital',
+                'return_on_capital_employed', 'revenue_per_employee', 'profits_per_employee',
+                'employee_count', 'asset_turnover', 'inventory_turnover',
+                # Taxes
+                'income_tax', 'effective_tax_rate',
+                # Income Statement
+                'revenue', 'gross_profit', 'operating_income', 'pretax_income',
+                'net_income', 'ebitda', 'ebit', 'earnings_per_share',
+                # Balance Sheet
+                'cash_and_equivalents', 'total_debt', 'net_cash', 'net_cash_per_share',
+                'equity_book_value', 'book_value_per_share', 'working_capital',
+                # Cash Flow
+                'operating_cash_flow', 'capital_expenditures', 'free_cash_flow', 'fcf_per_share',
+                # Margins
+                'gross_margin', 'operating_margin', 'pretax_margin', 'profit_margin',
+                'ebitda_margin', 'ebit_margin', 'fcf_margin',
+                # Dividends & Yields
+                'dividend_per_share', 'dividend_yield', 'dividend_growth_yoy',
+                'years_dividend_growth', 'payout_ratio', 'buyback_yield',
+                'shareholder_yield', 'earnings_yield', 'fcf_yield',
+                # Stock Splits
+                'last_split_date', 'split_type', 'split_ratio',
+                # Scores
+                'altman_z_score', 'piotroski_f_score'
+            ]
+            
+            result = self.client.insert(
+                'News.float_list_detailed',
+                data_rows,
+                column_names=columns
+            )
+            
+            logger.info(f"Inserted {len(stats_data)} detailed statistics records into ClickHouse")
+            return len(stats_data)
+            
+        except Exception as e:
+            logger.error(f"Error inserting detailed statistics: {e}")
             raise
 
     def get_active_tickers(self) -> List[str]:
