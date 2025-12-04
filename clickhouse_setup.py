@@ -880,7 +880,7 @@ class ClickHouseManager:
             INDEX idx_ticker (ticker) TYPE bloom_filter GRANULARITY 1,
             INDEX idx_scraped_at (scraped_at) TYPE minmax GRANULARITY 3
         ) 
-        ENGINE = ReplacingMergeTree(scraped_at)
+        ENGINE = MergeTree()
         ORDER BY ticker
         PARTITION BY toYYYYMM(scraped_at)
         SETTINGS index_granularity = 8192
@@ -888,7 +888,7 @@ class ClickHouseManager:
         
         try:
             self.client.command(create_table_sql)
-            logger.info("float_list_detailed_dedup table created/verified with deduplication on ticker")
+            logger.info("float_list_detailed_dedup table created/verified (simple MergeTree)")
         except Exception as e:
             logger.error(f"Error creating float_list_detailed_dedup table: {e}")
             raise
@@ -1085,7 +1085,7 @@ class ClickHouseManager:
             raise
 
     def insert_float_list_detailed_dedup(self, stats_data: List[Dict[str, Any]]) -> int:
-        """Insert detailed stock statistics into float_list_detailed_dedup table with deduplication"""
+        """Insert detailed stock statistics into float_list_detailed_dedup table (fresh table each run)"""
         if not stats_data:
             return 0
             
@@ -1268,7 +1268,7 @@ class ClickHouseManager:
                 column_names=columns
             )
             
-            logger.info(f"Inserted {len(stats_data)} deduplicated statistics records into ClickHouse")
+            logger.info(f"Inserted {len(stats_data)} statistics records into ClickHouse")
             return len(stats_data)
             
         except Exception as e:

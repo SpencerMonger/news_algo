@@ -186,33 +186,56 @@ class StockStrengthAnalyzer:
             return f"{prefix}{value}{suffix}"
         
         # Build comprehensive financial summary
+        # Get raw values without converting None to 0
+        cash = stock_data.get('cash_and_equivalents')
+        debt = stock_data.get('total_debt')
+        net_cash = stock_data.get('net_cash')
+        shares = stock_data.get('shares_outstanding')
+        
+        # Calculate derived metrics only if source data exists
+        net_cash_per_share = None
+        if net_cash is not None and shares is not None and shares > 0:
+            net_cash_per_share = net_cash / shares
+        
+        # Helper for conditional checks
+        def check_positive(value):
+            """Check if value is positive, handling None properly"""
+            if value is None:
+                return 'N/A'
+            return 'YES ✓' if value > 0 else 'NO'
+        
+        def check_threshold(value, threshold, operator='>='):
+            """Check if value meets threshold, handling None properly"""
+            if value is None:
+                return 'N/A'
+            if operator == '>=':
+                return 'YES ✓' if value >= threshold else 'NO'
+            elif operator == '>':
+                return 'YES ✓' if value > threshold else 'NO'
+            return 'N/A'
+        
         financial_summary = f"""
 STOCK FINANCIAL ANALYSIS REQUEST FOR: {ticker}
 {'=' * 80}
 
-NOTE: "N/A" indicates missing data - this is NOT a negative signal, just unavailable information.
-Only evaluate based on available data points.
+CRITICAL: "N/A" means data is MISSING - treat it as unknown, NOT as zero or negative.
+Do NOT penalize stocks for missing data. Only evaluate based on available metrics.
 
 KEY INDICATORS (Primary Focus):
-1. Market Cap vs Enterprise Value:
-   - Market Cap: {fmt(stock_data.get('market_cap'), '$')}
-   - Enterprise Value: {fmt(stock_data.get('enterprise_value'), '$')}
-   - Undervalued if Market Cap < Enterprise Value: {stock_data.get('market_cap', 0) < stock_data.get('enterprise_value', 0) if stock_data.get('market_cap') and stock_data.get('enterprise_value') else 'Cannot determine'}
+1. BALANCE SHEET / CASH POSITION (MOST IMPORTANT):
+   - Cash & Equivalents: {fmt(cash, '$')}
+   - Total Debt: {fmt(debt, '$')}
+   - Net Cash: {fmt(net_cash, '$')}
+   - Net Cash per Share: {fmt(net_cash_per_share, '$')}
+   - Positive Net Cash Position: {check_positive(net_cash)}
 
-2. Altman Z-Score (Financial Health):
+2. ALTMAN Z-SCORE (Financial Stability):
    - Score: {fmt(stock_data.get('altman_z_score'))}
-   - Positive (>0) indicates financial stability: {stock_data.get('altman_z_score', -999) > 0 if stock_data.get('altman_z_score') else False}
+   - Positive (>0) indicates financial stability: {check_threshold(stock_data.get('altman_z_score'), 0, '>')}
 
-3. Piotroski F-Score (Quality Indicator):
+3. PIOTROSKI F-SCORE (Quality Indicator):
    - Score: {fmt(stock_data.get('piotroski_f_score'))}
-   - Score >= 2 indicates decent quality: {stock_data.get('piotroski_f_score', 0) >= 2 if stock_data.get('piotroski_f_score') else False}
-
-VALUATION METRICS:
-- P/E Ratio: {fmt(stock_data.get('pe_ratio'))}
-- Forward P/E: {fmt(stock_data.get('forward_pe'))}
-- P/B Ratio: {fmt(stock_data.get('pb_ratio'))}
-- PEG Ratio: {fmt(stock_data.get('peg_ratio'))}
-- EV/EBITDA: {fmt(stock_data.get('ev_to_ebitda'))}
+   - Score >= 2 indicates decent quality: {check_threshold(stock_data.get('piotroski_f_score'), 2, '>=')}
 
 PROFITABILITY & MARGINS:
 - Profit Margin: {fmt(stock_data.get('profit_margin'), '', '%')}
@@ -222,20 +245,17 @@ PROFITABILITY & MARGINS:
 - ROE: {fmt(stock_data.get('return_on_equity'), '', '%')}
 - ROA: {fmt(stock_data.get('return_on_assets'), '', '%')}
 
-FINANCIAL POSITION:
-- Total Debt: {fmt(stock_data.get('total_debt'), '$')}
-- Cash & Equivalents: {fmt(stock_data.get('cash_and_equivalents'), '$')}
-- Net Cash: {fmt(stock_data.get('net_cash'), '$')}
-- Current Ratio: {fmt(stock_data.get('current_ratio'))}
-- Quick Ratio: {fmt(stock_data.get('quick_ratio'))}
-- Debt/Equity: {fmt(stock_data.get('debt_to_equity'))}
-- Interest Coverage: {fmt(stock_data.get('interest_coverage'))}
-
 CASH FLOW:
 - Operating Cash Flow: {fmt(stock_data.get('operating_cash_flow'), '$')}
 - Free Cash Flow: {fmt(stock_data.get('free_cash_flow'), '$')}
 - FCF Margin: {fmt(stock_data.get('fcf_margin'), '', '%')}
 - FCF per Share: {fmt(stock_data.get('fcf_per_share'), '$')}
+
+ADDITIONAL FINANCIAL POSITION DETAILS:
+- Current Ratio: {fmt(stock_data.get('current_ratio'))}
+- Quick Ratio: {fmt(stock_data.get('quick_ratio'))}
+- Debt/Equity: {fmt(stock_data.get('debt_to_equity'))}
+- Interest Coverage: {fmt(stock_data.get('interest_coverage'))}
 
 REVENUE & EARNINGS:
 - Revenue: {fmt(stock_data.get('revenue'), '$')}
@@ -249,6 +269,16 @@ SHARE STATISTICS:
 - Shares Change YoY: {fmt(stock_data.get('shares_change_yoy'), '', '%')}
 - % Held by Insiders: {fmt(stock_data.get('percent_insiders'), '', '%')}
 - % Held by Institutions: {fmt(stock_data.get('percent_institutions'), '', '%')}
+
+VALUATION METRICS (Lower Priority):
+- P/E Ratio: {fmt(stock_data.get('pe_ratio'))}
+- Forward P/E: {fmt(stock_data.get('forward_pe'))}
+- P/B Ratio: {fmt(stock_data.get('pb_ratio'))}
+- PEG Ratio: {fmt(stock_data.get('peg_ratio'))}
+- EV/EBITDA: {fmt(stock_data.get('ev_to_ebitda'))}
+- Market Cap: {fmt(stock_data.get('market_cap'), '$')}
+- Enterprise Value: {fmt(stock_data.get('enterprise_value'), '$')}
+- Market Cap < Enterprise Value: {'YES ✓' if stock_data.get('market_cap') is not None and stock_data.get('enterprise_value') is not None and stock_data.get('market_cap') < stock_data.get('enterprise_value') else 'N/A'}
 
 SHORT INTEREST:
 - Short Interest: {fmt(stock_data.get('short_interest'))}
@@ -293,20 +323,45 @@ SCORING GUIDELINES:
 - Score 9-10: Excellent fundamentals. Positive news will very likely result in significant positive price movement.
 
 KEY EVALUATION CRITERIA (in order of importance):
-1. Market Cap < Enterprise Value (indicates undervaluation)
-2. Altman Z-Score > 0 (indicates financial stability, not bankruptcy risk)
-3. Piotroski F-Score >= 2 (indicates business quality)
-4. Profitability margins (profit margin, operating margin, ROE)
-5. Financial health (debt levels, cash position, interest coverage)
-6. Cash flow generation (positive and growing FCF)
-7. Valuation multiples (reasonable P/E, P/B, EV/EBITDA)
-8. Growth indicators (revenue growth, earnings growth)
+1. BALANCE SHEET / CASH POSITION (HIGHEST PRIORITY):
+   - Net Cash position is critical - positive net cash (cash > debt) is a strong positive indicator
+   - Companies with more cash than debt have financial flexibility and resilience
+   - Net cash per share shows the actual cash backing per share
+   - This should be the PRIMARY factor in your evaluation
 
-CRITICAL NOTE ABOUT NULL/MISSING VALUES:
-- Any field showing "N/A" means we simply don't have that data point
-- NULL values should NOT be treated as negative indicators
-- Do NOT penalize a stock for missing data - only evaluate based on available information
-- If a key metric is missing, weight your analysis more heavily on the metrics that ARE available
+2. ALTMAN Z-SCORE (SECOND PRIORITY):
+   - Altman Z-Score > 0 indicates financial stability and low bankruptcy risk
+   - Higher scores indicate stronger financial health
+   - This is a proven predictor of financial distress
+
+3. PROFITABILITY & CASH FLOW GENERATION (THIRD PRIORITY):
+   - Profit margins (net, operating, EBITDA margins)
+   - Return on Equity (ROE) and Return on Assets (ROA)
+   - Free Cash Flow and FCF margin
+   - Positive and growing FCF is essential
+
+4. PIOTROSKI F-SCORE:
+   - Score >= 2 indicates decent business quality
+   - Higher scores indicate better fundamental quality
+
+5. ADDITIONAL FACTORS (Lower weight):
+   - Interest coverage and debt ratios
+   - Valuation multiples (P/E, P/B, EV/EBITDA)
+   - Growth indicators
+   - Market Cap vs Enterprise Value (minor indicator only - nice to have but not critical)
+
+CRITICAL RULES FOR HANDLING MISSING DATA:
+- "N/A" means the data point is UNAVAILABLE - it does NOT mean zero, negative, or bad
+- Missing data is NEUTRAL - do not treat it as positive OR negative
+- NEVER assume N/A = 0 (a stock with N/A cash is not the same as a stock with $0 cash)
+- Only evaluate based on the metrics that ARE available
+- If critical metrics are missing, be more conservative with the score but don't assume the worst
+- Weight your analysis toward the available data points
+
+EXAMPLES OF PROPER N/A HANDLING:
+- If Net Cash = N/A: Don't assume it's 0 or negative, just note it's unknown
+- If Altman Z-Score = N/A: Don't treat as bankruptcy risk, just note it's unavailable
+- If a stock has strong margins but N/A for cash position: Score based on margins, note cash is unknown
 
 Return ONLY a single number between 1 and 10 (can include decimals like 7.5). Do not include any explanation or other text."""
 
@@ -369,12 +424,12 @@ Based on the financial data above, provide a strength score (1-10) for {ticker}.
             True if update successful, False otherwise
         """
         try:
-            # Use ALTER UPDATE for ClickHouse to update existing records
+            # Simple ALTER UPDATE for MergeTree table
             update_query = f"""
             ALTER TABLE News.float_list_detailed_dedup 
             UPDATE 
                 strength_score = {strength_score},
-                analysis_timestamp = now64()
+                analysis_timestamp = now64(3)
             WHERE ticker = '{ticker}'
             """
             

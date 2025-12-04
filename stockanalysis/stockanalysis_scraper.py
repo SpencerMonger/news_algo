@@ -52,6 +52,18 @@ class StockAnalysisScraper:
         self.clickhouse_manager = ClickHouseManager()
         self.clickhouse_manager.connect()
         
+        # Drop and recreate the dedup table for clean insert
+        logger.info("🗑️ Dropping float_list_detailed_dedup table for clean start...")
+        try:
+            self.clickhouse_manager.client.command("DROP TABLE IF EXISTS News.float_list_detailed_dedup")
+            logger.info("✅ Dropped old dedup table")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not drop dedup table: {e}")
+        
+        logger.info("🔧 Creating fresh float_list_detailed_dedup table...")
+        self.clickhouse_manager.create_float_list_detailed_dedup_table()
+        logger.info("✅ Created fresh dedup table")
+        
         # Initialize Crawl4AI AsyncWebCrawler with efficient settings
         max_retries = 3
         for attempt in range(max_retries):
@@ -456,7 +468,7 @@ class StockAnalysisScraper:
         
         return stats
 
-    async     def scrape_ticker_statistics(self, ticker: str) -> Optional[Dict[str, Any]]:
+    async def scrape_ticker_statistics(self, ticker: str) -> Optional[Dict[str, Any]]:
         """Scrape statistics for a single ticker"""
         url = self.base_url.format(ticker.lower())
         
