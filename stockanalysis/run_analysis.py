@@ -13,13 +13,41 @@ import logging
 import argparse
 from datetime import datetime
 from typing import Optional
+from logging.handlers import RotatingFileHandler
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Get the script directory for log files
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(SCRIPT_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Configure logging with both console and file output
+logger = logging.getLogger('run_analysis')
+logger.setLevel(logging.INFO)
+logger.handlers.clear()
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(console_formatter)
+logger.addHandler(console_handler)
+
+# File handler with rotation
+file_handler = RotatingFileHandler(
+    os.path.join(LOG_DIR, 'pipeline_runner.log'),
+    maxBytes=10*1024*1024,  # 10MB
+    backupCount=30  # Keep 30 days
 )
-logger = logging.getLogger(__name__)
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
+# Log startup
+logger.info("="*80)
+logger.info("Pipeline Runner Starting")
+logger.info(f"Log file: {os.path.join(LOG_DIR, 'pipeline_runner.log')}")
+logger.info("="*80)
 
 
 class StockAnalysisPipeline:

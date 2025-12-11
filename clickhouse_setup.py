@@ -1276,11 +1276,10 @@ class ClickHouseManager:
             raise
 
     def get_active_tickers(self) -> List[str]:
-        """Get current active ticker list"""
+        """Get current active ticker list from float_list table"""
         try:
             query = """
             SELECT ticker FROM News.float_list 
-            WHERE last_updated >= now() - INTERVAL 24 HOUR
             ORDER BY ticker
             """
             result = self.client.query(query)

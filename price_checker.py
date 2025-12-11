@@ -900,7 +900,8 @@ class ContinuousPriceMonitor:
                 recommendation,
                 confidence,
                 change_pct,
-                seconds_elapsed
+                seconds_elapsed,
+                fld.strength_score
             FROM price_analysis pa
             INNER JOIN ticker_first_3_volume tv ON pa.ticker = tv.ticker
             LEFT JOIN News.float_list_detailed_dedup fld ON pa.ticker = fld.ticker
@@ -910,7 +911,6 @@ class ContinuousPriceMonitor:
             AND current_price < 11.0
             AND current_price >= 0.40
             AND recommendation = 'BUY'
-            AND fld.strength_score >= 4
             -- AND tv.first_3_volume_total >= 2000
             ORDER BY current_timestamp ASC
             """
@@ -927,12 +927,26 @@ class ContinuousPriceMonitor:
                 alert_data = []
                 
                 for row in result.result_rows:
-                    ticker, current_price, baseline_price, current_timestamp, first_timestamp, price_count, existing_alerts, sentiment, recommendation, confidence, change_pct, seconds_elapsed = row
+                    ticker, current_price, baseline_price, current_timestamp, first_timestamp, price_count, existing_alerts, sentiment, recommendation, confidence, change_pct, seconds_elapsed, strength_score = row
                     
                     # Skip if alert already exists for this exact timestamp
                     if (ticker, current_timestamp) in existing_alert_timestamps:
                         logger.info(f"⏸️ DEDUPLICATION: Skipping {ticker} at {current_timestamp} - alert already exists")
                         continue
+                    
+                    # Determine alert value based on strength_score
+                    # If strength_score >= 4: alert = 1 (High Priority)
+                    # If strength_score < 4: alert = 2 (Lower Priority)
+                    # If strength_score is NULL (no data): alert = 3 (Unknown)
+                    if strength_score is None:
+                        alert_value = 3
+                        strength_info = f"Strength Score: N/A (Alert Type: 3 - Unknown Strength)"
+                    elif strength_score >= 4:
+                        alert_value = 1
+                        strength_info = f"Strength Score: {strength_score} (Alert Type: 1 - High Priority)"
+                    else:
+                        alert_value = 2
+                        strength_info = f"Strength Score: {strength_score} (Alert Type: 2 - Lower Priority)"
                     
                     # Determine data source for logging
                     data_source_emoji = "🌐" if self.use_websocket_data else "🔄"
@@ -942,18 +956,20 @@ class ContinuousPriceMonitor:
                         sentiment_info = f"Sentiment: {sentiment}, Recommendation: {recommendation} ({confidence} confidence)"
                         logger.info(f"🚨 INDIVIDUAL TIMESTAMP ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   📊 {sentiment_info}")
+                        logger.info(f"   💪 {strength_info}")
                         logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
                         logger.info(f"   📈 Price sequence: #{price_count}")
                         logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     else:
                         logger.info(f"🚨 INDIVIDUAL TIMESTAMP ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   ⚠️ No sentiment data available - using price-only logic")
+                        logger.info(f"   💪 {strength_info}")
                         logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
                         logger.info(f"   📈 Price sequence: #{price_count}")
                         logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     
-                    # Add to alert data for batch insert - use current_timestamp for deduplication
-                    alert_data.append((ticker, current_timestamp, 1, current_price))
+                    # Add to alert data for batch insert - use strength_score to determine alert value
+                    alert_data.append((ticker, current_timestamp, alert_value, current_price))
                     
                     # Log to price_move table
                     await self.log_price_alert(ticker, current_price, baseline_price, change_pct)

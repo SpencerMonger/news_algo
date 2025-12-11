@@ -322,6 +322,12 @@ SCORING GUIDELINES:
 - Score 7-8: Strong fundamentals. Positive news will likely result in positive price movement.
 - Score 9-10: Excellent fundamentals. Positive news will very likely result in significant positive price movement.
 
+CRITICAL CONSTRAINT - NEGATIVE ALTMAN Z-SCORE:
+- If the Altman Z-Score is NEGATIVE (< 0), the maximum strength score you can assign is 3.5
+- A negative Altman Z-Score indicates severe financial distress and high bankruptcy risk
+- This constraint ONLY applies when the Altman Z-Score is explicitly negative
+- If the Altman Z-Score is N/A (missing data), this constraint does NOT apply - evaluate the stock normally based on other available metrics
+
 KEY EVALUATION CRITERIA (in order of importance):
 1. BALANCE SHEET / CASH POSITION (HIGHEST PRIORITY):
    - Net Cash position is critical - positive net cash (cash > debt) is a strong positive indicator
