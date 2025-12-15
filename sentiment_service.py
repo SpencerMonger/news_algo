@@ -695,8 +695,13 @@ class SentimentService:
         # Get country information for this ticker
         country = await self.get_ticker_country(ticker)
         
-        # Always scrape full content from URL if available
-        if article_url:
+        # Use existing full_content if available, otherwise scrape from URL
+        if full_content and len(full_content) > 200:
+            # Already have good content (e.g., from WebSocket), use it directly
+            content_to_analyze = full_content
+            logger.info(f"Using existing full_content: {len(content_to_analyze)} characters")
+        elif article_url:
+            # No content or too short, scrape from URL
             logger.info(f"Scraping full content from URL: {article_url}")
             scraped_content = await self.scrape_article_content_async(article_url, max_chars=6000)
             if scraped_content:
