@@ -318,6 +318,9 @@ class FormulaStrengthScorer:
             self.log(f"Altman Z-Score cap applied: {score:.2f} → 3.50")
             score = 3.5
         
+        # Round to 2 decimal places
+        score = round(score, 2)
+        
         self.log(f"\n{'='*60}")
         self.log(f"FINAL STRENGTH SCORE: {score:.2f}")
         self.log(f"{'='*60}\n")

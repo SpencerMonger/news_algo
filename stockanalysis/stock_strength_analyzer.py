@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Stock Strength Analyzer using Claude Sonnet 4.5
+Stock Strength Analyzer
 Analyzes financial data from float_list_detailed_dedup table and generates a strength score (1-10)
 indicating likelihood of positive price movement on positive news.
+
+NOTE: Originally used Claude Sonnet 4.5 LLM for scoring. Now uses a weighted formula
+      that replicates the LLM's scoring logic. The original LLM prompt is preserved
+      in the code as documentation.
 """
 
 import os
@@ -11,7 +15,8 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
-import anthropic
+# anthropic import kept for reference but not used (formula-based scoring)
+# import anthropic
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,27 +34,28 @@ logger = logging.getLogger(__name__)
 
 
 class StockStrengthAnalyzer:
-    """Analyzes stock financial data using Claude AI to generate strength scores"""
+    """Analyzes stock financial data using weighted formula to generate strength scores"""
     
     def __init__(self):
         self.clickhouse_manager = None
-        self.anthropic_client = None
-        self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
-        
-        if not self.anthropic_api_key:
-            raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
+        # LLM client commented out - using formula-based scoring instead
+        # self.anthropic_client = None
+        # self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
+        # 
+        # if not self.anthropic_api_key:
+        #     raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
         
         # Performance tracking
         self.stats = {
             'stocks_processed': 0,
             'stocks_successful': 0,
             'stocks_failed': 0,
-            'api_calls': 0,
-            'total_tokens': 0
+            'api_calls': 0,  # Kept for compatibility, will be 0 with formula
+            'total_tokens': 0  # Kept for compatibility, will be 0 with formula
         }
     
     def initialize(self):
-        """Initialize connections to ClickHouse and Anthropic API"""
+        """Initialize connections to ClickHouse"""
         logger.info("🚀 Initializing Stock Strength Analyzer...")
         
         # Connect to ClickHouse
@@ -57,9 +63,10 @@ class StockStrengthAnalyzer:
         self.clickhouse_manager.connect()
         logger.info("✅ Connected to ClickHouse")
         
-        # Initialize Anthropic client
-        self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_api_key)
-        logger.info("✅ Initialized Anthropic API client")
+        # LLM client commented out - using formula-based scoring instead
+        # self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+        # logger.info("✅ Initialized Anthropic API client")
+        logger.info("✅ Using formula-based scoring (no LLM)")
         
         # Create or update table to include strength_score column
         self._setup_strength_score_column()
@@ -295,9 +302,209 @@ STOCK PERFORMANCE:
         
         return financial_summary
     
+    def _safe_get(self, data: Dict, key: str) -> Optional[float]:
+        """Safely get a numeric value from data dict"""
+        val = data.get(key)
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+    
+    def calculate_strength_score_formula(self, stock_data: Dict[str, Any]) -> Optional[float]:
+        """
+        Calculate strength score using weighted formula (replaces LLM-based scoring)
+        
+        Formula weights (matching the LLM prompt priorities):
+        - Priority 1: Cash Position (max ±2.5 points)
+        - Priority 2: Altman Z-Score (max ±1.5 points)
+        - Priority 3: Profitability & Cash Flow (max ±1.5 points)
+        - Priority 4: Piotroski F-Score (max ±0.75 points)
+        - Priority 5: Additional Factors (max ±0.75 points)
+        
+        Base score: 5.0 (neutral)
+        Hard cap: If Altman Z-Score < 0, max score is 3.5
+        
+        Args:
+            stock_data: Dictionary containing all stock financial data
+            
+        Returns:
+            Strength score (1-10) or None if calculation fails
+        """
+        ticker = stock_data.get('ticker', 'UNKNOWN')
+        
+        try:
+            # Start with base score of 5.0 (neutral)
+            score = 5.0
+            
+            # =========================================================
+            # HARD CAP CHECK: Altman Z-Score < 0 caps score at 3.5
+            # =========================================================
+            altman_z = self._safe_get(stock_data, 'altman_z_score')
+            altman_cap_active = altman_z is not None and altman_z < 0
+            
+            # =========================================================
+            # PRIORITY 1: Balance Sheet / Cash Position (Weight: ~2.5 points)
+            # =========================================================
+            net_cash = self._safe_get(stock_data, 'net_cash')
+            cash = self._safe_get(stock_data, 'cash_and_equivalents')
+            debt = self._safe_get(stock_data, 'total_debt')
+            
+            if net_cash is not None:
+                if net_cash > 0:
+                    # Positive net cash: +0.5 to +2.0 based on magnitude
+                    cash_score = min(2.0, 0.5 + (net_cash / 1_000_000_000) * 0.5)
+                    score += cash_score
+                elif net_cash < 0:
+                    # Negative net cash: -0.5 to -1.5 based on magnitude
+                    cash_penalty = max(-1.5, -0.5 - (abs(net_cash) / 1_000_000_000) * 0.3)
+                    score += cash_penalty
+            elif cash is not None and debt is not None:
+                # Calculate net cash if not directly available
+                calc_net_cash = cash - debt
+                if calc_net_cash > 0:
+                    cash_score = min(1.5, 0.3 + (calc_net_cash / 1_000_000_000) * 0.4)
+                    score += cash_score
+                elif calc_net_cash < 0:
+                    cash_penalty = max(-1.0, -0.3 - (abs(calc_net_cash) / 1_000_000_000) * 0.2)
+                    score += cash_penalty
+            
+            # =========================================================
+            # PRIORITY 2: Altman Z-Score (Weight: ~1.5 points)
+            # =========================================================
+            if altman_z is not None:
+                if altman_z >= 3.0:
+                    score += 1.5  # Safe zone
+                elif altman_z >= 1.8:
+                    score += 0.75  # Grey zone but acceptable
+                elif altman_z >= 0:
+                    pass  # Risky but not distressed, no adjustment
+                else:
+                    score -= 1.5  # Distress zone
+            
+            # =========================================================
+            # PRIORITY 3: Profitability & Cash Flow (Weight: ~1.5 points)
+            # =========================================================
+            # Free Cash Flow
+            fcf = self._safe_get(stock_data, 'free_cash_flow')
+            if fcf is not None:
+                if fcf > 0:
+                    fcf_score = min(0.5, 0.2 + (fcf / 1_000_000_000) * 0.1)
+                    score += fcf_score
+                else:
+                    fcf_penalty = max(-0.5, -0.2 - (abs(fcf) / 1_000_000_000) * 0.1)
+                    score += fcf_penalty
+            
+            # Profit Margin
+            profit_margin = self._safe_get(stock_data, 'profit_margin')
+            if profit_margin is not None:
+                if profit_margin >= 20:
+                    score += 0.5
+                elif profit_margin >= 10:
+                    score += 0.3
+                elif profit_margin >= 0:
+                    score += 0.1
+                elif profit_margin >= -10:
+                    score -= 0.2
+                else:
+                    score -= 0.4
+            
+            # ROE
+            roe = self._safe_get(stock_data, 'return_on_equity')
+            if roe is not None:
+                if roe >= 15:
+                    score += 0.3
+                elif roe >= 5:
+                    score += 0.15
+                elif roe >= 0:
+                    pass  # No adjustment
+                else:
+                    score -= 0.2
+            
+            # =========================================================
+            # PRIORITY 4: Piotroski F-Score (Weight: ~0.75 points)
+            # =========================================================
+            piotroski = self._safe_get(stock_data, 'piotroski_f_score')
+            if piotroski is not None:
+                if piotroski >= 7:
+                    score += 0.75
+                elif piotroski >= 5:
+                    score += 0.5
+                elif piotroski >= 3:
+                    score += 0.25
+                elif piotroski >= 2:
+                    pass  # No adjustment
+                else:
+                    score -= 0.5
+            
+            # =========================================================
+            # PRIORITY 5: Additional Factors (Weight: ~0.75 points)
+            # =========================================================
+            # Current Ratio (liquidity)
+            current_ratio = self._safe_get(stock_data, 'current_ratio')
+            if current_ratio is not None:
+                if current_ratio >= 2.0:
+                    score += 0.25
+                elif current_ratio >= 1.5:
+                    score += 0.15
+                elif current_ratio >= 1.0:
+                    pass  # No adjustment
+                else:
+                    score -= 0.25
+            
+            # Debt to Equity
+            debt_equity = self._safe_get(stock_data, 'debt_to_equity')
+            if debt_equity is not None:
+                if debt_equity <= 0.3:
+                    score += 0.25
+                elif debt_equity <= 0.5:
+                    score += 0.15
+                elif debt_equity <= 1.0:
+                    pass  # No adjustment
+                elif debt_equity <= 2.0:
+                    score -= 0.15
+                else:
+                    score -= 0.25
+            
+            # Interest Coverage
+            interest_cov = self._safe_get(stock_data, 'interest_coverage')
+            if interest_cov is not None:
+                if interest_cov >= 10:
+                    score += 0.25
+                elif interest_cov >= 5:
+                    score += 0.15
+                elif interest_cov >= 2:
+                    pass  # No adjustment
+                else:
+                    score -= 0.25
+            
+            # =========================================================
+            # FINAL ADJUSTMENTS
+            # =========================================================
+            # Clamp score to 1-10 range
+            score = max(1.0, min(10.0, score))
+            
+            # Apply Altman Z-Score cap if active
+            if altman_cap_active and score > 3.5:
+                score = 3.5
+            
+            # Round to 2 decimal places
+            score = round(score, 2)
+            
+            logger.debug(f"Formula calculated score for {ticker}: {score:.2f}")
+            return score
+            
+        except Exception as e:
+            logger.error(f"Error calculating formula score for {ticker}: {e}")
+            return None
+    
     def analyze_stock_with_claude(self, stock_data: Dict[str, Any]) -> Optional[float]:
         """
-        Use Claude Sonnet 4.5 to analyze stock and generate strength score
+        Analyze stock and generate strength score.
+        
+        NOTE: Previously used Claude Sonnet 4.5 LLM, now uses formula-based scoring.
+        The LLM prompt is preserved below as documentation for the scoring logic.
         
         Args:
             stock_data: Dictionary containing all stock financial data
@@ -307,115 +514,139 @@ STOCK PERFORMANCE:
         """
         ticker = stock_data.get('ticker', 'UNKNOWN')
         
+        # =====================================================================
+        # LLM PROMPT PRESERVED AS DOCUMENTATION - DO NOT DELETE
+        # This documents the scoring logic that the formula replicates
+        # =====================================================================
+        # 
+        # system_prompt = """You are an expert financial analyst specializing in evaluating stock fundamentals and predicting price movement potential. 
+        # 
+        # Your task is to analyze the provided financial data and determine a "strength score" (1-10) that indicates how likely the stock price will move POSITIVELY when POSITIVE news is released about the company.
+        # 
+        # SCORING GUIDELINES:
+        # - Score 1-3: Very weak fundamentals. Even with good news, the market will likely sell off due to poor underlying business quality.
+        # - Score 4-6: Moderate fundamentals. Stock may have mixed reaction to positive news depending on sentiment.
+        # - Score 7-8: Strong fundamentals. Positive news will likely result in positive price movement.
+        # - Score 9-10: Excellent fundamentals. Positive news will very likely result in significant positive price movement.
+        # 
+        # CRITICAL CONSTRAINT - NEGATIVE ALTMAN Z-SCORE:
+        # - If the Altman Z-Score is NEGATIVE (< 0), the maximum strength score you can assign is 3.5
+        # - A negative Altman Z-Score indicates severe financial distress and high bankruptcy risk
+        # - This constraint ONLY applies when the Altman Z-Score is explicitly negative
+        # - If the Altman Z-Score is N/A (missing data), this constraint does NOT apply - evaluate the stock normally based on other available metrics
+        # 
+        # KEY EVALUATION CRITERIA (in order of importance):
+        # 1. BALANCE SHEET / CASH POSITION (HIGHEST PRIORITY):
+        #    - Net Cash position is critical - positive net cash (cash > debt) is a strong positive indicator
+        #    - Companies with more cash than debt have financial flexibility and resilience
+        #    - Net cash per share shows the actual cash backing per share
+        #    - This should be the PRIMARY factor in your evaluation
+        # 
+        # 2. ALTMAN Z-SCORE (SECOND PRIORITY):
+        #    - Altman Z-Score > 0 indicates financial stability and low bankruptcy risk
+        #    - Higher scores indicate stronger financial health
+        #    - This is a proven predictor of financial distress
+        # 
+        # 3. PROFITABILITY & CASH FLOW GENERATION (THIRD PRIORITY):
+        #    - Profit margins (net, operating, EBITDA margins)
+        #    - Return on Equity (ROE) and Return on Assets (ROA)
+        #    - Free Cash Flow and FCF margin
+        #    - Positive and growing FCF is essential
+        # 
+        # 4. PIOTROSKI F-SCORE:
+        #    - Score >= 2 indicates decent business quality
+        #    - Higher scores indicate better fundamental quality
+        # 
+        # 5. ADDITIONAL FACTORS (Lower weight):
+        #    - Interest coverage and debt ratios
+        #    - Valuation multiples (P/E, P/B, EV/EBITDA)
+        #    - Growth indicators
+        #    - Market Cap vs Enterprise Value (minor indicator only - nice to have but not critical)
+        # 
+        # CRITICAL RULES FOR HANDLING MISSING DATA:
+        # - "N/A" means the data point is UNAVAILABLE - it does NOT mean zero, negative, or bad
+        # - Missing data is NEUTRAL - do not treat it as positive OR negative
+        # - NEVER assume N/A = 0 (a stock with N/A cash is not the same as a stock with $0 cash)
+        # - Only evaluate based on the metrics that ARE available
+        # - If critical metrics are missing, be more conservative with the score but don't assume the worst
+        # - Weight your analysis toward the available data points
+        # 
+        # EXAMPLES OF PROPER N/A HANDLING:
+        # - If Net Cash = N/A: Don't assume it's 0 or negative, just note it's unknown
+        # - If Altman Z-Score = N/A: Don't treat as bankruptcy risk, just note it's unavailable
+        # - If a stock has strong margins but N/A for cash position: Score based on margins, note cash is unknown
+        # 
+        # Return ONLY a single number between 1 and 10 (can include decimals like 7.5). Do not include any explanation or other text."""
+        # 
+        # user_prompt = f"""{financial_summary}
+        # 
+        # Based on the financial data above, provide a strength score (1-10) for {ticker}."""
+        # =====================================================================
+        # END OF LLM PROMPT DOCUMENTATION
+        # =====================================================================
+        
         try:
-            # Format financial data
-            financial_summary = self.format_financial_data_for_analysis(stock_data)
+            # Use formula-based scoring instead of LLM
+            logger.info(f"📊 Analyzing {ticker} with formula-based scoring...")
             
-            # Create prompt for Claude
-            system_prompt = """You are an expert financial analyst specializing in evaluating stock fundamentals and predicting price movement potential. 
-
-Your task is to analyze the provided financial data and determine a "strength score" (1-10) that indicates how likely the stock price will move POSITIVELY when POSITIVE news is released about the company.
-
-SCORING GUIDELINES:
-- Score 1-3: Very weak fundamentals. Even with good news, the market will likely sell off due to poor underlying business quality.
-- Score 4-6: Moderate fundamentals. Stock may have mixed reaction to positive news depending on sentiment.
-- Score 7-8: Strong fundamentals. Positive news will likely result in positive price movement.
-- Score 9-10: Excellent fundamentals. Positive news will very likely result in significant positive price movement.
-
-CRITICAL CONSTRAINT - NEGATIVE ALTMAN Z-SCORE:
-- If the Altman Z-Score is NEGATIVE (< 0), the maximum strength score you can assign is 3.5
-- A negative Altman Z-Score indicates severe financial distress and high bankruptcy risk
-- This constraint ONLY applies when the Altman Z-Score is explicitly negative
-- If the Altman Z-Score is N/A (missing data), this constraint does NOT apply - evaluate the stock normally based on other available metrics
-
-KEY EVALUATION CRITERIA (in order of importance):
-1. BALANCE SHEET / CASH POSITION (HIGHEST PRIORITY):
-   - Net Cash position is critical - positive net cash (cash > debt) is a strong positive indicator
-   - Companies with more cash than debt have financial flexibility and resilience
-   - Net cash per share shows the actual cash backing per share
-   - This should be the PRIMARY factor in your evaluation
-
-2. ALTMAN Z-SCORE (SECOND PRIORITY):
-   - Altman Z-Score > 0 indicates financial stability and low bankruptcy risk
-   - Higher scores indicate stronger financial health
-   - This is a proven predictor of financial distress
-
-3. PROFITABILITY & CASH FLOW GENERATION (THIRD PRIORITY):
-   - Profit margins (net, operating, EBITDA margins)
-   - Return on Equity (ROE) and Return on Assets (ROA)
-   - Free Cash Flow and FCF margin
-   - Positive and growing FCF is essential
-
-4. PIOTROSKI F-SCORE:
-   - Score >= 2 indicates decent business quality
-   - Higher scores indicate better fundamental quality
-
-5. ADDITIONAL FACTORS (Lower weight):
-   - Interest coverage and debt ratios
-   - Valuation multiples (P/E, P/B, EV/EBITDA)
-   - Growth indicators
-   - Market Cap vs Enterprise Value (minor indicator only - nice to have but not critical)
-
-CRITICAL RULES FOR HANDLING MISSING DATA:
-- "N/A" means the data point is UNAVAILABLE - it does NOT mean zero, negative, or bad
-- Missing data is NEUTRAL - do not treat it as positive OR negative
-- NEVER assume N/A = 0 (a stock with N/A cash is not the same as a stock with $0 cash)
-- Only evaluate based on the metrics that ARE available
-- If critical metrics are missing, be more conservative with the score but don't assume the worst
-- Weight your analysis toward the available data points
-
-EXAMPLES OF PROPER N/A HANDLING:
-- If Net Cash = N/A: Don't assume it's 0 or negative, just note it's unknown
-- If Altman Z-Score = N/A: Don't treat as bankruptcy risk, just note it's unavailable
-- If a stock has strong margins but N/A for cash position: Score based on margins, note cash is unknown
-
-Return ONLY a single number between 1 and 10 (can include decimals like 7.5). Do not include any explanation or other text."""
-
-            user_prompt = f"""{financial_summary}
-
-Based on the financial data above, provide a strength score (1-10) for {ticker}."""
-
-            # Call Claude API
-            logger.info(f"🤖 Analyzing {ticker} with Claude Sonnet 4.5...")
+            strength_score = self.calculate_strength_score_formula(stock_data)
             
-            message = self.anthropic_client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=100,
-                temperature=0.3,  # Low temperature for consistent scoring
-                system=system_prompt,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": user_prompt
-                    }
-                ]
-            )
-            
-            # Extract response
-            response_text = message.content[0].text.strip()
-            
-            # Update stats
-            self.stats['api_calls'] += 1
-            self.stats['total_tokens'] += message.usage.input_tokens + message.usage.output_tokens
-            
-            # Parse score from response
-            try:
-                strength_score = float(response_text)
-                
-                # Validate score is in range
-                if not (1.0 <= strength_score <= 10.0):
-                    logger.warning(f"⚠️ Score {strength_score} out of range for {ticker}, clamping to valid range")
-                    strength_score = max(1.0, min(10.0, strength_score))
-                
+            if strength_score is not None:
                 logger.info(f"✅ {ticker} analyzed: Strength Score = {strength_score:.2f}")
                 return strength_score
-                
-            except ValueError:
-                logger.error(f"❌ Could not parse score from Claude response for {ticker}: {response_text}")
+            else:
+                logger.error(f"❌ Formula calculation failed for {ticker}")
                 return None
+            
+            # =====================================================================
+            # LLM API CALL COMMENTED OUT - Using formula instead
+            # =====================================================================
+            # 
+            # # Format financial data
+            # financial_summary = self.format_financial_data_for_analysis(stock_data)
+            # 
+            # # Call Claude API
+            # logger.info(f"🤖 Analyzing {ticker} with Claude Sonnet 4.5...")
+            # 
+            # message = self.anthropic_client.messages.create(
+            #     model="claude-sonnet-4-20250514",
+            #     max_tokens=100,
+            #     temperature=0.3,  # Low temperature for consistent scoring
+            #     system=system_prompt,
+            #     messages=[
+            #         {
+            #             "role": "user",
+            #             "content": user_prompt
+            #         }
+            #     ]
+            # )
+            # 
+            # # Extract response
+            # response_text = message.content[0].text.strip()
+            # 
+            # # Update stats
+            # self.stats['api_calls'] += 1
+            # self.stats['total_tokens'] += message.usage.input_tokens + message.usage.output_tokens
+            # 
+            # # Parse score from response
+            # try:
+            #     strength_score = float(response_text)
+            #     
+            #     # Validate score is in range
+            #     if not (1.0 <= strength_score <= 10.0):
+            #         logger.warning(f"⚠️ Score {strength_score} out of range for {ticker}, clamping to valid range")
+            #         strength_score = max(1.0, min(10.0, strength_score))
+            #     
+            #     logger.info(f"✅ {ticker} analyzed: Strength Score = {strength_score:.2f}")
+            #     return strength_score
+            #     
+            # except ValueError:
+            #     logger.error(f"❌ Could not parse score from Claude response for {ticker}: {response_text}")
+            #     return None
+            # =====================================================================
                 
         except Exception as e:
-            logger.error(f"❌ Error analyzing {ticker} with Claude: {e}")
+            logger.error(f"❌ Error analyzing {ticker}: {e}")
             return None
     
     def update_strength_score(self, ticker: str, strength_score: float) -> bool:
