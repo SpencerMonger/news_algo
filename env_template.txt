@@ -1,33 +1,31 @@
-# ClickHouse Database Configuration
-CLICKHOUSE_HOST=10.0.0.56
-CLICKHOUSE_PORT=8123
-CLICKHOUSE_USER=default
-CLICKHOUSE_PASSWORD=
+POLYGON_API_KEY=""
+SYMBOL=""
+PROXY_URL=http://3.128.134.41:80
 
-# Finviz Elite Credentials
-FINVIZ_EMAIL=your_email@example.com
-FINVIZ_PASSWORD=your_password
+# Clickhouse creds
+CLICKHOUSE_HOST=""
+CLICKHOUSE_HTTP_PORT=""
+CLICKHOUSE_USER=""
+CLICKHOUSE_PASSWORD=""
+CLICKHOUSE_DATABASE=""
+CLICKHOUSE_SECURE=""
 
-# Benzinga Pro Credentials
-BENZINGA_EMAIL=your_benzinga_email@example.com
-BENZINGA_PASSWORD=your_benzinga_password
+#Finviz creds
+FINVIZ_EMAIL=""
+FINVIZ_PASSWORD=""
 
-# Benzinga API Key for WebSocket streaming
-BENZINGA_API_KEY=your_benzinga_api_key_here
+# Benzinga creds
+BENZINGA_EMAIL="
+BENZINGA_PASSWORD="
 
-# Anthropic Claude API for Sentiment Analysis
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-ANTHROPIC_API_KEY2=your_anthropic_api_key_here
-ANTHROPIC_API_KEY3=your_anthropic_api_key_here
+BENZINGA_API_KEY=""
 
-# Polygon API (if still needed for price checking)
-POLYGON_API_KEY=your_polygon_api_key_here
-PROXY_URL=
+#DOW Jones / Postman API Key
+DOW_JONES_API_KEY=""
 
-# Monitoring Configuration
-CHECK_INTERVAL=1
-MAX_AGE_SECONDS=90
-BATCH_SIZE=50
+# Claude Key
+ANTHROPIC_API_KEY=""
 
-# Logging Level
-LOG_LEVEL=INFO 
+ANTHROPIC_API_KEY2=""
+
+ANTHROPIC_API_KEY3=""
