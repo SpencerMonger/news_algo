@@ -845,7 +845,10 @@ class ContinuousPriceMonitor:
             WITH ticker_second_prices AS (
                 SELECT 
                     ticker,
-                    price as second_price
+                    least(
+                        max(CASE WHEN rn = 2 THEN price END),
+                        max(CASE WHEN rn = 3 THEN price END)
+                    ) as second_price
                 FROM (
                     SELECT 
                         ticker,
@@ -854,7 +857,8 @@ class ContinuousPriceMonitor:
                     FROM News.price_tracking
                     WHERE ticker IN ({ticker_placeholders})
                 ) ranked
-                WHERE rn = 2
+                WHERE rn IN (2, 3)
+                GROUP BY ticker
             ),
             ticker_first_3_volume AS (
                 SELECT 
@@ -999,7 +1003,10 @@ class ContinuousPriceMonitor:
                 ticker_second_prices AS (
                     SELECT 
                         ticker,
-                        price as second_price
+                        least(
+                            max(CASE WHEN rn = 2 THEN price END),
+                            max(CASE WHEN rn = 3 THEN price END)
+                        ) as second_price
                     FROM (
                         SELECT 
                             ticker,
@@ -1008,7 +1015,8 @@ class ContinuousPriceMonitor:
                         FROM News.price_tracking
                         WHERE ticker IN ({ticker_placeholders})
                     ) ranked
-                    WHERE rn = 2
+                    WHERE rn IN (2, 3)
+                    GROUP BY ticker
                 )
                 SELECT 
                     pt.ticker,
