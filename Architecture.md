@@ -14,7 +14,7 @@
 
 ## System Overview
 
-NewsHead is a real-time stock market news monitoring and price tracking system. It detects breaking news via Benzinga WebSocket, analyzes sentiment using Claude AI, tracks prices via Polygon API, and generates alerts when sentiment, price, and strength score conditions are met.
+NewsHead is a real-time stock market news monitoring and price tracking system. It detects breaking news via Benzinga WebSocket, analyzes sentiment using Claude AI, tracks prices via IBKR TWS API, and generates alerts when sentiment, price, and strength score conditions are met.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -30,7 +30,7 @@ NewsHead is a real-time stock market news monitoring and price tracking system. 
 │           ▼                                                   │              │
 │  ┌──────────────────┐     ┌──────────────────┐               │              │
 │  │  Price Checker   │────▶│  Alert Generator │───────────────┘              │
-│  │ (Polygon API)    │     │ (Price+Sentiment │                              │
+│  │ (IBKR TWS API)   │     │ (Price+Sentiment │                              │
 │  │                  │     │  +Strength Score)│                              │
 │  └──────────────────┘     └──────────────────┘                              │
 │                                                                              │
@@ -72,12 +72,15 @@ python3 run_system.py --enable-old          # Process articles older than 2 minu
 
 | File | Purpose |
 |------|---------|
-| `price_checker.py` | Hybrid WebSocket + REST price monitoring via Polygon API |
+| `price_checker.py` | Real-time price monitoring via IBKR TWS API |
+| `ibkr_client.py` | IBKR TWS API client module with callbacks |
 
-**Price Checker** uses a hybrid approach:
-- **Primary**: Polygon WebSocket (`wss://socket.polygon.io/stocks`) for real-time trades
-- **Fallback**: REST API (`/v2/last/trade/{ticker}`) when WebSocket fails
-- **Double-call fix**: New tickers make 2 API calls, discards first (often garbage data)
+**Price Checker** uses IBKR TWS API:
+- **Primary**: IBKR TWS API for real-time trade data (tickPrice callback with tickType=4 LAST)
+- **Threading**: IBKR API runs in separate thread, integrated with asyncio event loop
+- **Subscriptions**: Dynamic subscription management based on active tickers
+- **Port Configuration**: 7497 for paper trading, 7496 for live trading (via IBKR_PORT env var)
+- **Client ID**: Uses client_id=10 to avoid conflict with tradehead (client_id=1)
 
 ### Sentiment Analysis
 
@@ -195,9 +198,10 @@ python run_backtest.py --ticker AAPL        # Single ticker
 Required in `.env` file (see `env_template.txt`):
 
 ```bash
-# Price API
-POLYGON_API_KEY=""
-PROXY_URL=http://3.128.134.41:80  # Optional proxy
+# IBKR Configuration (replaces Polygon)
+IBKR_HOST=127.0.0.1           # TWS/Gateway host
+IBKR_PORT=7497                # 7497=paper, 7496=live
+IBKR_CLIENT_ID=10             # Must be unique (tradehead uses 1)
 
 # Database
 CLICKHOUSE_HOST=""
@@ -237,8 +241,9 @@ Log files are stored in `logs/`:
 1. **Benzinga WebSocket Only**: Web scraping is deprecated; all news comes via WebSocket for sub-second detection
 2. **Process Isolation**: Price checker runs separately to avoid resource contention
 3. **File-Based Triggers**: Simple, reliable inter-process communication
-4. **Double API Call**: Workaround for Polygon's garbage first response on new tickers
+4. **IBKR TWS API**: Replaced Polygon with IBKR for more reliable, lower-latency price data
 5. **Lowest of 2nd/3rd Price Baseline**: Uses `least(2nd_price, 3rd_price)` for percentage calculations (1st often stale, using lowest of 2nd/3rd is more conservative)
 6. **60-Second Window**: Strict enforcement at both price insertion and alert generation levels
 7. **Native Load Balancing**: Multiple Claude API keys without external infrastructure
 8. **Strength Score Priority**: Alerts are prioritized based on pre-computed stock strength scores from financial analysis
+9. **Thread-Safe IBKR Integration**: IBKR callbacks run in separate thread with thread-safe price buffer

@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
 """
-Continuous Price Monitor - HYBRID WEBSOCKET APPROACH
-Monitors breaking news tickers and tracks price changes in real-time via WebSocket streaming
-Falls back to REST API if WebSocket fails
+Continuous Price Monitor - IBKR TWS API Implementation
+
+Monitors breaking news tickers and tracks price changes in real-time via IBKR TWS API.
+Replaces Polygon WebSocket as the primary data source.
+
+Requirements:
+    - TWS or IB Gateway must be running
+    - API must be enabled in TWS settings
+    - client_id=10 (to avoid conflict with tradehead using client_id=1)
+
+Environment Variables:
+    - IBKR_HOST: TWS/Gateway host (default: 127.0.0.1)
+    - IBKR_PORT: TWS/Gateway port (7497=paper, 7496=live)
+    - IBKR_CLIENT_ID: Unique client ID (default: 10)
 """
 
 import logging
-import aiohttp
 import os
 import asyncio
 import time
-import websockets
-import json
 from datetime import datetime, timedelta
+from typing import Dict, Set, Optional
+
 import pytz
 from dotenv import load_dotenv
-from typing import List, Dict, Any, Optional, Set
+
 from clickhouse_setup import ClickHouseManager
+from ibkr_client import IBKRClient
 
 # Load environment variables
 load_dotenv()
@@ -28,55 +39,54 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Reduce ibapi logging verbosity (very spammy at DEBUG level)
+logging.getLogger('ibapi').setLevel(logging.WARNING)
+logging.getLogger('ibapi.client').setLevel(logging.WARNING)
+logging.getLogger('ibapi.wrapper').setLevel(logging.WARNING)
+logging.getLogger('ibapi.decoder').setLevel(logging.WARNING)
+logging.getLogger('ibapi.connection').setLevel(logging.WARNING)
+logging.getLogger('ibapi.reader').setLevel(logging.WARNING)
+
 # GLOBAL NOTIFICATION QUEUE for immediate ticker notifications
 ticker_notification_queue = asyncio.Queue()
 
+
 class ContinuousPriceMonitor:
+    """
+    IBKR-based price monitor for tracking breaking news tickers.
+    
+    Replaces Polygon WebSocket with IBKR TWS API for real-time price data.
+    """
+    
     def __init__(self):
         self.ch_manager = None
-        self.session = None
-        self.polygon_api_key = os.getenv('POLYGON_API_KEY', '')
-        self.active_tickers: Set[str] = set()  # Track tickers directly from breaking_news
-        self.ticker_timestamps: Dict[str, datetime] = {}  # Track when tickers were added
-        self.ready_event = asyncio.Event()  # Signal when monitor is ready for new tickers
+        self.active_tickers: Set[str] = set()
+        self.ticker_timestamps: Dict[str, datetime] = {}
+        self.ready_event = asyncio.Event()
         
-        # NEW: WebSocket components
-        self.websocket = None
-        self.websocket_authenticated = False
-        self.websocket_price_buffer = {}  # Buffer prices between database writes
-        self.websocket_url = "wss://socket.polygon.io/stocks"  # Real-time WebSocket URL
-        self.websocket_subscriptions = set()  # Track current subscriptions
-        self.websocket_enabled = False  # Track if WebSocket is operational
-        self.websocket_reconnect_delay = 1.0  # Reconnection delay (exponential backoff)
-        self.websocket_max_reconnect_delay = 60.0  # Maximum reconnection delay
-        self.use_websocket_data = False  # Flag to determine data source
+        # IBKR client (replaces Polygon WebSocket)
+        self.ibkr_client: Optional[IBKRClient] = None
+        self.ibkr_connected = False
         
-        if not self.polygon_api_key:
-            logger.error("POLYGON_API_KEY environment variable not set")
-            raise ValueError("Polygon API key is required")
+        # Load IBKR configuration from environment
+        self.ibkr_host = os.getenv('IBKR_HOST', '127.0.0.1')
+        self.ibkr_port = int(os.getenv('IBKR_PORT', '7497'))
+        self.ibkr_client_id = int(os.getenv('IBKR_CLIENT_ID', '10'))
         
-        # Use PROXY_URL if available (for REST API fallback)
-        proxy_url = os.getenv('PROXY_URL', '').strip()
-        if proxy_url:
-            self.base_url = proxy_url.rstrip('/')
-            logger.info(f"Using proxy URL for REST fallback: {self.base_url}")
-        else:
-            self.base_url = "https://api.polygon.io"
-            logger.info("Using official Polygon API for REST fallback")
+        logger.info(f"IBKR Config: {self.ibkr_host}:{self.ibkr_port} (client_id={self.ibkr_client_id})")
         
         # Stats
         self.stats = {
             'tickers_monitored': 0,
             'price_checks': 0,
             'alerts_triggered': 0,
-            'websocket_messages': 0,
-            'websocket_reconnections': 0,
-            'rest_api_fallbacks': 0,
+            'ibkr_ticks_received': 0,
+            'ibkr_reconnections': 0,
             'start_time': time.time()
         }
 
     async def initialize(self):
-        """Initialize the price monitoring system with WebSocket and REST fallback"""
+        """Initialize the price monitoring system with IBKR connection"""
         try:
             # Initialize ClickHouse connection
             self.ch_manager = ClickHouseManager()
@@ -87,274 +97,92 @@ class ContinuousPriceMonitor:
             
             # Load active tickers from breaking_news
             self.active_tickers = await self.get_active_tickers_from_breaking_news()
-            logger.info(f"✅ HYBRID Price Monitor initialized with WebSocket + REST fallback - {len(self.active_tickers)} active tickers!")
             
-            # NEW: Initialize WebSocket connection
-            logger.info("🔌 Setting up WebSocket connection...")
-            await self.setup_websocket_connection()
+            # Initialize IBKR connection
+            logger.info("🔌 Initializing IBKR TWS API connection...")
+            await self.setup_ibkr_connection()
             
-            # Keep aiohttp session for REST API fallback
-            timeout = aiohttp.ClientTimeout(
-                total=2.0,      # 2 second total timeout - matches polling interval
-                connect=0.5,    # 0.5 second connect timeout
-                sock_read=1.5   # 1.5 second read timeout
-            )
-            
-            self.session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=aiohttp.TCPConnector(
-                    limit=50,           # Concurrent connections for REST fallback
-                    limit_per_host=20,  # Connections per host for REST fallback
-                    ttl_dns_cache=300,  # DNS cache for 5 minutes
-                    use_dns_cache=True,
-                    keepalive_timeout=30,
-                    enable_cleanup_closed=True
-                )
-            )
+            logger.info(f"✅ IBKR Price Monitor initialized - {len(self.active_tickers)} active tickers")
             
         except Exception as e:
             logger.error(f"Error initializing price monitor: {e}")
             raise
 
-    async def setup_websocket_connection(self):
-        """Setup WebSocket connection to Polygon"""
+    async def setup_ibkr_connection(self):
+        """Setup connection to IBKR TWS/Gateway"""
         try:
-            logger.info(f"🔌 Connecting to Polygon WebSocket: {self.websocket_url}")
-            self.websocket = await websockets.connect(self.websocket_url)
-            logger.info("✅ WebSocket connection established")
+            self.ibkr_client = IBKRClient(
+                host=self.ibkr_host,
+                port=self.ibkr_port,
+                client_id=self.ibkr_client_id
+            )
             
-            # Authenticate WebSocket
-            success = await self.authenticate_websocket()
+            # Connect (runs in separate thread)
+            success = self.ibkr_client.connect_and_run()
+            
             if success:
-                self.websocket_enabled = True
-                self.use_websocket_data = True
-                self.websocket_reconnect_delay = 1.0  # Reset reconnection delay
-                logger.info("🚀 WebSocket authentication successful - REAL-TIME MODE ACTIVE")
+                self.ibkr_connected = True
+                logger.info(f"✅ IBKR connection established on port {self.ibkr_port}")
+                logger.info(f"   Mode: {'PAPER TRADING' if self.ibkr_port == 7497 else 'LIVE TRADING'}")
             else:
-                logger.error("❌ WebSocket authentication failed - falling back to REST API")
-                await self.close_websocket()
-                self.use_websocket_data = False
+                raise ConnectionError("Failed to connect to IBKR TWS/Gateway")
                 
         except Exception as e:
-            logger.error(f"❌ WebSocket connection failed: {e}")
-            logger.info("🔄 Falling back to REST API mode")
-            self.websocket = None
-            self.websocket_enabled = False
-            self.use_websocket_data = False
+            logger.error(f"❌ IBKR connection failed: {e}")
+            logger.error("   Ensure TWS or IB Gateway is running and API is enabled")
+            raise
 
-    async def authenticate_websocket(self):
-        """Authenticate WebSocket connection with API key"""
-        if not self.websocket:
-            return False
-        
-        try:
-            # Send authentication message
-            auth_message = {
-                "action": "auth",
-                "params": self.polygon_api_key
-            }
-            
-            logger.info("🔐 Sending WebSocket authentication...")
-            await self.websocket.send(json.dumps(auth_message))
-            
-            # Wait for authentication response
-            response = await asyncio.wait_for(self.websocket.recv(), timeout=10.0)
-            auth_response = json.loads(response)
-            
-            logger.info(f"📨 Auth response: {auth_response}")
-            
-            # Handle both single message and array of messages
-            if isinstance(auth_response, list):
-                for msg in auth_response:
-                    if msg.get("status") == "auth_success":
-                        self.websocket_authenticated = True
-                        return True
-                    elif msg.get("status") == "connected":
-                        # Wait for auth_success message
-                        try:
-                            auth_confirm = await asyncio.wait_for(self.websocket.recv(), timeout=5.0)
-                            auth_confirm_data = json.loads(auth_confirm)
-                            if isinstance(auth_confirm_data, list):
-                                for confirm_msg in auth_confirm_data:
-                                    if confirm_msg.get("status") == "auth_success":
-                                        self.websocket_authenticated = True
-                                        return True
-                            elif auth_confirm_data.get("status") == "auth_success":
-                                self.websocket_authenticated = True
-                                return True
-                        except asyncio.TimeoutError:
-                            logger.error("❌ Timeout waiting for auth confirmation")
-            else:
-                if auth_response.get("status") == "auth_success":
-                    self.websocket_authenticated = True
-                    return True
-            
-            return False
-            
-        except asyncio.TimeoutError:
-            logger.error("❌ WebSocket authentication timeout")
-            return False
-        except Exception as e:
-            logger.error(f"❌ WebSocket authentication error: {e}")
-            return False
-
-    async def close_websocket(self):
-        """Close WebSocket connection safely"""
-        if self.websocket:
-            try:
-                await self.websocket.close()
-            except:
-                pass  # Ignore errors during close
-            finally:
-                self.websocket = None
-                self.websocket_authenticated = False
-                self.websocket_enabled = False
-
-    async def reconnect_websocket(self):
-        """Reconnect WebSocket with exponential backoff"""
-        logger.info(f"🔄 Attempting WebSocket reconnection in {self.websocket_reconnect_delay:.1f}s...")
-        await asyncio.sleep(self.websocket_reconnect_delay)
-        
-        # Exponential backoff
-        self.websocket_reconnect_delay = min(
-            self.websocket_reconnect_delay * 2,
-            self.websocket_max_reconnect_delay
-        )
-        self.stats['websocket_reconnections'] += 1
-        
-        # Close existing connection
-        await self.close_websocket()
-        
-        # Attempt to reconnect
-        await self.setup_websocket_connection()
-
-    async def update_websocket_subscriptions(self):
-        """Update WebSocket subscriptions based on active tickers"""
-        if not self.websocket_enabled or not self.websocket_authenticated:
+    async def update_ibkr_subscriptions(self):
+        """Update IBKR subscriptions based on active tickers"""
+        if not self.ibkr_connected or not self.ibkr_client:
             return
         
         try:
-            # Calculate new subscriptions needed
-            current_subscriptions = set(self.websocket_subscriptions)
-            needed_subscriptions = set()
+            self.ibkr_client.update_subscriptions(self.active_tickers)
             
-            # Create subscription strings for active tickers
-            for ticker in self.active_tickers:
-                needed_subscriptions.add(f"T.{ticker}")  # Trades - primary source
-                needed_subscriptions.add(f"Q.{ticker}")  # Quotes - fallback source
-            
-            # Subscribe to new tickers
-            new_subscriptions = needed_subscriptions - current_subscriptions
-            if new_subscriptions:
-                subscribe_message = {
-                    "action": "subscribe",
-                    "params": ",".join(new_subscriptions)
-                }
-                
-                logger.info(f"📡 Subscribing to {len(new_subscriptions)} new WebSocket streams: {new_subscriptions}")
-                await self.websocket.send(json.dumps(subscribe_message))
-                
-                # Update subscription tracking immediately (fire-and-forget)
-                self.websocket_subscriptions.update(new_subscriptions)
-                logger.info(f"✅ Subscribed to {len(new_subscriptions)} WebSocket streams")
-            
-            # Unsubscribe from old tickers
-            old_subscriptions = current_subscriptions - needed_subscriptions
-            if old_subscriptions:
-                unsubscribe_message = {
-                    "action": "unsubscribe",
-                    "params": ",".join(old_subscriptions)
-                }
-                
-                logger.info(f"📡 Unsubscribing from {len(old_subscriptions)} WebSocket streams")
-                await self.websocket.send(json.dumps(unsubscribe_message))
-                self.websocket_subscriptions -= old_subscriptions
-                
-        except Exception as e:
-            logger.error(f"Error updating WebSocket subscriptions: {e}")
-
-    async def handle_websocket_message(self, message):
-        """Process incoming WebSocket messages"""
-        try:
-            data = json.loads(message)
-            self.stats['websocket_messages'] += 1
-            
-            # Handle arrays and single messages
-            if isinstance(data, list):
-                for msg in data:
-                    await self.process_single_websocket_message(msg)
-            else:
-                await self.process_single_websocket_message(data)
-                
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing WebSocket JSON: {e}")
-        except Exception as e:
-            logger.error(f"Error processing WebSocket message: {e}")
-
-    async def process_single_websocket_message(self, msg):
-        """Process a single WebSocket message"""
-        try:
-            event_type = msg.get("ev")
-            symbol = msg.get("sym", msg.get("S", "UNKNOWN"))
-            timestamp = msg.get("t", msg.get("s", 0))
-            
-            # Only process messages for active tickers
-            if symbol not in self.active_tickers:
-                return
-            
-            current_time = datetime.now(pytz.UTC)
-            
-            if event_type == "T":  # Trade message
-                price = msg.get("p", 0.0)
-                size = msg.get("s", 0)
-                
-                if price > 0:
-                    # Add to price buffer
-                    if symbol not in self.websocket_price_buffer:
-                        self.websocket_price_buffer[symbol] = []
+            # Remove failed tickers from active tracking (they won't get price data)
+            failed_tickers = self.ibkr_client.get_failed_tickers()
+            for ticker in list(failed_tickers.keys()):
+                if ticker in self.active_tickers:
+                    self.active_tickers.discard(ticker)
+                    if ticker in self.ticker_timestamps:
+                        del self.ticker_timestamps[ticker]
+                    logger.info(f"⛔ Removed {ticker} from active tracking - IBKR cannot find security")
                     
-                    self.websocket_price_buffer[symbol].append({
-                        'price': price,
-                        'volume': size,
-                        'timestamp': current_time,
-                        'source': 'websocket_trade',
-                        'websocket_timestamp': timestamp
-                    })
-                    
-                    logger.debug(f"📈 WEBSOCKET TRADE {symbol}: ${price:.4f} (size: {size})")
-                
-            elif event_type == "status":
-                logger.debug(f"📡 WebSocket status: {msg}")
-                
         except Exception as e:
-            logger.error(f"Error processing single WebSocket message: {e}")
+            logger.error(f"Error updating IBKR subscriptions: {e}")
 
-    async def process_websocket_prices(self):
-        """Process buffered WebSocket prices and insert to database"""
-        if not self.websocket_price_buffer:
+    async def process_ibkr_prices(self):
+        """Process buffered IBKR prices and insert to database"""
+        if not self.ibkr_client:
             return
         
         try:
             start_time = time.time()
             
+            # CRITICAL: Check 60-second window BEFORE inserting price data
+            valid_tickers = await self.get_tickers_within_60_second_window()
+            
+            if not valid_tickers:
+                logger.debug("⏰ No tickers within 60-second window")
+                return
+            
+            # Get price data from IBKR buffer (only for valid tickers)
+            price_buffer = self.ibkr_client.get_buffer_for_tickers(valid_tickers)
+            
+            if not price_buffer:
+                return
+            
             # Convert buffer to database format
             price_data = []
             processed_tickers = set()
             
-            # CRITICAL FIX: Check 40-second window BEFORE inserting price data
-            valid_tickers = await self.get_tickers_within_60_second_window()
-            
-            for ticker, prices in self.websocket_price_buffer.items():
+            for ticker, prices in price_buffer.items():
                 if not prices:
                     continue
                 
-                # ENFORCE 60-SECOND WINDOW: Skip tickers outside the window
-                if ticker not in valid_tickers:
-                    logger.debug(f"⏰ WINDOW EXPIRED: Skipping price data for {ticker} (>60s since first timestamp)")
-                    continue
-                
                 # Use the most recent price for each ticker
-                latest_price_info = prices[-1]  # Get latest price
+                latest_price_info = prices[-1]
                 
                 price_data.append((
                     latest_price_info['timestamp'],
@@ -364,61 +192,23 @@ class ContinuousPriceMonitor:
                     latest_price_info['source']
                 ))
                 processed_tickers.add(ticker)
+                self.stats['ibkr_ticks_received'] += len(prices)
             
             if price_data:
-                # Get sentiment data for enrichment (same as REST approach)
-                sentiment_data = {}
-                if processed_tickers:
-                    try:
-                        ticker_list = list(processed_tickers)
-                        ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
-                        
-                        sentiment_query = f"""
-                        SELECT 
-                            ticker,
-                            sentiment,
-                            recommendation,
-                            confidence
-                        FROM (
-                            SELECT 
-                                ticker,
-                                sentiment,
-                                recommendation,
-                                confidence,
-                                ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY analyzed_at DESC) as rn
-                            FROM News.breaking_news
-                            WHERE ticker IN ({ticker_placeholders})
-                            AND analyzed_at >= now() - INTERVAL 1 HOUR
-                            AND sentiment != ''
-                            AND recommendation != ''
-                        ) ranked
-                        WHERE rn = 1
-                        """
-                        
-                        sentiment_result = self.ch_manager.client.query(sentiment_query)
-                        for row in sentiment_result.result_rows:
-                            ticker, sentiment, recommendation, confidence = row
-                            sentiment_data[ticker] = {
-                                'sentiment': sentiment,
-                                'recommendation': recommendation,
-                                'confidence': confidence
-                            }
-                    except Exception as e:
-                        logger.debug(f"Error getting sentiment data: {e}")
+                # Get sentiment data for enrichment
+                sentiment_data = await self._get_sentiment_data(processed_tickers)
                 
                 # Prepare enriched price data with sentiment
                 enriched_price_data = []
                 for price_row in price_data:
                     timestamp, ticker, price, volume, source = price_row
                     
-                    # Get sentiment for this ticker (or use defaults)
                     ticker_sentiment = sentiment_data.get(ticker, {
                         'sentiment': 'neutral',
                         'recommendation': 'HOLD',
                         'confidence': 'low'
                     })
                     
-                    # Add sentiment fields to price data
                     enriched_price_data.append((
                         timestamp,
                         ticker,
@@ -430,313 +220,88 @@ class ContinuousPriceMonitor:
                         ticker_sentiment['confidence']
                     ))
                 
-                # Batch insert enriched price data with sentiment
+                # Batch insert enriched price data
                 self.ch_manager.client.insert(
                     'News.price_tracking',
                     enriched_price_data,
-                    column_names=['timestamp', 'ticker', 'price', 'volume', 'source', 'sentiment', 'recommendation', 'confidence']
+                    column_names=['timestamp', 'ticker', 'price', 'volume', 'source', 
+                                 'sentiment', 'recommendation', 'confidence']
                 )
                 
                 total_time = time.time() - start_time
                 self.stats['price_checks'] += len(enriched_price_data)
                 
-                # Enhanced logging with sentiment info
-                sentiment_count = len([t for t in sentiment_data.values() if t['recommendation'] != 'HOLD'])
-                logger.info(f"🌐 WEBSOCKET: Processed {len(enriched_price_data)} price updates in {total_time:.3f}s")
-                if sentiment_count > 0:
-                    logger.info(f"🧠 SENTIMENT: {sentiment_count} tickers have non-neutral sentiment analysis")
-            
-            # Clear processed data from buffer
-            self.websocket_price_buffer.clear()
+                logger.info(f"📊 IBKR: Processed {len(enriched_price_data)} price updates in {total_time:.3f}s")
             
         except Exception as e:
-            logger.error(f"Error processing WebSocket prices: {e}")
+            logger.error(f"Error processing IBKR prices: {e}")
 
-    # Keep existing REST API methods for fallback
-    async def get_price_with_double_call(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Make double API call for new tickers - discard first (garbage), use second (correct)"""
-        url = f"{self.base_url}/v2/last/trade/{ticker}"
-        params = {'apikey': self.polygon_api_key}
-        start_time = time.time()
+    async def _get_sentiment_data(self, tickers: Set[str]) -> Dict[str, Dict]:
+        """Get latest sentiment data for tickers"""
+        sentiment_data = {}
+        
+        if not tickers:
+            return sentiment_data
         
         try:
-            # First call - expect garbage data, discard it
-            async with self.session.get(url, params=params) as response1:
-                if response1.status == 200:
-                    garbage_data = await response1.json()
-                    if 'results' in garbage_data and garbage_data['results']:
-                        garbage_price = garbage_data['results'].get('p', 0.0)
-                        logger.debug(f"🗑️ {ticker}: Discarding first call garbage price: ${garbage_price:.4f}")
+            ticker_list = list(tickers)
+            ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
             
-            # Small delay between calls to avoid rate limiting
-            await asyncio.sleep(0.1)
-            
-            # Second call - expect correct data, use this one
-            async with self.session.get(url, params=params) as response2:
-                api_time = time.time() - start_time
-                
-                if response2.status == 200:
-                    data = await response2.json()
-                    
-                    if 'results' in data and data['results']:
-                        result = data['results']
-                        price = result.get('p', 0.0)
-                        
-                        if price > 0:
-                            logger.info(f"✅ {ticker}: ${price:.4f} (REST DOUBLE-CALL VERIFIED) in {api_time:.3f}s")
-                            self.stats['rest_api_fallbacks'] += 1
-                            return {
-                                'price': price,
-                                'timestamp': datetime.now(pytz.UTC),
-                                'source': 'rest_fallback_verified'
-                            }
-                elif response2.status == 429:
-                    logger.debug(f"⚠️ Rate limited for {ticker} on second call - skipping this cycle")
-                else:
-                    logger.debug(f"Second API call returned status {response2.status} for {ticker} - skipping")
-                    
-        except asyncio.TimeoutError:
-            logger.debug(f"⏱️ TIMEOUT for {ticker} double call - skipping this cycle")
-        except Exception as e:
-            logger.debug(f"Double call error for {ticker}: {e} - skipping")
-        
-        return None
-
-    async def get_current_price_rest_fallback(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Get current price for ticker using REST API as fallback when WebSocket fails"""
-        try:
-            # Check if this is a newly added ticker (within 10 seconds)
-            is_new_ticker = False
-            if ticker in self.ticker_timestamps:
-                time_since_added = datetime.now() - self.ticker_timestamps[ticker]
-                is_new_ticker = time_since_added.total_seconds() <= 10
-            
-            if is_new_ticker:
-                # NEW TICKER: Use double call to avoid garbage data
-                logger.debug(f"🔄 REST FALLBACK: Making double API call for {ticker} to avoid garbage data")
-                return await self.get_price_with_double_call(ticker)
-            
-            # EXISTING TICKER: Use single API call (normal flow)
-            url = f"{self.base_url}/v2/last/trade/{ticker}"
-            params = {'apikey': self.polygon_api_key}
-            
-            start_time = time.time()
-            try:
-                async with self.session.get(url, params=params) as response:
-                    api_time = time.time() - start_time
-                    
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        if 'results' in data and data['results']:
-                            result = data['results']
-                            price = result.get('p', 0.0)  # trade price
-                            
-                            if price > 0:
-                                logger.debug(f"⚡ {ticker}: ${price:.4f} (REST FALLBACK) in {api_time:.3f}s")
-                                self.stats['rest_api_fallbacks'] += 1
-                                return {
-                                    'price': price,
-                                    'timestamp': datetime.now(pytz.UTC),
-                                    'source': 'rest_fallback'
-                                }
-                    elif response.status == 429:
-                        logger.debug(f"⚠️ Rate limited for {ticker} - skipping this cycle")
-                    else:
-                        logger.debug(f"Trade API returned status {response.status} for {ticker} - skipping")
-            except asyncio.TimeoutError:
-                logger.debug(f"⏱️ TIMEOUT for {ticker} - skipping this cycle")
-            except Exception as e:
-                logger.debug(f"Trade error for {ticker}: {e} - skipping")
-            
-            # No fallback - just skip failed requests to maintain clean intervals
-            total_time = time.time() - start_time
-            logger.debug(f"❌ Skipping {ticker} this cycle (failed in {total_time:.3f}s)")
-                    
-        except Exception as e:
-            logger.debug(f"Fatal error getting price for {ticker}: {e} - skipping")
-        
-        return None
-
-    async def track_prices_rest_fallback(self):
-        """Get current prices for all active tickers using REST API as fallback"""
-        if not self.active_tickers:
-            return
-        
-        # CRITICAL FIX: Check 40-second window BEFORE making API calls
-        valid_tickers = await self.get_tickers_within_60_second_window()
-        
-        if not valid_tickers:
-            logger.debug("⏰ WINDOW EXPIRED: No tickers within 60-second window, skipping price tracking")
-            return
-        
-        # OPTIMIZED: Track timing for performance monitoring
-        start_time = time.time()
-        
-        logger.info(f"🔄 REST FALLBACK: Processing {len(valid_tickers)} tickers via REST API (within 60s window)")
-        
-        # Create parallel price fetching tasks ONLY for valid tickers
-        price_tasks = [self.get_current_price_rest_fallback(ticker) for ticker in valid_tickers]
-        
-        # Execute all price requests in parallel with REDUCED timeout
-        try:
-            price_results = await asyncio.wait_for(
-                asyncio.gather(*price_tasks, return_exceptions=True),
-                timeout=2.0  # 2 seconds max - matches polling interval
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"⏱️ REST FALLBACK TIMEOUT: Price fetching took >2s for {len(valid_tickers)} tickers - SKIPPING THIS CYCLE")
-            return
-        
-        # Process results and prepare batch insert (same logic as WebSocket)
-        price_data = []
-        successful_prices = 0
-        failed_tickers = []
-        
-        for i, (ticker, price_result) in enumerate(zip(valid_tickers, price_results)):
-            if isinstance(price_result, Exception):
-                logger.debug(f"Exception getting price for {ticker}: {price_result}")
-                failed_tickers.append(ticker)
-                continue
-                
-            if price_result:
-                price_data.append((
-                    datetime.now(),
+            sentiment_query = f"""
+            SELECT 
+                ticker,
+                sentiment,
+                recommendation,
+                confidence
+            FROM (
+                SELECT 
                     ticker,
-                    price_result['price'],
-                    0,  # Set volume to 0 since we're using trades not volume data
-                    price_result.get('source', 'rest_fallback')
-                ))
-                successful_prices += 1
-            else:
-                failed_tickers.append(ticker)
+                    sentiment,
+                    recommendation,
+                    confidence,
+                    ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY analyzed_at DESC) as rn
+                FROM News.breaking_news
+                WHERE ticker IN ({ticker_placeholders})
+                AND analyzed_at >= now() - INTERVAL 1 HOUR
+                AND sentiment != ''
+                AND recommendation != ''
+            ) ranked
+            WHERE rn = 1
+            """
+            
+            result = self.ch_manager.client.query(sentiment_query)
+            for row in result.result_rows:
+                ticker, sentiment, recommendation, confidence = row
+                sentiment_data[ticker] = {
+                    'sentiment': sentiment,
+                    'recommendation': recommendation,
+                    'confidence': confidence
+                }
+        except Exception as e:
+            logger.debug(f"Error getting sentiment data: {e}")
         
-        # Batch insert price data (same sentiment enrichment as WebSocket)
-        if price_data:
-            # Get sentiment data for each ticker before inserting
-            sentiment_data = {}
-            if valid_tickers:
-                try:
-                    # Get latest sentiment analysis for valid tickers only
-                    ticker_list = list(valid_tickers)
-                    ticker_placeholders = ','.join([f"'{ticker}'" for ticker in ticker_list])
-                    
-                    sentiment_query = f"""
-                    SELECT 
-                        ticker,
-                        sentiment,
-                        recommendation,
-                        confidence
-                    FROM (
-                        SELECT 
-                            ticker,
-                            sentiment,
-                            recommendation,
-                            confidence,
-                            ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY analyzed_at DESC) as rn
-                        FROM News.breaking_news
-                        WHERE ticker IN ({ticker_placeholders})
-                        AND analyzed_at >= now() - INTERVAL 1 HOUR
-                        AND sentiment != ''
-                        AND recommendation != ''
-                    ) ranked
-                    WHERE rn = 1
-                    """
-                    
-                    sentiment_result = self.ch_manager.client.query(sentiment_query)
-                    for row in sentiment_result.result_rows:
-                        ticker, sentiment, recommendation, confidence = row
-                        sentiment_data[ticker] = {
-                            'sentiment': sentiment,
-                            'recommendation': recommendation,
-                            'confidence': confidence
-                        }
-                except Exception as e:
-                    logger.debug(f"Error getting sentiment data: {e}")
-            
-            # Prepare enriched price data with sentiment
-            enriched_price_data = []
-            for price_row in price_data:
-                timestamp, ticker, price, volume, source = price_row
-                
-                # Get sentiment for this ticker (or use defaults)
-                ticker_sentiment = sentiment_data.get(ticker, {
-                    'sentiment': 'neutral',
-                    'recommendation': 'HOLD',
-                    'confidence': 'low'
-                })
-                
-                # Add sentiment fields to price data
-                enriched_price_data.append((
-                    timestamp,
-                    ticker,
-                    price,
-                    volume,
-                    source,
-                    ticker_sentiment['sentiment'],
-                    ticker_sentiment['recommendation'],
-                    ticker_sentiment['confidence']
-                ))
-            
-            # Insert enriched price data with sentiment
-            self.ch_manager.client.insert(
-                'News.price_tracking',
-                enriched_price_data,
-                column_names=['timestamp', 'ticker', 'price', 'volume', 'source', 'sentiment', 'recommendation', 'confidence']
-            )
-            
-            total_time = time.time() - start_time
-            self.stats['price_checks'] += len(price_data)
-            
-            # Enhanced logging with sentiment info
-            sentiment_count = len([t for t in sentiment_data.values() if t['recommendation'] != 'HOLD'])
-            logger.info(f"🔄 REST FALLBACK: Tracked {successful_prices}/{len(valid_tickers)} ticker prices in {total_time:.3f}s")
-            if sentiment_count > 0:
-                logger.info(f"🧠 SENTIMENT: {sentiment_count} tickers have non-neutral sentiment analysis")
-            
-            if failed_tickers:
-                logger.debug(f"⚠️ Failed to get prices for: {failed_tickers}")
-        else:
-            total_time = time.time() - start_time
-            logger.warning(f"❌ No price data retrieved for any tickers in {total_time:.3f}s - API issues or rate limiting")
+        return sentiment_data
 
-    async def websocket_listener(self):
-        """Dedicated WebSocket listener that runs continuously"""
-        logger.info("👂 Starting WebSocket listener for real-time price streaming...")
+    async def reconnect_ibkr(self):
+        """Reconnect to IBKR with backoff"""
+        self.stats['ibkr_reconnections'] += 1
         
-        while True:
+        # Close existing connection if any
+        if self.ibkr_client:
             try:
-                if not self.websocket_enabled or not self.websocket:
-                    # Wait for WebSocket to be available or attempt reconnection
-                    await asyncio.sleep(5)
-                    if not self.websocket_enabled:
-                        logger.info("🔄 Attempting WebSocket reconnection...")
-                        await self.reconnect_websocket()
-                    continue
-                
-                try:
-                    # Listen for WebSocket messages with timeout
-                    message = await asyncio.wait_for(self.websocket.recv(), timeout=30.0)
-                    await self.handle_websocket_message(message)
-                    
-                except asyncio.TimeoutError:
-                    # No message received in 30 seconds - send ping to keep connection alive
-                    try:
-                        await self.websocket.ping()
-                        logger.debug("📡 WebSocket ping sent")
-                    except:
-                        logger.warning("❌ WebSocket ping failed - connection may be lost")
-                        self.websocket_enabled = False
-                        
-                except websockets.exceptions.ConnectionClosed:
-                    logger.warning("❌ WebSocket connection closed unexpectedly")
-                    self.websocket_enabled = False
-                    await self.reconnect_websocket()
-                    
-            except Exception as e:
-                logger.error(f"Error in WebSocket listener: {e}")
-                self.websocket_enabled = False
-                await asyncio.sleep(1)
+                self.ibkr_client.disconnect_safely()
+            except:
+                pass
+        
+        self.ibkr_connected = False
+        
+        # Wait before reconnecting
+        await asyncio.sleep(5.0)
+        
+        try:
+            await self.setup_ibkr_connection()
+        except Exception as e:
+            logger.error(f"IBKR reconnection failed: {e}")
 
     async def create_essential_tables(self):
         """Create only essential tables for optimized flow"""
@@ -748,7 +313,7 @@ class ContinuousPriceMonitor:
                 ticker String,
                 price Float64,
                 volume UInt64,
-                source String DEFAULT 'polygon',
+                source String DEFAULT 'ibkr',
                 sentiment String DEFAULT 'neutral',
                 recommendation String DEFAULT 'HOLD',
                 confidence String DEFAULT 'low'
@@ -915,7 +480,6 @@ class ContinuousPriceMonitor:
             AND current_price < 11.0
             AND current_price >= 0.40
             AND recommendation = 'BUY'
-            -- AND tv.first_3_volume_total >= 2000
             ORDER BY current_timestamp ASC
             """
             
@@ -952,27 +516,24 @@ class ContinuousPriceMonitor:
                         alert_value = 2
                         strength_info = f"Strength Score: {strength_score} (Alert Type: 2 - Lower Priority)"
                     
-                    # Determine data source for logging
-                    data_source_emoji = "🌐" if self.use_websocket_data else "🔄"
-                    
                     # Enhanced logging with sentiment information
                     if sentiment and recommendation:
                         sentiment_info = f"Sentiment: {sentiment}, Recommendation: {recommendation} ({confidence} confidence)"
-                        logger.info(f"🚨 INDIVIDUAL TIMESTAMP ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f}) in {seconds_elapsed}s")
+                        logger.info(f"🚨 IBKR ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   📊 {sentiment_info}")
                         logger.info(f"   💪 {strength_info}")
-                        logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
+                        logger.info(f"   🌐 Data Source: IBKR TWS API")
                         logger.info(f"   📈 Price sequence: #{price_count}")
                         logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     else:
-                        logger.info(f"🚨 INDIVIDUAL TIMESTAMP ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f}) in {seconds_elapsed}s")
+                        logger.info(f"🚨 IBKR ALERT: {ticker} - ${current_price:.4f} (+{change_pct:.2f}% from ${baseline_price:.4f}) in {seconds_elapsed}s")
                         logger.info(f"   ⚠️ No sentiment data available - using price-only logic")
                         logger.info(f"   💪 {strength_info}")
-                        logger.info(f"   {data_source_emoji} Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
+                        logger.info(f"   🌐 Data Source: IBKR TWS API")
                         logger.info(f"   📈 Price sequence: #{price_count}")
                         logger.info(f"   🕐 Time Window: {first_timestamp} → {current_timestamp} ({seconds_elapsed}s)")
                     
-                    # Add to alert data for batch insert - use strength_score to determine alert value
+                    # Add to alert data for batch insert
                     alert_data.append((ticker, current_timestamp, alert_value, current_price))
                     
                     # Log to price_move table
@@ -987,97 +548,104 @@ class ContinuousPriceMonitor:
                         alert_data,
                         column_names=['ticker', 'timestamp', 'alert', 'price']
                     )
-                    logger.info(f"✅ INDIVIDUAL TIMESTAMP ALERTS: Created {len(alert_data)} new alerts with deduplication")
+                    logger.info(f"✅ IBKR ALERTS: Created {len(alert_data)} new alerts with deduplication")
             else:
                 # Log when tickers fail to meet requirements
                 logger.info(f"❌ REQUIREMENTS CHECK: {len(self.active_tickers)} active tickers failed to meet one or more requirements")
-                # Enhanced debug logging to show why no alerts were triggered
-                # First check if there are any price movements that would qualify
-                debug_query = f"""
-                WITH ticker_first_timestamps AS (
-                    SELECT ticker, min(timestamp) as first_timestamp
-                    FROM News.price_tracking
-                    WHERE ticker IN ({ticker_placeholders})
-                    GROUP BY ticker
-                ),
-                ticker_second_prices AS (
-                    SELECT 
-                        ticker,
-                        least(
-                            max(CASE WHEN rn = 2 THEN price END),
-                            max(CASE WHEN rn = 3 THEN price END)
-                        ) as second_price
-                    FROM (
-                        SELECT 
-                            ticker,
-                            price,
-                            ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY timestamp ASC) as rn
-                        FROM News.price_tracking
-                        WHERE ticker IN ({ticker_placeholders})
-                    ) ranked
-                    WHERE rn IN (2, 3)
-                    GROUP BY ticker
-                )
-                SELECT 
-                    pt.ticker,
-                    ((argMax(pt.price, pt.timestamp) - COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) / COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) * 100 as change_pct,
-                    count() as price_count,
-                    dateDiff('second', tft.first_timestamp, max(pt.timestamp)) as seconds_elapsed
-                FROM News.price_tracking pt
-                INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
-                LEFT JOIN ticker_second_prices tsp ON pt.ticker = tsp.ticker
-                WHERE pt.ticker IN ({ticker_placeholders})
-                -- SIMPLE: Apply same 60-second window constraint as main query
-                AND pt.timestamp <= tft.first_timestamp + INTERVAL 60 SECOND
-                GROUP BY pt.ticker, tft.first_timestamp, tsp.second_price
-                HAVING change_pct >= 5.0 AND price_count >= 3
-                AND seconds_elapsed <= 60
-                """
-                
-                debug_result = self.ch_manager.client.query(debug_query)
-                if debug_result.result_rows:
-                    logger.info(f"💡 60-SECOND WINDOW ENFORCED: Found {len(debug_result.result_rows)} tickers with price moves but no favorable sentiment")
-                    for row in debug_result.result_rows:
-                        ticker, change_pct, price_count, seconds_elapsed = row
-                        logger.info(f"   📊 {ticker}: +{change_pct:.2f}% in {seconds_elapsed}s - blocked by sentiment filter (within 60s window)")
-                        
-                        # Check what sentiment data exists for this ticker in price_tracking
-                        sentiment_debug_query = f"""
-                        SELECT 
-                            argMax(sentiment, timestamp) as latest_sentiment,
-                            argMax(recommendation, timestamp) as latest_recommendation,
-                            argMax(confidence, timestamp) as latest_confidence,
-                            max(timestamp) as latest_timestamp
-                        FROM News.price_tracking
-                        WHERE ticker = '{ticker}'
-                        AND timestamp >= now() - INTERVAL 1 HOUR
-                        GROUP BY ticker
-                        """
-                        
-                        sentiment_debug_result = self.ch_manager.client.query(sentiment_debug_query)
-                        if sentiment_debug_result.result_rows:
-                            sentiment, recommendation, confidence, timestamp = sentiment_debug_result.result_rows[0]
-                            logger.info(f"      🧠 Available sentiment: {sentiment}, {recommendation} ({confidence} confidence) at {timestamp}")
-                        else:
-                            logger.info(f"      ❌ No sentiment data found for {ticker} in price_tracking")
-                
-                # Check if we're skipping tickers due to alert limit
-                limit_check_query = f"""
-                SELECT ticker, count() as alert_count
-                FROM News.news_alert
-                WHERE timestamp >= now() - INTERVAL 2 MINUTE
-                AND ticker IN ({ticker_placeholders})
-                GROUP BY ticker
-                HAVING alert_count >= 8
-                """
-                
-                limit_result = self.ch_manager.client.query(limit_check_query)
-                if limit_result.result_rows:
-                    limited_tickers = [row[0] for row in limit_result.result_rows]
-                    logger.debug(f"🔒 ALERT LIMIT: Skipping {len(limited_tickers)} tickers that already have 8+ alerts: {limited_tickers}")
+                # Enhanced debug logging
+                await self._log_debug_info(ticker_placeholders)
                 
         except Exception as e:
             logger.error(f"Error checking sentiment-enhanced price alerts: {e}")
+
+    async def _log_debug_info(self, ticker_placeholders: str):
+        """Log debug information when no alerts are triggered"""
+        try:
+            # First check if there are any price movements that would qualify
+            debug_query = f"""
+            WITH ticker_first_timestamps AS (
+                SELECT ticker, min(timestamp) as first_timestamp
+                FROM News.price_tracking
+                WHERE ticker IN ({ticker_placeholders})
+                GROUP BY ticker
+            ),
+            ticker_second_prices AS (
+                SELECT 
+                    ticker,
+                    least(
+                        max(CASE WHEN rn = 2 THEN price END),
+                        max(CASE WHEN rn = 3 THEN price END)
+                    ) as second_price
+                FROM (
+                    SELECT 
+                        ticker,
+                        price,
+                        ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY timestamp ASC) as rn
+                    FROM News.price_tracking
+                    WHERE ticker IN ({ticker_placeholders})
+                ) ranked
+                WHERE rn IN (2, 3)
+                GROUP BY ticker
+            )
+            SELECT 
+                pt.ticker,
+                ((argMax(pt.price, pt.timestamp) - COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) / COALESCE(tsp.second_price, argMin(pt.price, pt.timestamp))) * 100 as change_pct,
+                count() as price_count,
+                dateDiff('second', tft.first_timestamp, max(pt.timestamp)) as seconds_elapsed
+            FROM News.price_tracking pt
+            INNER JOIN ticker_first_timestamps tft ON pt.ticker = tft.ticker
+            LEFT JOIN ticker_second_prices tsp ON pt.ticker = tsp.ticker
+            WHERE pt.ticker IN ({ticker_placeholders})
+            AND pt.timestamp <= tft.first_timestamp + INTERVAL 60 SECOND
+            GROUP BY pt.ticker, tft.first_timestamp, tsp.second_price
+            HAVING change_pct >= 5.0 AND price_count >= 3
+            AND seconds_elapsed <= 60
+            """
+            
+            debug_result = self.ch_manager.client.query(debug_query)
+            if debug_result.result_rows:
+                logger.info(f"💡 60-SECOND WINDOW ENFORCED: Found {len(debug_result.result_rows)} tickers with price moves but no favorable sentiment")
+                for row in debug_result.result_rows:
+                    ticker, change_pct, price_count, seconds_elapsed = row
+                    logger.info(f"   📊 {ticker}: +{change_pct:.2f}% in {seconds_elapsed}s - blocked by sentiment filter (within 60s window)")
+                    
+                    # Check what sentiment data exists for this ticker in price_tracking
+                    sentiment_debug_query = f"""
+                    SELECT 
+                        argMax(sentiment, timestamp) as latest_sentiment,
+                        argMax(recommendation, timestamp) as latest_recommendation,
+                        argMax(confidence, timestamp) as latest_confidence,
+                        max(timestamp) as latest_timestamp
+                    FROM News.price_tracking
+                    WHERE ticker = '{ticker}'
+                    AND timestamp >= now() - INTERVAL 1 HOUR
+                    GROUP BY ticker
+                    """
+                    
+                    sentiment_debug_result = self.ch_manager.client.query(sentiment_debug_query)
+                    if sentiment_debug_result.result_rows:
+                        sentiment, recommendation, confidence, timestamp = sentiment_debug_result.result_rows[0]
+                        logger.info(f"      🧠 Available sentiment: {sentiment}, {recommendation} ({confidence} confidence) at {timestamp}")
+                    else:
+                        logger.info(f"      ❌ No sentiment data found for {ticker} in price_tracking")
+            
+            # Check if we're skipping tickers due to alert limit
+            limit_check_query = f"""
+            SELECT ticker, count() as alert_count
+            FROM News.news_alert
+            WHERE timestamp >= now() - INTERVAL 2 MINUTE
+            AND ticker IN ({ticker_placeholders})
+            GROUP BY ticker
+            HAVING alert_count >= 8
+            """
+            
+            limit_result = self.ch_manager.client.query(limit_check_query)
+            if limit_result.result_rows:
+                limited_tickers = [row[0] for row in limit_result.result_rows]
+                logger.debug(f"🔒 ALERT LIMIT: Skipping {len(limited_tickers)} tickers that already have 8+ alerts: {limited_tickers}")
+                
+        except Exception as e:
+            logger.debug(f"Error in debug logging: {e}")
 
     async def log_price_alert(self, ticker: str, current_price: float, prev_price: float, change_pct: float):
         """Log price alert to database"""
@@ -1110,7 +678,7 @@ class ContinuousPriceMonitor:
             values = [(
                 current_timestamp,     # timestamp
                 ticker,                # ticker
-                headline,              # news_headline (note: schema uses news_headline not headline)
+                headline,              # news_headline
                 published_utc,         # news_published_utc
                 url,                   # news_article_url
                 current_price,         # current_price
@@ -1146,83 +714,56 @@ class ContinuousPriceMonitor:
         """Report monitoring statistics"""
         runtime = time.time() - self.stats['start_time']
         
-        logger.info(f"📊 HYBRID MONITOR STATS:")
+        logger.info(f"📊 IBKR MONITOR STATS:")
         logger.info(f"   Runtime: {runtime/60:.1f} minutes")
         logger.info(f"   Active Tickers: {len(self.active_tickers)}")
         logger.info(f"   Price Checks: {self.stats['price_checks']}")
         logger.info(f"   Alerts Triggered: {self.stats['alerts_triggered']}")
-        logger.info(f"   WebSocket Messages: {self.stats['websocket_messages']}")
-        logger.info(f"   WebSocket Reconnections: {self.stats['websocket_reconnections']}")
-        logger.info(f"   REST API Fallbacks: {self.stats['rest_api_fallbacks']}")
-        logger.info(f"   Data Source: {'WebSocket' if self.use_websocket_data else 'REST API'}")
+        logger.info(f"   IBKR Ticks Received: {self.stats['ibkr_ticks_received']}")
+        logger.info(f"   IBKR Reconnections: {self.stats['ibkr_reconnections']}")
+        logger.info(f"   Mode: {'PAPER' if self.ibkr_port == 7497 else 'LIVE'}")
 
     async def cleanup(self):
         """Clean up resources"""
-        if self.websocket:
-            await self.close_websocket()
-        if self.session:
-            await self.session.close()
+        if self.ibkr_client:
+            try:
+                self.ibkr_client.disconnect_safely()
+            except:
+                pass
         if self.ch_manager:
             self.ch_manager.close()
-        logger.info("Hybrid price monitor cleanup completed")
+        logger.info("IBKR price monitor cleanup completed")
 
     async def start(self):
-        """Start the continuous price monitoring system with WebSocket hybrid approach"""
+        """Start the continuous price monitoring system with IBKR"""
         try:
-            logger.info("🚀 Starting HYBRID Price Monitor with WebSocket + REST fallback!")
+            logger.info("🚀 Starting IBKR Price Monitor!")
             await self.initialize()
             
-            # Test connectivity based on available data source
-            if self.use_websocket_data:
-                logger.info("🌐 WebSocket mode active - testing subscription capability...")
-                # WebSocket is already tested in initialize()
-            else:
-                logger.info("🔄 REST API fallback mode - testing API connectivity...")
-                await self.test_api_connectivity()
+            # Verify IBKR connection
+            if not self.ibkr_connected:
+                raise ConnectionError("IBKR connection not established")
             
-            logger.info("⚡ Starting hybrid monitoring: WebSocket real-time + REST fallback + File triggers...")
-            logger.info("✅ Hybrid Price Monitor operational!")
+            logger.info(f"⚡ IBKR Mode: Port {self.ibkr_port} ({'PAPER' if self.ibkr_port == 7497 else 'LIVE'})")
+            logger.info("✅ IBKR Price Monitor operational!")
             
-            # Run ALL components in parallel:
-            # 1. WebSocket listener for real-time price streaming
-            # 2. File trigger monitor for immediate ticker notifications
-            # 3. Continuous polling loop for database operations and subscription management
+            # Run file trigger monitor and polling loop in parallel
+            # Note: No WebSocket listener needed - IBKR callbacks run in separate thread
             await asyncio.gather(
-                self.websocket_listener(),              # Real-time WebSocket price streaming
-                self.file_trigger_monitor_async(),      # Ticker notifications only
-                self.continuous_polling_loop()          # Database operations + subscription management
+                self.file_trigger_monitor_async(),
+                self.continuous_polling_loop()
             )
             
         except KeyboardInterrupt:
             logger.info("🛑 Received interrupt signal")
         except Exception as e:
-            logger.error(f"Fatal error in hybrid price monitor: {e}")
+            logger.error(f"Fatal error in IBKR price monitor: {e}")
             raise
         finally:
             await self.cleanup()
 
-    async def test_api_connectivity(self):
-        """Test REST API connectivity with a simple request (fallback mode)"""
-        test_ticker = "AAPL"  # Use AAPL as a test ticker
-        logger.info(f"🔬 Testing REST API connectivity with {test_ticker}...")
-        
-        try:
-            start_time = time.time()
-            result = await self.get_current_price_rest_fallback(test_ticker)
-            test_time = time.time() - start_time
-            
-            if result:
-                logger.info(f"✅ REST API TEST SUCCESS: {test_ticker} = ${result['price']:.4f} in {test_time:.3f}s")
-            else:
-                logger.warning(f"⚠️ REST API TEST FAILED: No price data for {test_ticker} in {test_time:.3f}s")
-                logger.warning("🚨 API connectivity issues detected - price monitoring may be slow")
-        except Exception as e:
-            logger.error(f"❌ REST API TEST ERROR: {e}")
-            logger.warning("🚨 Severe API issues detected - price monitoring will likely fail")
-
     async def file_trigger_monitor_async(self):
         """Async file trigger monitor that runs in main event loop - ONLY adds tickers to polling queue"""
-        import os
         import json
         import glob
         
@@ -1251,9 +792,9 @@ class ContinuousPriceMonitor:
                             ticker = trigger_data['ticker']
                             logger.info(f"⚡ ASYNC MONITOR: Processing trigger for {ticker}")
                             
-                            # Add to active tickers for both WebSocket and REST tracking
+                            # Add to active tickers for IBKR tracking
                             self.active_tickers.add(ticker)
-                            self.ticker_timestamps[ticker] = datetime.now()  # Track when ticker was added
+                            self.ticker_timestamps[ticker] = datetime.now()
                             logger.info(f"🎯 ASYNC MONITOR: Added {ticker} to active tracking")
                             
                             # Remove trigger file after successful processing
@@ -1295,8 +836,8 @@ class ContinuousPriceMonitor:
             logger.info(f"🧹 CLEANUP: Removed {len(old_tickers)} old tickers from active tracking: {old_tickers}")
 
     async def continuous_polling_loop(self):
-        """Continuous polling loop - WebSocket subscription management + database operations every 2 seconds"""
-        logger.info("🔄 Starting HYBRID POLLING LOOP - WebSocket subscription management + database operations")
+        """Continuous polling loop - IBKR subscription management + database operations every 2 seconds"""
+        logger.info("🔄 Starting IBKR POLLING LOOP - subscription management + database operations")
         
         cycle = 0
         last_cleanup = time.time()
@@ -1307,38 +848,40 @@ class ContinuousPriceMonitor:
                 cycle_start = time.time()
                 
                 # Clean up old tickers every 5 minutes
-                if time.time() - last_cleanup > 300:  # 5 minutes
+                if time.time() - last_cleanup > 300:
                     await self.cleanup_old_tickers()
                     last_cleanup = time.time()
                 
+                # Check IBKR connection health
+                if not self.ibkr_connected or not self.ibkr_client or not self.ibkr_client.connected:
+                    logger.warning("❌ IBKR disconnected - attempting reconnect...")
+                    await self.reconnect_ibkr()
+                    await asyncio.sleep(2.0)
+                    continue
+                
                 if self.active_tickers:
-                    logger.info(f"🔄 HYBRID CYCLE {cycle}: Managing {len(self.active_tickers)} active tickers")
+                    logger.debug(f"🔄 IBKR CYCLE {cycle}: Managing {len(self.active_tickers)} active tickers")
                     
-                    if self.use_websocket_data and self.websocket_enabled:
-                        # WebSocket mode: Update subscriptions and process buffered prices
-                        await self.update_websocket_subscriptions()
-                        await self.process_websocket_prices()
-                        logger.debug(f"🌐 WebSocket cycle: Subscriptions updated, prices processed")
-                    else:
-                        # REST fallback mode: Track prices via API calls
-                        await self.track_prices_rest_fallback()
-                        logger.debug(f"🔄 REST fallback cycle: API prices tracked")
+                    # Update IBKR subscriptions
+                    await self.update_ibkr_subscriptions()
                     
-                    # Always check for alerts (regardless of data source)
+                    # Process buffered prices from IBKR
+                    await self.process_ibkr_prices()
+                    
+                    # Check for alerts
                     await self.check_price_alerts_optimized()
                     
                     cycle_time = time.time() - cycle_start
-                    data_source = "WebSocket" if self.use_websocket_data else "REST"
-                    logger.info(f"✅ HYBRID CYCLE {cycle}: Completed ({data_source}) in {cycle_time:.3f}s")
+                    logger.info(f"✅ IBKR CYCLE {cycle}: Completed in {cycle_time:.3f}s")
                 else:
-                    logger.debug(f"⏳ HYBRID CYCLE {cycle}: No active tickers")
+                    logger.debug(f"⏳ IBKR CYCLE {cycle}: No active tickers")
                 
                 # Wait 2 seconds before next cycle
                 await asyncio.sleep(2.0)
                 
             except Exception as e:
-                logger.error(f"Error in hybrid polling loop: {e}")
-                await asyncio.sleep(2.0)  # Continue with 2-second intervals even on error
+                logger.error(f"Error in IBKR polling loop: {e}")
+                await asyncio.sleep(2.0)
 
     async def get_tickers_within_60_second_window(self) -> Set[str]:
         """
@@ -1449,12 +992,12 @@ async def notify_new_ticker(ticker: str, timestamp: datetime = None):
 
 async def main():
     """Main function"""
-    logger.info("🚀 Starting HYBRID Continuous Price Monitor with WebSocket + REST fallback")
-    logger.info("⚡ HYBRID MODE: WebSocket real-time streaming → immediate price data → instant alerts")
-    logger.info("🔄 FALLBACK: REST API calls if WebSocket fails → reliable operation guaranteed")
+    logger.info("🚀 Starting IBKR Continuous Price Monitor")
+    logger.info("⚡ IBKR MODE: Real-time streaming via TWS API → immediate price data → instant alerts")
     
     monitor = ContinuousPriceMonitor()
     await monitor.start()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

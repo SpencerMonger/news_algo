@@ -1,6 +1,17 @@
-POLYGON_API_KEY=""
-SYMBOL=""
-PROXY_URL=http://3.128.134.41:80
+# IBKR Configuration (replaces Polygon)
+# Host: localhost for local TWS/Gateway
+IBKR_HOST=127.0.0.1
+# Port: 7497 for paper trading, 7496 for live trading
+# CHANGE THIS TO 7496 FOR LIVE TRADING
+IBKR_PORT=7497
+# Client ID: Must be unique across all connections to same TWS/Gateway
+# tradehead uses client_id=1, so newshead uses 10
+IBKR_CLIENT_ID=10
+
+# Legacy Polygon config (no longer used, kept for reference)
+# POLYGON_API_KEY=""
+# SYMBOL=""
+# PROXY_URL=http://3.128.134.41:80
 
 # Clickhouse creds
 CLICKHOUSE_HOST=""

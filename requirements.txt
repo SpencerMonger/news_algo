@@ -28,3 +28,7 @@ psutil>=5.9.0
 websockets>=12.0
 # Anthropic API client for Claude AI
 anthropic>=0.39.0
+# IBKR TWS API for real-time market data
+# NOTE: ibapi is NOT on PyPI. Install from IBKR website or copy from existing installation:
+#   cp -r /path/to/existing/site-packages/ibapi ./venv/lib/python3.*/site-packages/
+# ibapi>=10.30.1
