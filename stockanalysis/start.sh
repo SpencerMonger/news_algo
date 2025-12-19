@@ -42,13 +42,12 @@ if [ "$INSIDE_SCREEN" = false ]; then
     echo -e "${GREEN}  screen -r $SCREEN_SESSION${NC}"
     echo -e "${GREEN}To detach from the session, press: Ctrl+A, then D${NC}"
     echo ""
-    sleep 2
     
-    # Start screen session and run this script inside it
+    # Start screen session and run this script inside it (detached)
     screen -dmS "$SCREEN_SESSION" bash -c "STY=inside $0 $@"
     
-    # Attach to the screen session
-    screen -r "$SCREEN_SESSION"
+    echo -e "${GREEN}✅ Pipeline started in background screen session${NC}"
+    echo -e "${GREEN}   Session name: $SCREEN_SESSION${NC}"
     exit 0
 fi
 
