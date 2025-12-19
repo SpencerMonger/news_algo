@@ -2,14 +2,14 @@
 
 ## Quick Start
 
-**Start the main monitoring system:**
-```bash
-./start_newshead.sh
-```
-
-**Start the stock analysis pipeline (generates strength scores):**
+**1. Run the stock analysis pipeline first (updates tickers + generates strength scores):**
 ```bash
 ./stockanalysis/start.sh
+```
+
+**2. Start the main monitoring system:**
+```bash
+./start_newshead.sh
 ```
 
 ## System Overview
@@ -51,7 +51,6 @@ NewsHead is a real-time stock market news monitoring and price tracking system. 
 
 ```bash
 python3 run_system.py --socket              # Use Benzinga WebSocket (recommended)
-python3 run_system.py --skip-list           # Skip Finviz ticker list update
 python3 run_system.py --socket --any        # Process any ticker found
 python3 run_system.py --no-sentiment        # Disable sentiment analysis (testing)
 python3 run_system.py --enable-old          # Process articles older than 2 minutes
@@ -111,9 +110,11 @@ python3 run_system.py --enable-old          # Process articles older than 2 minu
 
 | File | Purpose |
 |------|---------|
-| `finviz_scraper.py` | Scrapes low-float stock list from Finviz Elite |
+| `stockanalysis/finviz_scraper.py` | Scrapes low-float stock list from Finviz Elite |
 
 **Criteria**: Under 100M float, under $10 price, global markets, multiple sectors
+
+**Note**: The Finviz scraper is run as part of the Stock Analysis Pipeline (see below).
 
 ## Alert Trigger Conditions
 
@@ -160,13 +161,15 @@ Scrapes detailed financial statistics from StockAnalysis.com and generates stren
 ./stockanalysis/start.sh                    # Run complete pipeline in screen
 python3 stockanalysis/run_analysis.py       # Run directly
 python3 stockanalysis/run_analysis.py --limit 5  # Test with 5 tickers
-python3 stockanalysis/run_analysis.py --skip-scraper  # Only run analyzer
+python3 stockanalysis/run_analysis.py --skip-finviz   # Skip Finviz ticker update
+python3 stockanalysis/run_analysis.py --skip-scraper  # Skip StockAnalysis scraper
 python3 stockanalysis/run_analysis.py --reanalyze     # Force re-analyze all
 ```
 
 **Pipeline Steps**:
-1. `stockanalysis_scraper.py` - Scrapes 115+ statistics per ticker from StockAnalysis.com
-2. `stock_strength_analyzer.py` - Generates strength scores (1-10) using weighted formula
+1. `finviz_scraper.py` - Updates ticker list from Finviz Elite
+2. `stockanalysis_scraper.py` - Scrapes 115+ statistics per ticker from StockAnalysis.com
+3. `stock_strength_analyzer.py` - Generates strength scores (1-10) using weighted formula
 
 **Output**: Populates `strength_score` column in `News.float_list_detailed_dedup` table.
 
