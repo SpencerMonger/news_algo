@@ -8,12 +8,10 @@ import logging
 import argparse
 import subprocess
 import sys
-import time
 import os
 import signal
 from clickhouse_setup import ClickHouseManager
 from log_manager import setup_comprehensive_logging
-from finviz_scraper import FinvizScraper
 
 # SENTIMENT ANALYSIS SERVICE INITIALIZATION
 from sentiment_service import get_sentiment_service
@@ -152,7 +150,6 @@ async def main():
     log_manager = setup_comprehensive_logging(log_dir="logs", retention_days=5)
     
     parser = argparse.ArgumentParser(description='News & Price Monitoring System')
-    parser.add_argument('--skip-list', action='store_true', help='Skip Finviz ticker list update')
     parser.add_argument('--enable-old', action='store_true', help='Process old news articles (disable freshness filter)')
     parser.add_argument('--socket', action='store_true', help='Use Benzinga WebSocket instead of web scraper (default: web scraper)')
     parser.add_argument('--any', action='store_true', help='Process any ticker symbols found (only works with --socket, bypasses ticker list filtering)')
@@ -187,7 +184,7 @@ async def main():
         # Step 1: Setup database
         await setup_database()
         
-        # Step 1.5: Initialize sentiment service (unless explicitly disabled)
+        # Step 2: Initialize sentiment service (unless explicitly disabled)
         if not args.no_sentiment:
             sentiment_initialized = await initialize_sentiment_service()
             if sentiment_initialized:
@@ -197,41 +194,13 @@ async def main():
         else:
             logging.info("🔇 Sentiment analysis skipped - price-only alerts enabled")
         
-        # Step 2: Skip ticker list update if requested
-        if args.skip_list:
-            logging.info("Step 2: Skipping Finviz ticker list update (--skip-list flag used)")
-        else:
-            logging.info("Step 2: Updating Finviz ticker list...")
-            # Import and run the Finviz scraper
-            
-            # Create ClickHouse manager for the scraper
-            ch_manager = ClickHouseManager()
-            ch_manager.connect()
-            
-            try:
-                # Create and run Finviz scraper
-                finviz_scraper = FinvizScraper(ch_manager)
-                success = await finviz_scraper.update_ticker_database()
-                
-                if success:
-                    logging.info("✅ Finviz ticker list updated successfully")
-                else:
-                    logging.error("❌ Failed to update Finviz ticker list")
-                    raise Exception("Finviz ticker update failed")
-                    
-            except Exception as e:
-                logging.error(f"❌ Error updating Finviz ticker list: {e}")
-                raise
-            finally:
-                ch_manager.close()
-        
         logging.info("Step 3: Starting monitoring systems with PROCESS ISOLATION...")
         
         if args.enable_old:
             logging.info("🔓 FRESHNESS FILTER DISABLED - Processing old news for testing")
         
         # Step 4: Start price checker in separate process for COMPLETE isolation
-        logging.info("🚀 Phase 1: Starting ZERO-LAG price checker in separate process...")
+        logging.info("Step 4: Starting ZERO-LAG price checker in separate process...")
         price_process = start_price_checker_process()
         
         # Give price checker time to initialize
@@ -239,6 +208,7 @@ async def main():
         await asyncio.sleep(10)
         
         # Step 5: Start news monitor in current process
+        logging.info("Step 5: Starting news monitor...")
         if args.socket:
             logging.info("🚀 Phase 2: Starting Benzinga WebSocket news monitor...")
             logging.info("⚡ REAL-TIME MODE: WebSocket provides sub-second news detection")
