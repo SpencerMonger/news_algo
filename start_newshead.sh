@@ -88,7 +88,7 @@ fi
 
 # Run script in screen session with WebSocket mode enabled
 echo "$(date) [UTC]: Starting run_system.py with WebSocket mode in a screen session" >> "$LOG_FILE"
-cd "$PROJECT_DIR" && screen -dmS newshead $PYTHON_BIN run_system.py --socket
+screen -dmS newshead bash -c "source $PROJECT_DIR/venv/bin/activate 2>/dev/null || source $PROJECT_DIR/.venv/bin/activate 2>/dev/null; export PYTHONPATH='$PROJECT_DIR:\$PYTHONPATH'; cd '$PROJECT_DIR' && python3 run_system.py --socket"
 echo "Started screen session with name 'newshead' using WebSocket mode" >> "$EXEC_LOG"
 
 # Give it a moment to start

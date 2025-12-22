@@ -88,7 +88,7 @@ python3 run_system.py --enable-old          # Process articles older than 2 minu
 | `sentiment_service.py` | Claude API with native load balancing across multiple keys |
 
 **Key Features**:
-- Uses Claude claude-sonnet-4-20250514 with 4D timing analysis prompt
+- Uses Claude claude-sonnet-4-5-20250929 with 4D timing analysis prompt
 - Supports multiple API keys via `ANTHROPIC_API_KEY`, `ANTHROPIC_API_KEY2`, etc.
 - Automatic failover when keys hit rate limits
 - Returns BUY/HOLD/SELL with confidence (high/medium/low)

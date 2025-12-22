@@ -54,7 +54,7 @@ class NativeLoadBalancer:
         self.current_key_index = 0
         self.session: Optional[aiohttp.ClientSession] = None
         self.claude_endpoint = "https://api.anthropic.com/v1/messages"
-        self.model = "claude-sonnet-4-20250514"
+        self.model = "claude-sonnet-4-5-20250929"
         
         self.stats = {
             'total_requests': 0,
@@ -648,7 +648,7 @@ class SentimentService:
                 timeout = aiohttp.ClientTimeout(total=30)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     test_payload = {
-                        "model": "claude-sonnet-4-20250514",
+                        "model": "claude-sonnet-4-5-20250929",
                         "max_tokens": 20,
                         "messages": [
                             {
@@ -724,7 +724,7 @@ ARTICLE CONTENT:
 TIMING ANALYSIS: Determine if this news will cause immediate explosive price action (hours/days) or delayed appreciation.
 
 IMMEDIATE IMPACT CATALYSTS (BUY + high confidence):
-- FDA approvals, merger announcements, major contract wins
+- FDA approvals, merger/acquisition announcements (being acquired at premium)
 - Earnings surprises with immediate market implications
 - Breaking regulatory decisions or legal victories
 - Emergency use authorizations or critical partnerships
@@ -734,6 +734,13 @@ DELAYED IMPACT NEWS (BUY + medium confidence):
 - Strategic initiatives with 6-12 month timelines
 - Market expansion plans requiring execution time
 - Research results requiring further development
+
+IMMEDIATE SELL SIGNALS (SELL + high confidence):
+- Going private/delisting plans, self-tender offers with share caps (loss of liquidity for remaining holders)
+- Bankruptcy filings, insolvency warnings, going concern notices
+- Dilutive offerings, reverse splits to avoid delisting
+- Fraud allegations, SEC investigations, regulatory violations
+- Failed clinical trials, product recalls, safety issues
 
 LOW IMPACT/SPECULATIVE (HOLD):
 - Early-stage research or development updates
@@ -862,7 +869,7 @@ Respond with JSON:
         for attempt in range(max_retries + 1):
             try:
                 payload = {
-                    "model": "claude-sonnet-4-20250514",
+                    "model": "claude-sonnet-4-5-20250929",
                     "max_tokens": 300,
                     "temperature": 0.0,
                     "messages": [
